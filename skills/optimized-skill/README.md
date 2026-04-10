@@ -35,11 +35,11 @@
 2. 跑 benchmark，记录 baseline
 3. 跑 targeted NCU
 4. 跑 full NCU
-5. 根据报告选择最有把握的优化方向
-6. 生成下一版 kernel
+5. 第一次优化尽可能吸收 `reference/` 中适配当前 kernel 的 memory / compute / sync 优化方法
+6. 生成第一版候选 kernel
 7. 对新版本重复 correctness、benchmark、targeted/full NCU
-8. 在用户设定的迭代轮数内选出最优版本
-9. 最终交付最优版本、full NCU 报告和 benchmark 对比
+8. 从第二轮开始，针对上一轮 full NCU 暴露的最主要不足做定向修正
+9. 在用户设定的迭代轮数内选出最优版本并交付 full NCU 报告和 benchmark 对比
 
 ## 用户可配置参数
 
@@ -59,6 +59,8 @@
 
 其中：
 - `max_iterations` 控制最多迭代多少轮，且必须由用户显式提供。
+- 第一轮默认策略是广覆盖吸收 `reference/` 中适配当前 kernel 的优化方法。
+- 从第二轮开始，默认策略是针对上一轮 full NCU 暴露的主要短板做定向提升。
 - `ref` 强烈建议提供；没有 reference 时，不应宣称 correctness 已验证。
 
 ## 命令示例
@@ -153,10 +155,11 @@ optimize_runs/
 
 ## 使用建议
 
-- 每轮先读 targeted/full NCU 报告，再改 kernel。
+- 第一次优化时，优先从 `reference/` 下已有知识库中尽可能多地吸收适配当前 kernel 的优化方法。
+- 从第二轮开始，每轮先读上一轮 full NCU，再决定这轮只解决哪些最明确的短板。
 - correctness 失败的版本不能参与性能结论。
 - 最终交付不能只引用 targeted 结果，必须带 winning version 的 full NCU 报告。
-- 优化建议优先从 `reference/` 下已有知识库中选择，不要每轮都发明新套路。
+- 后续轮次不要无差别继续叠加技巧；每轮改动都应能映射到具体 NCU 问题。
 
 ## 常见失败场景
 

@@ -34,7 +34,7 @@ description: Run a CUDA operator optimization loop that enforces correctness val
 - `.cu` 文件路径
 - `--max-iterations=<N>`
 
-如果用户没有显式提供 `--max-iterations`，先要求用户明确给出轮数，再执行，不要自行使用默认值。
+非常重要！！！  如果用户没有显式提供 `--max-iterations`，先要求用户明确给出轮数，再执行，不要自行使用默认值。 非常重要！！！
 
 强烈建议：
 - `--ref=<reference.py>`，否则不能宣称 correctness 已验证
@@ -58,10 +58,43 @@ description: Run a CUDA operator optimization loop that enforces correctness val
    - `benchmark_result.json`
    - `iteration_summary.md`
    - targeted/full NCU 的 summary/details 文本
-3. 根据 NCU 结论在 `reference/*.md` 里选择最有把握的优化方向。
+3. 按照“首轮广覆盖、后续针对性修正”的规则制定本轮优化方向。
 4. 写出本轮 `optimization_proposal.md`。
 5. 基于 proposal 生成下一版 kernel。
 6. 继续下一轮，直到达到 `max_iterations` 或提前停止。
+
+## 首轮与后续轮的优化策略
+
+### 第一次优化（baseline -> v1）
+
+第一次优化要尽可能多地吸收 `reference/` 中已经整理好的优化方法，但前提是这些方法与当前 kernel 的算法形态相容，且不会明显互相冲突。
+
+优先顺序：
+1. 先从 `optim.md` 获取整体迭代思路。
+2. 再从以下文档中尽可能覆盖当前 kernel 能合理采用的优化项：
+   - `reference/memory-optim.md`
+   - `reference/compute-optim.md`
+   - `reference/sync-optim.md`
+3. 首轮允许做“覆盖面较广”的组合优化，但不要为了堆技巧而引入明显不适配的改法。
+
+首轮目标：
+- 先做一版高质量、覆盖较广的候选实现。
+- 尽量把通用收益高的 memory / compute / sync 优化一次性吃进去。
+- 产出 first-pass 的 targeted/full NCU 报告，作为后续轮次的基准。
+
+### 后续迭代（v1 之后）
+
+后续迭代不要再追求广泛铺开，而要针对“上一轮 full NCU 报告暴露的最主要不足”做定向修正。
+
+规则：
+- 先看上一轮 full NCU，再参考 targeted NCU。
+- 每一轮只优先解决 1 到 2 个最明确的瓶颈。
+- 优化方向要和具体 NCU 信号绑定，例如：
+  - coalescing 差 -> 优先修访存布局 / vectorization / tiling
+  - occupancy 低 -> 优先修寄存器、smem、block size
+  - latency bound -> 优先�� ILP、依赖链、同步粒度
+  - compute bound -> 优先修 Tensor Core、FMA、低精度路径
+- 不要在后续轮次继续无差别叠加新技巧；每轮改动都要能解释“它是在修上一轮 NCU 的哪个短板”。
 
 ## 标准执行命令
 
@@ -114,7 +147,8 @@ python skills/optimized-skill/operator-optimize-loop/scripts/optimize_loop.py <n
 
 ## Claude 在循环中的行为要求
 
-- 每轮先读报告，再改 kernel，不要跳过诊断直接盲改。
+- 首轮优化按 `reference/` 做尽可能广覆盖但仍然合理的组合优化；从第二轮开始，每轮先读上一轮 full NCU 报告，再做针对性修正。
+- 每轮改动都要能解释它解决的是哪一个具体瓶颈，不要无差别继续堆优化技巧。
 - 不要把 targeted sections 的结论当作最终结论；最终交付必须引用 winning version 的 full NCU 报告。
 - correctness 失败的版本可以保留在 run 目录中，但必须明确标记为 rejected，不能参与 best 评选。
 - 如果 `ncu` 不可用、导入失败或 full 报告缺失，要明确写出失败原因并停止把该版本当作最终答案。
