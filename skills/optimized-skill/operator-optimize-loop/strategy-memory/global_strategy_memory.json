@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "updated_at": "2026-04-12T11:20:23",
+  "scopes": {
+    "cutlass__cutlass_softmax__cutlass_softmax_ref__auto_arch__339090bb90fe": {
+      "meta": {
+        "backend": "cutlass",
+        "source_file": "/home/aa24aa/work/cuda-optimized-skill/example/cutlass_softmax.cu",
+        "reference_file": "/home/aa24aa/work/cuda-optimized-skill/example/cutlass_softmax_ref.py",
+        "dims_args": [
+          "--rows=4096",
+          "--cols=1024"
+        ],
+        "arch": ""
+      },
+      "positive": {
+        "d576b5ea15008131": {
+          "tags": [
+            "baseline"
+          ],
+          "first_iteration": 0,
+          "last_iteration": 0,
+          "count": 2,
+          "last_outcome": "positive",
+          "last_reason": "baseline_seed",
+          "evidence": {
+            "baseline_iteration": null,
+            "baseline_median_ms": null,
+            "current_median_ms": 0.1489408016204834
+          }
+        },
+        "693f19f37331ba8b": {
+          "tags": [
+            "register_cached_exp",
+            "rowwise_softmax_shape_specialization",
+            "thread_retile_128",
+            "vectorized_float4_io"
+          ],
+          "first_iteration": 1,
+          "last_iteration": 1,
+          "count": 1,
+          "last_outcome": "positive",
+          "last_reason": "faster_than_previous",
+          "evidence": {
+            "baseline_iteration": 0,
+            "baseline_median_ms": 0.1489408016204834,
+            "current_median_ms": 0.10316799879074097
+          }
+        },
+        "705f6825edb0a4e4": {
+          "tags": [
+            "approximate_exp_path",
+            "arithmetic_only_tuning",
+            "revert_to_128_tile"
+          ],
+          "first_iteration": 3,
+          "last_iteration": 3,
+          "count": 1,
+          "last_outcome": "positive",
+          "last_reason": "faster_than_previous",
+          "evidence": {
+            "baseline_iteration": 2,
+            "baseline_median_ms": 0.14586880207061767,
+            "current_median_ms": 0.10245120525360107
+          }
+        }
+      },
+      "negative": {
+        "f5f0e39777db3029": {
+          "tags": [
+            "keep_vectorized_single_pass",
+            "register_fragment_expansion",
+            "retile_64_for_higher_ilp"
+          ],
+          "first_iteration": 2,
+          "last_iteration": 2,
+          "count": 1,
+          "last_outcome": "negative",
+          "last_reason": "slower_or_equal_to_previous",
+          "evidence": {
+            "baseline_iteration": 1,
+            "baseline_median_ms": 0.10316799879074097,
+            "current_median_ms": 0.14586880207061767
+          }
+        }
+      },
+      "rejected": {}
+    }
+  }
+}

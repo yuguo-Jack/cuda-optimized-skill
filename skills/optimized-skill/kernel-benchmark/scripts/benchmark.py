@@ -22,6 +22,7 @@ import os
 import sys
 import json
 import copy
+import glob
 import subprocess
 import ctypes
 import argparse
@@ -136,17 +137,66 @@ def _preprocess_cu(cu_file: str) -> str:
 
 
 
-def compile_cu(cu_file: str, output_so: str, arch: str, nvcc_bin: str):
+def find_cutlass_include_dir() -> str:
+    """Find a CUTLASS include directory containing both `cutlass/` and `cute/`."""
+    candidates = []
+
+    env_root = os.environ.get("CUTLASS_PATH", "").strip()
+    env_include = os.environ.get("CUTLASS_INCLUDE_DIR", "").strip()
+
+    if env_root:
+        candidates.extend([env_root, os.path.join(env_root, "include")])
+    if env_include:
+        candidates.append(env_include)
+
+    candidates.extend(sorted(glob.glob("/usr/local/cutlass*/include")))
+    candidates.extend([
+        "/usr/local/cutlass/include",
+        "/opt/cutlass/include",
+    ])
+
+    seen = set()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        resolved = os.path.abspath(candidate)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if os.path.isdir(os.path.join(resolved, "cutlass")) and os.path.isdir(os.path.join(resolved, "cute")):
+            return resolved
+
+    return ""
+
+
+
+def compile_cu(cu_file: str, output_so: str, arch: str, nvcc_bin: str, backend: str = "cuda"):
     """Compile .cu to a shared library."""
     clean_file = _preprocess_cu(cu_file)
-    cmd = [nvcc_bin, "-shared", "-std=c++17", f"-arch={arch}", "-O3", "-o", output_so, clean_file]
+    cmd = [nvcc_bin]
     if os.name != "nt":
-        cmd[2:2] = ["-Xcompiler", "-fPIC"]
+        cmd.extend(["-Xcompiler", "-fPIC"])
     else:
-        cmd[2:2] = [
+        cmd.extend([
             "-allow-unsupported-compiler",
             "-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH",
-        ]
+        ])
+
+    if backend == "cutlass":
+        cutlass_include_dir = find_cutlass_include_dir()
+        if not cutlass_include_dir:
+            if clean_file != cu_file and os.path.exists(clean_file):
+                os.remove(clean_file)
+            print(
+                "Compilation failed:\n"
+                "Cannot locate CUTLASS headers. Set CUTLASS_PATH or CUTLASS_INCLUDE_DIR, "
+                "or install CUTLASS under a standard path such as /usr/local/cutlass*/include.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        cmd.extend(["-I", cutlass_include_dir])
+
+    cmd.extend(["-shared", "-std=c++17", f"-arch={arch}", "-O3", "-o", output_so, clean_file])
     print(f"[compile] {' '.join(cmd)}")
     try:
         result = subprocess.run(
@@ -380,7 +430,7 @@ def _setup_cuda(solution_file, dim_values, ptr_size_override, arch, nvcc_bin, se
 
     lib_ext = ".dll" if os.name == "nt" else ".so"
     so_file = os.path.splitext(solution_file)[0] + lib_ext
-    compile_cu(solution_file, so_file, arch, nvcc_bin)
+    compile_cu(solution_file, so_file, arch, nvcc_bin, backend=backend_name)
     lib = ctypes.CDLL(so_file)
 
     for ptype, pname, _ in params:

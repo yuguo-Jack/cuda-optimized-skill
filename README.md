@@ -237,3 +237,8 @@ optimize_runs/
 2. `ncu` 不可用：必须显式报错并停止宣称 profiling 结论
 3. benchmark 噪声大：统一输入规模、warmup、repeat、GPU
 4. 多轮无收益：可提前停止并说明收益递减
+
+# 我跑了cutlass softmax算子优化的例子，对比的是torch中softmax函数  下面结果
+kernel median 从 v0 的 0.14894 ms 降到 v3 的 0.10245 ms，延迟下降约 31.2%，相当于 1.45x 提升；最终版本对 reference 的 speedup 是 2.04x。主瓶颈已经从“结构性多次读写”收敛到明显的 memory bound：v3 的 NCU 显示 DRAM throughput 约 92.26%、内存带宽约 322.81 GB/s，但仍有 L1TEX scoreboard stall，所以这版已经比较接近这张 RTX 3060 上该 shape 的带宽上限。
+![alt text](asset/image1.png)
+![alt text](asset/image.png)
