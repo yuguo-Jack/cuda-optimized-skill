@@ -1,54 +1,131 @@
 # optimized-skill
 
-这个目录提供一组面向 CUDA 算子优化的 skills，覆盖从正确性验证到 benchmark、NCU 分析、迭代优化和最终最佳版本汇总的完整流程。
+这个目录提供一组面向算子优化的 skills，支持 `CUDA / CUTLASS / Triton` 三类后端，覆盖从 correctness、benchmark、NCU profiling 到多轮迭代选优的完整流程。
+
+---
 
 ## 包含的 skill
 
-- `kernel-benchmark/`
-  - 编译 `.cu`，可选做 correctness 验证，并输出 benchmark。
-- `ncu-rep-analyze/`
-  - 生成或分析 `.ncu-rep`，定位主瓶颈并给出优化方向。
-- `operator-optimize-loop/`
-  - 统一编排入口，执行 correctness -> benchmark -> targeted/full NCU -> 优化方案 -> 下一版算子 -> 再评测 的闭环。
-- `reference/`
-  - 优化知识库，按 memory / compute / sync 分类。
+- `skills/optimized-skill/kernel-benchmark/`
+  - 统一 benchmark 入口，支持：
+    - CUDA/CUTLASS `.cu`（`extern "C" void solve(...)`）
+    - Triton `.py`（`setup(...) + run_kernel(...)`）
+  - 可选 correctness 对比 reference
+
+- `skills/optimized-skill/ncu-rep-analyze/`
+  - 生成或分析 `.ncu-rep`
+  - 解释 NCU 指标并映射到可执行优化方向
+
+- `skills/optimized-skill/operator-optimize-loop/`
+  - 统一编排入口：
+    - correctness -> benchmark -> targeted/full NCU -> proposal -> 下一版算子 -> 再评测
+  - 支持策略记忆（positive / negative / rejected）
+
+- `skills/optimized-skill/reference/`
+  - 按后端维护知识库：
+    - `reference/cuda/`
+    - `reference/cutlass/`
+    - `reference/triton/`
+
+---
 
 ## 推荐入口
 
-需要完整迭代优化时，优先使用：
-
+需要完整迭代优化时优先使用：
 - `skills/optimized-skill/operator-optimize-loop/SKILL.md`
 
-需要单独做正确性和性能测试时，使用：
-
+只做 correctness + benchmark：
 - `skills/optimized-skill/kernel-benchmark/SKILL.md`
 
-需要单独做 NCU 报告生成和分析时，使用：
-
+只做 NCU 报告生成与分析：
 - `skills/optimized-skill/ncu-rep-analyze/SKILL.md`
 
-## 完整工作流
+---
 
-主入口 skill 期望执行以下流程：
+## 外部文档检索策略（Exa MCP）
 
-1. 对当前 kernel 做 correctness 验证
-2. 跑 benchmark，记录 baseline
+为避免只依赖本地 `reference/`，优化过程中必须支持基于 Exa MCP 的外部检索，且优先官方文档。
+
+### 检索原则
+
+1. **优先官方文档**
+   - Triton 问题优先检索 Triton 官方文档
+   - CUTLASS 问题优先检索 NVIDIA CUTLASS 官方文档
+   - CUDA/PTX/NCU 指标问题优先检索 NVIDIA 官方文档
+
+2. **先基于证据再搜索**
+   - 先读当前轮 benchmark + full NCU
+   - 将瓶颈转成检索关键词，再搜索
+   - 不做无目标泛搜
+
+3. **搜索次数上限**
+   - 每轮（或每个待解决瓶颈）最多 **10 次搜索**
+   - 到达上限后必须收敛：
+     - 采用当前最强证据方案
+     - 或标注“需下一轮继续验证”
+
+4. **检索结果使用方式**
+   - 提取“可执行参数/方法”，不要只摘概念
+   - 与当前后端方案融合，不直接照搬无关实现
+   - 将采用与未采用原因写入 `optimization_proposal.md`
+
+### 典型检索触发
+
+- Triton：`BLOCK_* / num_warps / num_stages / coalescing / persistent / split-k`
+- CUTLASS：`tile shape / stage count / epilogue / stream-k / collective builder`
+- CUDA：`occupancy / memory coalescing / latency stall / tensor core path`
+- NCU 指标：针对具体瓶颈（如 `dram bound`, `low eligible warps`）检索解决方法
+
+---
+
+## 完整工作流（统一三后端）
+
+1. preflight 检查（设备、工具链、输入文件）
+2. 跑 correctness + benchmark（记录 baseline）
 3. 跑 targeted NCU
 4. 跑 full NCU
-5. 第一次优化尽可能吸收 `reference/` 中适配当前 kernel 的 memory / compute / sync 优化方法，并显式评估是否引入双缓冲 / 多级流水线
-6. 生成第一版候选 kernel
-7. 对新版本重复 correctness、benchmark、targeted/full NCU
-8. 从第二轮开始，针对上一轮 full NCU 暴露的最主要不足做定向修正，并在每轮继续判断双缓冲 / 多级流水线是否值得加入或保留
-9. 在用户设定的迭代轮数内选出最优版本并交付 full NCU 报告和 benchmark 对比
+5. 写 `optimization_proposal.md`（必须含 `## Strategy tags`）
+6. 生成下一版算子
+7. 重复 correctness/benchmark/NCU
+8. 在用户指定轮数内选出最优版本
+
+从第 2 轮开始，必须以“上一轮 full NCU + benchmark”作为定向优化依据，不做无差别堆技巧。
+
+---
+
+## 策略记忆机制（新增）
+
+`operator-optimize-loop` 会自动沉淀策略记忆，避免重复试错。
+
+### 记忆范围
+
+- 当前 run：`run_manifest.json -> strategy_memory.current_run`
+- 全局：`skills/optimized-skill/operator-optimize-loop/strategy-memory/global_strategy_memory.json`
+
+### 自动判定
+
+- `correctness` 失败 -> `rejected`
+- benchmark 失败 -> `rejected`
+- targeted/full NCU 失败或 full NCU 缺失 -> `rejected`
+- 相对上一轮 `kernel median ms` 更快 -> `positive`
+- 否则（慢或持平）-> `negative`
+
+### 下一轮约束
+
+- `blocked`：negative + rejected（避免重复采用）
+- `preferred`：positive（优先融合）
+
+---
 
 ## 用户可配置参数
 
-主入口支持的核心参数：
+主入口 `optimize_loop.py` 核心参数：
 
-- `cu_file`
+- `solution_file`（`.cu` 或 `.py`）
+- `--backend=<auto|cuda|cutlass|triton>`
 - `--ref=<reference.py>`
 - `--M=... --N=... --K=...` 等维度参数
-- `--max-iterations=<N>`
+- `--max-iterations=<N>`（必填）
 - `--warmup=<N>`
 - `--repeat=<N>`
 - `--arch=<sm_xx>`
@@ -56,53 +133,60 @@
 - `--ptr-size=<N>`
 - `--seed=<N>`
 - `--run-dir=<dir>`
+- `--nvcc-bin=<path>`（CUDA/CUTLASS）
+- `--ncu-bin=<path>`
 
-其中：
-- `max_iterations` 控制最多迭代多少轮，且必须由用户显式提供。
-- 第一轮默认策略是广覆盖吸收 `reference/` 中适配当前 kernel 的优化方法。
-- 从第二轮开始，默认策略是针对上一轮 full NCU 暴露的主要短板做定向提升。
-- `ref` 强烈建议提供；没有 reference 时，不应宣称 correctness 已验证。
+---
 
 ## 命令示例
 
-### 1. 只做 correctness + benchmark
+### 1) 只做 correctness + benchmark
 
 ```bash
 python skills/optimized-skill/kernel-benchmark/scripts/benchmark.py path/to/kernel.cu \
-    --ref=path/to/reference.py --M=4096 --N=4096 --K=4096 \
+    --backend=cuda --ref=path/to/reference.py --M=4096 --N=4096 --K=4096 \
     --warmup=10 --repeat=20
 ```
 
-### 2. 做一次完整迭代评测并生成 run 目录
-
-注意：`--max-iterations` 是必填项，不传会直接报错。
+### 2) CUDA 完整迭代优化
 
 ```bash
 python skills/optimized-skill/operator-optimize-loop/scripts/optimize_loop.py path/to/kernel.cu \
-    --ref=path/to/reference.py --M=4096 --N=4096 --K=4096 \
+    --backend=cuda --ref=path/to/reference.py --M=4096 --N=4096 --K=4096 \
     --max-iterations=3 --warmup=10 --repeat=20
 ```
 
-### 3. 在已有 run 目录上评测下一版 kernel
+### 3) CUTLASS 完整迭代优化
 
 ```bash
-python skills/optimized-skill/operator-optimize-loop/scripts/optimize_loop.py path/to/kernel_v1.cu \
-    --run-dir=path/to/optimize_runs/run_20260410_000000 --iteration=1 \
-    --ref=path/to/reference.py --M=4096 --N=4096 --K=4096 \
+python skills/optimized-skill/operator-optimize-loop/scripts/optimize_loop.py path/to/cutlass_kernel.cu \
+    --backend=cutlass --ref=path/to/reference.py --M=4096 --N=4096 --K=4096 \
     --max-iterations=3 --warmup=10 --repeat=20
 ```
+
+### 4) Triton 完整迭代优化
+
+```bash
+python skills/optimized-skill/operator-optimize-loop/scripts/optimize_loop.py path/to/triton_kernel.py \
+    --backend=triton --ref=path/to/reference.py --M=4096 --N=4096 --K=4096 \
+    --max-iterations=3 --warmup=10 --repeat=20
+```
+
+---
 
 ## 输出产物
 
-每次完整 run 都会生成独立目录，默认在当前 kernel 附近：
+每次 run 会生成目录：
 
 ```text
 optimize_runs/
   run_YYYYMMDD_HHMMSS/
     run_manifest.json
     final_summary.md
+    preflight_check.md
+    preflight_check.json
     iter_v0/
-      <kernel>_v0.cu
+      <kernel>_v0.(cu|py)
       benchmark_result.json
       benchmark.stdout.txt
       benchmark.stderr.txt
@@ -118,73 +202,38 @@ optimize_runs/
       ...
 ```
 
-### 关键产物说明
+关键说明：
+- `run_manifest.json`：包含参数、每轮结果、best、策略记忆
+- `final_summary.md`：汇总轮次、best、策略记忆摘要
+- `optimization_proposal.md`：本轮策略假设，需包含 `Strategy tags`
 
-- `run_manifest.json`
-  - 记录输入参数、每轮结果、当前 best iteration。
-- `final_summary.md`
-  - 汇总所有轮次，列出 baseline 与最佳版本，并给出 full NCU 报告路径。
-- `benchmark_result.json`
-  - 结构化 benchmark 结果，便于脚本和后续分析复用。
-- `iteration_summary.md`
-  - 当前轮的命令、状态、产物路径和 follow-up 要点。
-- `optimization_proposal.md`
-  - 当前轮准备尝试的优化假设。
+---
 
-## 如何确定最终最优版本
+## 最优版本评选规则
 
-只有满足以下条件的版本才允许参与 best 评选：
-
+可参与排名的版本必须满足：
 - benchmark 成功
-- 如果提供了 reference，则 correctness 通过
+- 若提供 reference，则 correctness 通过
 - full `.ncu-rep` 存在
 
-排序规则：
+排序：
+1. `kernel median latency` 最低
+2. `kernel average latency` 最低
+3. 更早达到该性能的版本优先
 
-1. kernel median latency 最低
-2. 若接近，则看 kernel average latency
-3. 若仍接近，则更早达到该性能的版本优先
-
-最终回答必须引用：
-
-- 最佳版本 `.cu` 路径
-- 最佳版本 full `.ncu-rep` 路径
+最终交付必须包含：
+- 最佳版本路径
+- 最佳版本 full NCU 报告路径
 - 最佳版本 targeted/full NCU 命令
-- baseline 与最佳版本的 benchmark 对比
-- 主瓶颈与最终采用的优化思路
+- baseline vs best benchmark 对比
+- 主瓶颈与最终优化思路
+- 策略记忆结论（positive/negative/rejected）
 
-## 使用建议
-
-- 第一次优化时，优先从 `reference/` 下已有知识库中尽可能多地吸收适配当前 kernel 的优化方法。
-- 每一轮都要评估双缓冲 / 多级流水线是否适合当前 kernel：一组 buffer 计算时，另一组 buffer 预取下一批数据。
-- 从第二轮开始，每轮先读上一轮 full NCU，再决定这轮只解决哪些最明确的短板。
-- correctness 失败的版本不能参与性能结论。
-- 最终交付不能只引用 targeted 结果，必须带 winning version 的 full NCU 报告。
-- 后续轮次不要无差别继续叠加技巧；每轮改动都应能映射到具体 NCU 问题。
+---
 
 ## 常见失败场景
 
-### 1. correctness 失败
-
-说明优化还不成立。此时先修正确性，不应继续拿该版本做最佳方案。
-
-### 2. `ncu` 不可用
-
-会导致 profiling 无法完成。此时必须明确说明失败原因，不能静默跳过 full report。
-
-### 3. benchmark 噪声过大
-
-优先统一：
-- 输入规模
-- `warmup`
-- `repeat`
-- GPU 选择
-
-### 4. 多轮没有收益
-
-可以提前停止，把当前 best 作为最终候选，并说明后续收益递减。
-
-
-## 进行conv算子核的测试与torch中卷积核性能对比
-
-![alt text](/asset/image/README/ff059117-e7ca-4f7f-8af4-443ff26f678f.png)
+1. correctness 失败：先修正确性，不能继续当最佳候选
+2. `ncu` 不可用：必须显式报错并停止宣称 profiling 结论
+3. benchmark 噪声大：统一输入规模、warmup、repeat、GPU
+4. 多轮无收益：可提前停止并说明收益递减

@@ -1,6 +1,6 @@
 ---
 name: operator-optimize-loop
-description: Run an operator optimization loop for CUDA, CUTLASS, or Triton implementations. The loop enforces correctness validation, benchmark, backend-aware profiling/artifact capture, and final best-version selection. Use when Claude needs to iterate on a `.cu` or Triton `.py` operator for a user-specified number of rounds, compare versions by benchmark results, keep full Nsight Compute evidence for CUDA/CUTLASS winners, and prepare the next optimization step from the latest reports.
+description: Run an operator optimization loop for CUDA, CUTLASS, or Triton implementations. The loop enforces correctness validation, benchmark, backend-aware profiling/artifact capture, strategy memory (positive/negative/rejected), and final best-version selection. Use when Claude needs to iterate on a `.cu` or Triton `.py` operator for a user-specified number of rounds, compare versions by benchmark results, keep full Nsight Compute evidence for winners, and prepare the next optimization step from the latest reports.
 ---
 
 # Operator Optimization Loop
@@ -27,6 +27,7 @@ description: Run an operator optimization loop for CUDA, CUTLASS, or Triton impl
 - 每轮都要写 `optimization_proposal.md`
 - 每轮都要重新 benchmark
 - 三种后端每轮都要带 targeted/full profiling
+- 每轮都要自动沉淀策略记忆（正向/负向/拒绝），并用于下一轮约束
 
 ## 复用的现有能力
 
@@ -108,7 +109,7 @@ Triton：
    - `iteration_summary.md`
    - targeted/full NCU 的 summary/details 文本
 3. 按照“首轮广覆盖、后续针对性修正”的规则制定本轮优化方向。
-4. 写出本轮 `optimization_proposal.md`。
+4. 写出本轮 `optimization_proposal.md`（必须包含 `## Strategy tags` 结构化标签）。
 5. 基于 proposal 生成下一版算子。
 6. 继续下一轮，直到达到 `max_iterations` 或提前停止。
 
@@ -247,6 +248,35 @@ python skills/optimized-skill/operator-optimize-loop/scripts/optimize_loop.py <s
 - `full_summary.txt`
 - `full_details.txt`
 
+## 策略记忆规则（新增）
+
+每轮都会自动把本轮策略写入两级记忆：
+- 当前 run：`run_manifest.json -> strategy_memory.current_run`
+- 全局记忆：`skills/optimized-skill/operator-optimize-loop/strategy-memory/global_strategy_memory.json`
+
+`optimization_proposal.md` 必须包含：
+
+```md
+## Strategy tags
+- tag_a
+- tag_b
+```
+
+约定：
+- 当前 iteration 的结果，会归因到上一轮（`iter_v{i-1}`）proposal 中定义的 strategy tags
+- `iter_v0` 没有上一轮 proposal，默认 `baseline`
+
+判定规则（自动）：
+- `correctness` 失败 -> `rejected`
+- benchmark 失败 -> `rejected`
+- targeted/full NCU 执行失败或 full NCU 缺失 -> `rejected`
+- 相对上一轮 `kernel median ms` 更快 -> `positive`
+- 否则（慢或持平）-> `negative`
+
+下一轮会自动生成两类约束：
+- `blocked`：负向/拒绝策略指纹（避免重复）
+- `preferred`：正向策略指纹（优先融合）
+
 ## 最优版本选择规则
 
 只有满足以下条件的版本才允许参与排名：
@@ -266,6 +296,8 @@ python skills/optimized-skill/operator-optimize-loop/scripts/optimize_loop.py <s
 - CUTLASS 优化建议尽量和 example/category 中的成熟 pattern 对应起来。
 - Triton 优化建议尽量和 tile / pipeline / memory / fusion / grid 策略对应起来。
 - 每轮改动都要能解释它解决的是哪一个具体瓶颈，不要无差别继续堆优化技巧。
+- 每轮都要检查当前策略指纹是否命中 `blocked`；若命中，必须避免重复采用。
+- 对 `preferred` 中的正向策略要优先评估与本轮方案的融合。
 - 不要把 targeted sections 的结论当作最终结论；最终交付必须引用 winning version 的 full NCU 报告。
 - correctness 失败的版本可以保留在 run 目录中，但必须明确标记为 rejected，不能参与 best 评选。
 - 如果 profiling 不可用、导入失败或 full 报告缺失，要明确写出失败原因并停止把该版本当作最终答案。
@@ -279,6 +311,8 @@ python skills/optimized-skill/operator-optimize-loop/scripts/optimize_loop.py <s
 - 主瓶颈判断
 - 采用的关键优化思路
 - 被淘汰版本及其淘汰原因（如 correctness fail、NCU 不完整、性能不如当前 best）
+- 本轮策略记忆结论（positive/negative/rejected）和对应指纹
+- 是否成功避开 blocked 策略，是否融合了 preferred 策略
 
 ## 常见提前停止条件
 
