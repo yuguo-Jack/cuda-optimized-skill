@@ -5,6 +5,9 @@ CUDA kernel计算优化的完整方案：
 **一、Tensor Core / 专用硬件单元利用**
 
 1. **Tensor Core加速**：从Volta架构开始，Tensor Core可以在一个时钟周期内完成一个小矩阵乘加运算（如16×16×16的FP16 MMA）。通过WMMA API、MMA PTX指令或cuBLAS/CUTLASS等库来调用。计算吞吐相比普通CUDA Core高一个数量级。不用Tensor Core做矩阵类运算基本等于浪费了一半以上的芯片算力。
+   - **补充（架构限定）**："一个时钟周期"更适合作为概念化表述，实际吞吐取决于架构、数据类型、tile形状、发射节奏和寄存器/流水线占用。
+   - **补充（数据类型）**：Ampere及更新架构常见TF32/BF16路径，Hopper及更新架构常见FP8路径；选型要结合误差预算、累加精度和转换开销实测。
+   - **补充（Hopper+）**：可关注WGMMA（warp-group MMA）路径，通常需要和更严格的pipeline/sync配合使用。
 
 2. **SFU（Special Function Unit）**：GPU上有专门的特殊函数单元处理sin、cos、rsqrt、log2、exp2等超越函数。调用对应的intrinsic（如`__sinf`）走SFU流水线，和普通ALU是并行的，但SFU吞吐量比ALU低，大量超越函数调用会成为瓶颈。
 
@@ -37,7 +40,7 @@ CUDA kernel计算优化的完整方案：
 
 ---
 
-**五、寄存器与Occupancy平衡**
+**四、寄存器与Occupancy平衡**
 
 1. **控制寄存器使用量**：每个线程用的寄存器越多，同时驻留的warp就越少（occupancy下降），调度器隐藏延迟的能力就越弱。用 `__launch_bounds__(maxThreadsPerBlock, minBlocksPerMultiprocessor)` 提示编译器控制寄存器分配。
 
@@ -49,7 +52,7 @@ CUDA kernel计算优化的完整方案：
 
 ---
 
-**六、算法层面的计算优化**
+**五、算法层面的计算优化**
 
 1. **归约优化**：经典的并行归约从最朴素的交错寻址，到sequential addressing、warp unrolling、warp shuffle归约，每一步优化都有明显收益。最终形态是：warp内用shuffle归约，warp间用shared memory归约，block间用atomic或二次kernel归约。
 
@@ -65,19 +68,20 @@ CUDA kernel计算优化的完整方案：
 
 ---
 
-**七、编译器优化控制**
+**六、编译器优化控制**
 
 1. **编译选项调优**：`--use_fast_math` 开启全部快速数学（包括不安全的优化如flush-denormals-to-zero）。如果只需要部分优化，可以单独开 `--ftz=true`（非规格化数清零）、`--prec-div=false`（低精度除法）、`--prec-sqrt=false`（低精度平方根）。
 
 2. **内联控制**：`__forceinline__` 强制内联小函数，消除函数调用开销。`__noinline__` 阻止内联，用于降低代码膨胀导致的指令缓存压力。
 
 3. **PTX/SASS分析**：用 `cuobjdump --dump-sass` 查看最终机器码，确认关键路径是否如预期使用了FMA、LDG、STS等高效指令，是否出现了意外的类型转换或寄存器溢出。`ncu`（Nsight Compute）可以做更细粒度的指令级分析。
+   - **补充（近两年实践）**：异步搬运/新架构优化时，建议同时核查PTX层是否出现预期的异步/矩阵相关指令路径，避免"代码写了但编译退化"。
 
 4. **restrict关键字**：`__restrict__` 告诉编译器指针不会互相alias，编译器因此可以更激进地做指令重排和寄存器缓存，效果有时非常显著。
 
 ---
 
-**八、分支与控制流深度优化**
+**七、分支与控制流深度优化**
 
 1. **谓词化（Predication）**：对于很短的分支（比如只有一两条指令），编译器会自动把分支转为谓词指令——两条路径都执行，但只有满足条件的那条写回结果。这避免了warp divergence，但浪费了计算。只适合分支体很短的情况。
 
@@ -89,10 +93,26 @@ CUDA kernel计算优化的完整方案：
 
 ---
 
-**九、异步计算与重叠**
+**八、异步计算与重叠**
 
 1. **计算与访存重叠**：这是调度器的核心能力。当一个warp在等待内存返回时，调度器切换到另一个就绪的warp执行计算指令。提升这种重叠能力的方法包括：增加occupancy、增加每个线程的独立指令数（ILP）、以及前面提到的软件流水线。
 
 2. **Warp Specialization**：把一个block内的warp分为"搬运warp"和"计算warp"。搬运warp专门负责global→shared的数据加载，计算warp专门做运算，两者通过shared memory和简单的标志位协同。这是一种手动实现的producer-consumer模型，在矩阵乘法等场景中可以获得比传统方法更好的资源利用率。
+   - **补充（架构演进）**：在Hopper/Blackwell等新架构上，这类producer-consumer分工常与更深的异步pipeline配合，收益更稳定，但对同步语义正确性要求更高。
 
 ---
+
+**九、验证清单（NCU）**
+
+为避免“只改代码不验指标”，计算优化建议至少配套以下检查：
+
+- Tensor Core 路径：确认是否出现预期 MMA/WGMMA 指令路径，且相关计算管线利用率提升。
+- 指令效率：关注 `Issue Slot Utilization`、`Eligible Warps Per Cycle` 是否改善。
+- 分支质量：关注 `Warp Execution Efficiency` 与分支相关 stall 是否改善。
+- 寄存器与溢出：用 `--ptxas-options=-v` + NCU 检查 spill 是否下降。
+
+常见误判：
+- 只看 occupancy 升高，不看 kernel latency，可能出现“occupancy 上去但性能变差”。
+- 只看某个单项指标改善，忽略了同步或访存路径退化导致总体变慢。
+
+统一决策树请参考：`skills/optimized-skill/SKILL.md` 的“七、统一优化决策树（SSOT）”。

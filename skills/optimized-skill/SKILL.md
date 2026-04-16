@@ -1,6 +1,45 @@
-# CUDA 算子迭代优化方案（NCU 驱动）
+---
+name: optimized-skill
+description: Unified entry for CUDA/CUTLASS/Triton optimization workflows. Route tasks to benchmark, NCU analysis, or multi-iteration optimization, with CUDA methodology fully embedded in this file.
+---
 
-## 〇、前置：环境信息采集
+# Optimized Skill Suite
+
+## Overview
+
+`skills/optimized-skill` 提供三段式优化工作流：
+
+1. `kernel-benchmark`：先拿 correctness + baseline latency
+2. `ncu-rep-analyze`：解释 targeted/full NCU 报告并定位瓶颈
+3. `operator-optimize-loop`：多轮迭代优化并输出最优版本
+
+支持后端：`cuda`、`cutlass`、`triton`。
+
+## When to use
+
+- 需要验证算子正确性与基线性能
+- 需要定位 kernel 性能瓶颈（memory/compute/latency/occupancy）
+- 需要按轮次自动化迭代优化并保留完整证据链
+- 需要一份统一的 CUDA 优化方法总纲
+
+## When not to use
+
+- 只做静态代码风格检查，不涉及运行
+- 无法访问 GPU / `ncu` / `nvcc` 且不打算先修复环境
+
+## Routing
+
+| 场景 | 先用哪个 skill | 后续 |
+|---|---|---|
+| 新算子初测 | `kernel-benchmark/SKILL.md` | 再进 `ncu-rep-analyze` 或 loop |
+| 已有 `.ncu-rep` 想快速判断瓶颈 | `ncu-rep-analyze/SKILL.md` | 再决定是否进 loop |
+| 目标是多轮自动优化拿 best 版本 | `operator-optimize-loop/SKILL.md` | 内含 benchmark + profiling 闭环 |
+
+## CUDA 优化方法（唯一权威入口）
+
+本节是 `skills/optimized-skill` 中 **唯一的 CUDA 总流程与方法细节入口**。CUDA 的前置信息采集、指标判定、分瓶颈优化路径、迭代模板、终止条件与统一决策树都以本节为准。
+
+### 〇、前置：环境信息采集
 
 在一切优化开始之前，先确定硬件天花板和 kernel 的当前状态。
 
@@ -29,38 +68,38 @@ ncu --set full -o report_v0 ./your_binary
 
 ---
 
-## 一、迭代优化总流程
+### 一、迭代优化总流程
 
-核心思想：**Profile → 定位瓶颈 → 分类施策 → 验证 → 重复**。
+核心思想：**Profile -> 定位瓶颈 -> 分类施策 -> 验证 -> 重复**。
 
-```
+```text
 ┌─────────────────────────────────────────────────────┐
-│                  编写 / 修改 Kernel                    │
+│                  编写 / 修改 Kernel                  │
 └──────────────────────┬──────────────────────────────┘
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│           NCU Profiling（--set full）                 │
+│           NCU Profiling（--set full）               │
 └──────────────────────┬──────────────────────────────┘
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│         第一步：Roofline 定位 —— 计算瓶颈还是带宽瓶颈？  │
+│   第一步：Roofline 定位 —— 计算瓶颈还是带宽瓶颈？      │
 │                                                     │
 │  Arithmetic Intensity = FLOPs / Bytes               │
-│  与硬件 Roofline 交叉点比较：                          │
-│    · 落在带宽斜坡 → 内存受限（Memory Bound）            │
-│    · 落在算力平顶 → 计算受限（Compute Bound）           │
-│    · 两者都远未达到 → 延迟受限（Latency Bound）         │
+│  与硬件 Roofline 交叉点比较：                         │
+│    · 落在带宽斜坡 -> 内存受限（Memory Bound）         │
+│    · 落在算力平顶 -> 计算受限（Compute Bound）        │
+│    · 两者都远未达到 -> 延迟受限（Latency Bound）      │
 └──────────────────────┬──────────────────────────────┘
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│    第二步：根据瓶颈类型进入对应优化路径（见下文）          │
-│    ——可多个方向同时进行                                │
+│  第二步：根据瓶颈类型进入对应优化路径（见下文）        │
+│  ——可多个方向同时进行                                 │
 └──────────────────────┬──────────────────────────────┘
                        ▼
 ┌─────────────────────────────────────────────────────┐
-│         第三步：修改代码，重新 NCU Profiling             │
-│         对比 report_vN 与 report_v(N-1)              │
-│         确认指标改善、无性能回退                         │
+│        第三步：修改代码，重新 NCU Profiling           │
+│        对比 report_vN 与 report_v(N-1)              │
+│        确认指标改善、无性能回退                       │
 └──────────────────────┬──────────────────────────────┘
                        ▼
               性能达标？──否──→ 回到第一步
@@ -72,28 +111,28 @@ ncu --set full -o report_v0 ./your_binary
 
 ---
 
-## 二、NCU 关键指标速查与瓶颈判定
+### 二、NCU 关键指标速查与瓶颈判定
 
-### 2.1 一级判定：Roofline 模型
+#### 2.1 一级判定：Roofline 模型
 
 NCU 的 **Speed Of Light (SOL)** 面板直接给出：
 
 | 指标 | 含义 | 判定 |
 |---|---|---|
-| `SM SOL %` | 计算单元利用率占峰值百分比 | 高 → 计算受限 |
-| `Memory SOL %` | 显存带宽利用率占峰值百分比 | 高 → 带宽受限 |
+| `SM SOL %` | 计算单元利用率占峰值百分比 | 高 -> 计算受限 |
+| `Memory SOL %` | 显存带宽利用率占峰值百分比 | 高 -> 带宽受限 |
 | 两者都低 | — | 延迟受限 |
 
 **判定规则**：
-- \(\text{SM SOL} > 60\%\) 且远高于 Memory SOL → **Compute Bound**
-- \(\text{Memory SOL} > 60\%\) 且远高于 SM SOL → **Memory Bound**
-- 两者均 \(< 40\%\) → **Latency Bound**（通常因 occupancy 过低、同步过多、分支发散等）
+- `SM SOL > 60%` 且远高于 `Memory SOL` -> **Compute Bound**
+- `Memory SOL > 60%` 且远高于 `SM SOL` -> **Memory Bound**
+- 两者均 `< 40%` -> **Latency Bound**（通常因 occupancy 过低、同步过多、分支发散等）
 
-### 2.2 二级诊断：细分指标
+#### 2.2 二级诊断：细分指标
 
-确定一级瓶颈后，进入对应的二级指标：
+确定一级瓶颈后，进入对应的二级指标。
 
-#### Memory Bound 时重点查看：
+##### Memory Bound 时重点查看
 
 | NCU 指标 | 问题信号 | 对应优化方向 |
 |---|---|---|
@@ -104,7 +143,7 @@ NCU 的 **Speed Of Light (SOL)** 面板直接给出：
 | `DRAM Throughput` | 接近峰值但 kernel 仍慢 | 已达带宽极限，需减少访存量（fusion / 算法改进） |
 | `Sectors/Request` | > 1（理想值为 1） | 未对齐或未合并 |
 
-#### Compute Bound 时重点查看：
+##### Compute Bound 时重点查看
 
 | NCU 指标 | 问题信号 | 对应优化方向 |
 |---|---|---|
@@ -114,7 +153,7 @@ NCU 的 **Speed Of Light (SOL)** 面板直接给出：
 | `FP32/FP16/Tensor Pipe Utilization` | 不均衡 | 未使用合适的计算管线（如该用 Tensor Core 没用） |
 | `Register Spill (Local Memory)` | > 0 | 寄存器溢出 |
 
-#### Latency Bound 时重点查看：
+##### Latency Bound 时重点查看
 
 | NCU 指标 | 问题信号 | 对应优化方向 |
 |---|---|---|
@@ -125,15 +164,15 @@ NCU 的 **Speed Of Light (SOL)** 面板直接给出：
 
 ---
 
-## 三、分瓶颈优化手册
+### 三、分瓶颈优化手册
 
-### 3.1 Memory Bound 优化路径
+#### 3.1 Memory Bound 优化路径
 
-按优先级排序，**同一轮迭代中可同时执行多项**：
+按优先级排序，**同一轮迭代中可同时执行多项**。
 
 **第一优先级：减少访存量**
 1. **Kernel Fusion**：将前后依赖的 kernel 合并，中间结果留在寄存器 / Shared Memory 中，消除一次完整 Global Memory 往返。这通常是收益最大的单项优化。
-2. **Warp Shuffle 替代 Shared Memory**：warp 内的归约、scan、广播改用 `__shfl_sync` 系列，免去 "写 Shared → `__syncthreads()` → 读 Shared" 的三步开销。
+2. **Warp Shuffle 替代 Shared Memory**：warp 内的归约、scan、广播改用 `__shfl_sync` 系列，免去 "写 Shared -> `__syncthreads()` -> 读 Shared" 的三步开销。
 3. **寄存器级数据复用**：每个线程处理多个元素，在寄存器中完成尽可能多的计算后再写回。
 
 **第二优先级：提升带宽利用率**
@@ -142,21 +181,21 @@ NCU 的 **Speed Of Light (SOL)** 面板直接给出：
 6. **对齐与 Padding**：用 `cudaMallocPitch` 或手动 padding 保证行首对齐。
 
 **第三优先级：利用缓存层级**
-7. **Shared Memory Tiling**：经典分块，从 Global Memory 搬入 Shared Memory 后复用 \(O(N)\) 次。
+7. **Shared Memory Tiling**：经典分块，从 Global Memory 搬入 Shared Memory 后复用 `O(N)` 次。
 8. **消除 Bank Conflict**：padding（如 `float s[32][33]`）或 swizzle/XOR 索引。
 9. **`__ldg()` / `const __restrict__`**：走只读纹理缓存路径，对不规则访问更友好。
 10. **L2 Persistence（CC 8.0+）**：对热点小数据用 `cudaAccessPolicyWindow` 钉在 L2 中。
 
 **第四优先级：隐藏延迟**
-11. **`cp.async` + 多级流水线**：Global → Shared 的搬运走硬件 DMA，与计算完全重叠。分配多级 buffer 做软件流水。
+11. **`cp.async` + 多级流水线**：Global -> Shared 的搬运走硬件 DMA，与计算完全重叠。分配多级 buffer 做软件流水。
 12. **双缓冲**：一组 buffer 计算、另一组 buffer 加载，交替进行。
 13. **Prefetch / `cudaMemPrefetchAsync`**：Unified Memory 场景下提前触发页迁移。
 
 **第五优先级：主机-设备传输**
-14. **Pinned Memory**：`cudaMallocHost` 分配锁页内存，传输带宽提升可达 2×，且支持异步。
-15. **Stream 流水线**：多 stream 将大数据分 chunk 做 "H2D → Compute → D2H" 流水线。
+14. **Pinned Memory**：`cudaMallocHost` 分配锁页内存，传输带宽提升可达 2x，且支持异步。
+15. **Stream 流水线**：多 stream 将大数据分 chunk 做 `H2D -> Compute -> D2H` 流水线。
 
-### 3.2 Compute Bound 优化路径
+#### 3.2 Compute Bound 优化路径
 
 **第一优先级：使用正确的硬件单元**
 1. **Tensor Core**：矩阵类运算必须用 Tensor Core（通过 WMMA / MMA PTX / cuBLAS / CUTLASS）。不用约等于浪费半数以上算力。
@@ -179,7 +218,7 @@ NCU 的 **Speed Of Light (SOL)** 面板直接给出：
 12. **循环分裂 / 合并 / 交换**：根据具体情况选择，减少寄存器压力或提升数据复用。
 13. **软件流水线**：循环体内交错不同迭代的加载、计算、存储阶段。
 
-### 3.3 Latency Bound 优化路径
+#### 3.3 Latency Bound 优化路径
 
 **核心目标：给调度器更多就绪 warp 或更多独立指令。**
 
@@ -192,7 +231,7 @@ NCU 的 **Speed Of Light (SOL)** 面板直接给出：
    - 减少不必要的 `__syncthreads()`——如果数据访问模式无跨 warp 依赖则删除。
    - 用 `__syncwarp()` 替代 `__syncthreads()` 缩小同步粒度。
    - 用 Cooperative Groups 定义最小必要同步组。
-   - 用 Warp Shuffle 彻底消除 "写 Shared → sync → 读 Shared" 模式。
+   - 用 Warp Shuffle 彻底消除 `写 Shared -> sync -> 读 Shared` 模式。
 
 3. **隐藏全局内存延迟**：
    - `cp.async` + 多级流水线。
@@ -204,13 +243,13 @@ NCU 的 **Speed Of Light (SOL)** 面板直接给出：
 
 ---
 
-## 四、迭代实操模板
+### 四、迭代实操模板
 
-每一轮迭代遵循以下步骤：
+每一轮迭代遵循以下步骤。
 
-### 第 N 轮迭代
+#### 第 N 轮迭代
 
-```
+```text
 1. Profiling
    ncu --set full -o report_vN ./binary
 
@@ -229,7 +268,7 @@ NCU 的 **Speed Of Light (SOL)** 面板直接给出：
    └────────────────────────┴──────────┴──────────┘
 
 3. 瓶颈判定
-   · 一级：Roofline 分类 → Memory / Compute / Latency Bound
+   · 一级：Roofline 分类 -> Memory / Compute / Latency Bound
    · 二级：查细分指标定位具体问题
 
 4. 制定本轮优化计划（可多项并行）
@@ -245,13 +284,13 @@ NCU 的 **Speed Of Light (SOL)** 面板直接给出：
    · 回归检查：确认未优化指标没有恶化
 
 7. 判断是否继续
-   · 已达硬件峰值 80%+ → 可停止
-   · 仍有明显瓶颈 → 进入第 N+1 轮
+   · 已达硬件峰值 80%+ -> 可停止
+   · 仍有明显瓶颈 -> 进入第 N+1 轮
 ```
 
 ---
 
-## 五、架构相关注意事项
+### 五、架构相关注意事项
 
 不同 Compute Capability 的关键差异，影响优化策略选择：
 
@@ -269,16 +308,86 @@ NCU 的 **Speed Of Light (SOL)** 面板直接给出：
 
 ---
 
-## 六、终止条件与常见陷阱
+### 六、终止条件与常见陷阱
 
-### 终止条件
-- Kernel 耗时已达理论最优的 80\%~90\%（通过 Roofline 上界估算）。
+#### 终止条件
+- Kernel 耗时已达理论最优的 80%~90%（通过 Roofline 上界估算）。
 - SOL 指标中 SM 或 Memory 已接近峰值，继续优化收益递减。
 - 算法本身已无法进一步降低计算量或访存量。
 
-### 常见陷阱
+#### 常见陷阱
 - **Occupancy 陷阱**：盲目追求高 occupancy 导致每线程可用寄存器减少、ILP 下降，反而变慢。应以实测为准。
 - **过度展开**：循环展开过大导致寄存器溢出，溢出到 Local Memory 后性能断崖式下降。
 - **忽略 L2 行为**：Ampere+ 上 L2 缓存很大，有时看似 Global Memory 访问效率低，但实际被 L2 吸收了，优化方向应转向 L2 命中率而非 Shared Memory tiling。
 - **Fusion 过度**：kernel 过大导致寄存器压力爆炸，反而不如拆成两个 kernel。需要权衡。
 - **忽略验证**：每轮必须验证计算正确性。快速数学选项（`--use_fast_math`）可能引入精度问题。
+
+---
+
+### 七、统一优化决策树（SSOT）
+
+以下决策树作为 CUDA 优化的统一入口。`memory-optim.md`、`compute-optim.md`、`sync-optim.md` 只保留各自主题策略，并回链到本节，避免多处复制漂移。
+
+```text
+内存访问优化
+├── 带宽利用率
+│   ├── 合并访问 + 对齐
+│   ├── 向量化 float4
+│   ├── SoA数据布局
+│   └── Padding（pitch分配）
+├── 减少访问次数
+│   ├── Shared Memory tiling
+│   ├── Kernel fusion
+│   ├── Warp shuffle代替shared memory
+│   └── 寄存器级数据复用
+├── 利用缓存层级
+│   ├── __ldg() / const __restrict__
+│   ├── L2 persistence
+│   ├── Texture（二维局部性）
+│   └── Constant Memory（广播读）
+├── 隐藏延迟
+│   ├── cp.async异步拷贝
+│   ├── 双缓冲/多级流水线
+│   ├── Prefetch
+│   └── Stream重叠
+└── 主机-设备传输
+    ├── Pinned memory
+    ├── 零拷贝（小数据）
+    └── Unified Memory + prefetch/advise
+```
+
+按瓶颈维度阅读：
+- 内存细节：`reference/cuda/memory-optim.md`
+- 计算细节：`reference/cuda/compute-optim.md`
+- 同步细节：`reference/cuda/sync-optim.md`
+
+## Shared references
+
+### CUDA
+- `reference/cuda/memory-optim.md`
+- `reference/cuda/compute-optim.md`
+- `reference/cuda/sync-optim.md`
+
+### CUTLASS
+- `reference/cutlass/cutlass-optim.md`
+
+### Triton
+- `reference/triton/triton-optim.md`
+
+## Unified terms
+
+- `fresh profile`：针对当前算子版本新生成的 `.ncu-rep`
+- `targeted profile`：只采集关键 section 的快速 profile
+- `full profile`：完整 profile（最终交付必带）
+- `rejected`：correctness/benchmark/profiling 任一失败的版本
+- `positive/negative`：相对上一轮 latency 改善或退化/持平
+- `blocked/preferred`：后续轮次应避开/优先融合的策略指纹
+
+## Unified output expectation
+
+最终回答至少包含：
+- 执行命令（含关键参数）
+- correctness 状态
+- benchmark 摘要（avg/median）
+- profiling 证据路径（targeted/full）
+- 主瓶颈判断与下一步建议

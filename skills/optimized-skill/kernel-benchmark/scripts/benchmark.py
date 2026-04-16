@@ -652,17 +652,41 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
         "kernel": None,
         "reference": None,
         "speedup_vs_reference": None,
+        "error": None,
     }
 
-    state = _setup_backend(
-        solution_file,
-        resolved_backend,
-        dim_values,
-        ptr_size_override,
-        arch,
-        nvcc_bin,
-        seed=seed if has_ref else None,
-    )
+    try:
+        state = _setup_backend(
+            solution_file,
+            resolved_backend,
+            dim_values,
+            ptr_size_override,
+            arch,
+            nvcc_bin,
+            seed=seed if has_ref else None,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        error_code = "missing_dimension" if "Missing dimension:" in message else "setup_value_error"
+        if has_ref:
+            result["correctness"]["passed"] = False
+        result["error"] = {
+            "code": error_code,
+            "stage": "setup_cuda" if resolved_backend in {"cuda", "cutlass"} else "setup_backend",
+            "message": message,
+        }
+        _write_json_out(json_out, result)
+        raise
+    except Exception as exc:
+        if has_ref:
+            result["correctness"]["passed"] = False
+        result["error"] = {
+            "code": "setup_failed",
+            "stage": "setup_backend",
+            "message": str(exc),
+        }
+        _write_json_out(json_out, result)
+        raise
     result["signature"] = state["signature"]
     result["ptr_elems"] = state["ptr_elems"]
     result["total_ptr_bytes"] = state["total_ptr_bytes"]

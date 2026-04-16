@@ -39,7 +39,7 @@ TARGETED_SECTIONS = [
 
 BACKEND_REFERENCE_DOCS = {
     "cuda": [
-        "skills/optimized-skill/reference/cuda/optim.md",
+        "skills/optimized-skill/SKILL.md",
         "skills/optimized-skill/reference/cuda/memory-optim.md",
         "skills/optimized-skill/reference/cuda/compute-optim.md",
         "skills/optimized-skill/reference/cuda/sync-optim.md",
@@ -499,13 +499,24 @@ def sanitize_token(text: str) -> str:
     return cleaned.strip("_")[:64] or DEFAULT_SCOPE_TOKEN
 
 
-def build_scope_key(backend: str, source_file: Path, ref_file: Path | None, dims_args: list[str], arch: str) -> str:
+def short_hash(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+
+
+def build_scope_key_legacy(backend: str, source_file: Path, ref_file: Path | None, dims_args: list[str], arch: str) -> str:
     source_token = sanitize_token(source_file.stem)
     ref_token = sanitize_token(ref_file.stem) if ref_file else "no_ref"
-    dims_token = hashlib.sha1("|".join(sorted(dims_args)).encode("utf-8")).hexdigest()[:12]
+    dims_token = short_hash("|".join(sorted(dims_args)))
     arch_token = sanitize_token(arch) if arch else "auto_arch"
     return f"{backend}__{source_token}__{ref_token}__{arch_token}__{dims_token}"
 
+
+def build_scope_key(backend: str, canonical_source_file: Path, ref_file: Path | None, dims_args: list[str], arch: str) -> str:
+    source_token = short_hash(str(canonical_source_file.resolve()))
+    ref_token = sanitize_token(ref_file.stem) if ref_file else "no_ref"
+    dims_token = short_hash("|".join(sorted(dims_args)))
+    arch_token = sanitize_token(arch) if arch else "auto_arch"
+    return f"{backend}__src_{source_token}__{ref_token}__{arch_token}__{dims_token}"
 
 def default_strategy_memory(global_file: Path, scope_key: str) -> dict[str, Any]:
     return {
@@ -573,10 +584,11 @@ def ensure_strategy_memory(manifest: dict[str, Any], scope_key: str, global_file
 
 def normalize_strategy_tags(tags: list[str]) -> list[str]:
     normalized = []
+    blocked_placeholders = {"fill_me_tag", "unlabeled_strategy"}
     for tag in tags:
         clean = re.sub(r"\s+", "_", tag.strip().lower())
         clean = re.sub(r"[^a-z0-9_\-]", "", clean)
-        if clean:
+        if clean and clean not in blocked_placeholders:
             normalized.append(clean)
     return sorted(set(normalized))
 
@@ -626,6 +638,13 @@ def classify_strategy_outcome(record: dict[str, Any], previous_record: dict[str,
     correctness = bench.get("correctness") or {}
 
     if record.get("benchmark_rc") != 0:
+        error = bench.get("error") or {}
+        error_code = str(error.get("code") or "").strip()
+        if error_code:
+            return ("rejected", f"benchmark_failed:{error_code}")
+        stderr_preview = str(record.get("benchmark_stderr_preview") or "")
+        if "Missing dimension:" in stderr_preview:
+            return ("rejected", "benchmark_failed:missing_dimension")
         return ("rejected", "benchmark_failed")
     if bench.get("has_reference") and correctness.get("passed") is False:
         return ("rejected", "correctness_failed")
@@ -686,14 +705,13 @@ def update_memory_bucket(bucket: dict[str, Any], fingerprint: str, tags: list[st
 
 def merge_strategy_constraints(run_memory: dict[str, Any], global_scope: dict[str, Any]) -> dict[str, list[str]]:
     run_data = run_memory.get("current_run") or {}
-    blocked = set((run_data.get("negative") or {}).keys())
-    blocked.update((run_data.get("rejected") or {}).keys())
-
+    blocked = set((run_data.get("rejected") or {}).keys())
     preferred = set((run_data.get("positive") or {}).keys())
 
-    blocked.update((global_scope.get("negative") or {}).keys())
     blocked.update((global_scope.get("rejected") or {}).keys())
     preferred.update((global_scope.get("positive") or {}).keys())
+
+    preferred.difference_update(blocked)
 
     return {
         "blocked": sorted(blocked),
@@ -789,14 +807,17 @@ def ensure_run_dir(solution_file: Path, run_dir_arg: str) -> Path:
 
 def load_manifest(manifest_path: Path, args: argparse.Namespace, run_dir: Path, solution_file: Path, backend: str) -> dict[str, Any]:
     manifest = read_json(manifest_path, None)
+    source_path = solution_file.resolve()
     if manifest is None:
         manifest = {
             "created_at": now_iso(),
             "updated_at": now_iso(),
             "run_dir": str(run_dir),
             "backend": backend,
-            "source_file": str(solution_file.resolve()),
-            "source_cu_file": str(solution_file.resolve()),
+            "source_file": str(source_path),
+            "source_cu_file": str(source_path),
+            "canonical_source_file": str(source_path),
+            "scope_aliases": [],
             "reference_file": str(Path(args.ref).resolve()) if args.ref else "",
             "max_iterations": args.max_iterations,
             "warmup": args.warmup,
@@ -815,8 +836,10 @@ def load_manifest(manifest_path: Path, args: argparse.Namespace, run_dir: Path, 
         }
     else:
         manifest["backend"] = backend
-        manifest["source_file"] = str(solution_file.resolve())
-        manifest["source_cu_file"] = str(solution_file.resolve())
+        manifest.setdefault("canonical_source_file", str(source_path))
+        manifest.setdefault("scope_aliases", [])
+        manifest["source_file"] = manifest.get("source_file") or str(source_path)
+        manifest["source_cu_file"] = manifest.get("source_cu_file") or str(source_path)
         manifest["reference_docs"] = BACKEND_REFERENCE_DOCS.get(backend, [])
         manifest["ncu_supported"] = backend_supports_ncu(backend)
     return manifest
@@ -827,6 +850,21 @@ def pick_iteration_index(manifest: dict[str, Any], requested_iteration: int) -> 
     if requested_iteration >= 0:
         return requested_iteration
     return len(manifest.get("iterations", []))
+
+
+def resolve_solution_input(args: argparse.Namespace, manifest: dict[str, Any], cli_solution_file: Path) -> tuple[Path, str]:
+    mode = args.resume_from
+    if mode == "source":
+        return cli_solution_file, "source"
+    if mode == "explicit":
+        return cli_solution_file, "explicit"
+
+    best_raw = str(manifest.get("best_kernel_path") or "").strip()
+    if best_raw:
+        best_path = Path(best_raw).expanduser()
+        if best_path.exists() and best_path.is_file():
+            return best_path.resolve(), "best"
+    return cli_solution_file, "best_fallback_source"
 
 
 
@@ -1061,8 +1099,8 @@ def render_final_summary(manifest: dict[str, Any]) -> str:
             "",
             "## Iterations",
             "",
-            "| Iter | Backend | Strategy | Outcome | Correctness | Kernel median ms | Kernel avg ms | Full NCU | Snapshot |",
-            "| --- | --- | --- | --- | --- | ---: | ---: | --- | --- |",
+            "| Iter | Backend | Strategy | Outcome | Reason | Correctness | Kernel median ms | Kernel avg ms | Full NCU | Snapshot |",
+            "| --- | --- | --- | --- | --- | --- | ---: | ---: | --- | --- |",
         ]
     )
 
@@ -1076,11 +1114,12 @@ def render_final_summary(manifest: dict[str, Any]) -> str:
         else:
             correctness_text = "pass" if correctness.get("passed") else "fail"
         lines.append(
-            "| v{iteration} | {backend} | {strategy_fp} | {outcome} | {correctness} | {median} | {avg} | {full_report} | {snapshot} |".format(
+            "| v{iteration} | {backend} | {strategy_fp} | {outcome} | {reason} | {correctness} | {median} | {avg} | {full_report} | {snapshot} |".format(
                 iteration=item.get("iteration"),
                 backend=item.get("backend", backend),
                 strategy_fp=(strategy.get("fingerprint") or "none")[:12],
                 outcome=strategy.get("outcome") or "pending",
+                reason=(strategy.get("reason") or "not_available").replace("|", "\\|"),
                 correctness=correctness_text,
                 median=kernel.get("median_ms", "-"),
                 avg=kernel.get("average_ms", "-"),
@@ -1166,6 +1205,7 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--backend", type=str, default="auto", choices=["auto", "cuda", "cutlass", "triton"], help="Backend type")
     parser.add_argument("--ref", type=str, default="", help="Optional Python reference file")
     parser.add_argument("--run-dir", type=str, default="", help="Existing or new run directory")
+    parser.add_argument("--resume-from", type=str, default="best", choices=["best", "source", "explicit"], help="How to pick iteration input when run-dir exists")
     parser.add_argument("--iteration", type=int, default=-1, help="Iteration index; defaults to next index")
     parser.add_argument("--max-iterations", type=int, required=True, help="Required maximum iterations for the run")
     parser.add_argument("--warmup", type=int, default=10, help="Warmup iterations for benchmark.py")
@@ -1198,28 +1238,34 @@ def main() -> int:
 
     repo_root = Path(__file__).resolve().parents[4]
     benchmark_script = repo_root / "skills" / "optimized-skill" / "kernel-benchmark" / "scripts" / "benchmark.py"
-    solution_file = Path(args.solution_file).resolve()
-    backend = infer_backend(solution_file, args.backend)
+    cli_solution_file = Path(args.solution_file).resolve()
+    backend = infer_backend(cli_solution_file, args.backend)
     ref_file = Path(args.ref).resolve() if args.ref else None
 
-    run_dir = ensure_run_dir(solution_file, args.run_dir)
+    run_dir = ensure_run_dir(cli_solution_file, args.run_dir)
     manifest_path = run_dir / "run_manifest.json"
     summary_path = run_dir / "final_summary.md"
 
-    scope_key = build_scope_key(backend, solution_file, ref_file, list(args.dim_args), args.arch)
+    manifest = load_manifest(manifest_path, args, run_dir, cli_solution_file, backend)
+
+    canonical_source_file = Path(str(manifest.get("canonical_source_file") or cli_solution_file)).resolve()
+    scope_key = build_scope_key(backend, canonical_source_file, ref_file, list(args.dim_args), args.arch)
+    legacy_scope_key = build_scope_key_legacy(backend, canonical_source_file, ref_file, list(args.dim_args), args.arch)
     global_memory_file = repo_root / "skills" / "optimized-skill" / "operator-optimize-loop" / "strategy-memory" / "global_strategy_memory.json"
 
-    manifest = load_manifest(manifest_path, args, run_dir, solution_file, backend)
     strategy_memory = ensure_strategy_memory(manifest, scope_key, global_memory_file)
 
     global_memory = load_global_strategy_memory(global_memory_file)
     global_scopes = global_memory.setdefault("scopes", {})
+    legacy_scope = global_scopes.get(legacy_scope_key)
     global_scope = global_scopes.setdefault(
         scope_key,
-        {
+        legacy_scope
+        if isinstance(legacy_scope, dict)
+        else {
             "meta": {
                 "backend": backend,
-                "source_file": str(solution_file.resolve()),
+                "source_file": str(canonical_source_file),
                 "reference_file": str(ref_file) if ref_file else "",
                 "dims_args": list(args.dim_args),
                 "arch": args.arch,
@@ -1229,9 +1275,17 @@ def main() -> int:
             "rejected": {},
         },
     )
+    if scope_key != legacy_scope_key and isinstance(legacy_scope, dict):
+        aliases = manifest.setdefault("scope_aliases", [])
+        if legacy_scope_key not in aliases:
+            aliases.append(legacy_scope_key)
     strategy_memory["global_sync"]["loaded_at"] = now_iso()
 
-    preflight = collect_preflight(args, benchmark_script, solution_file, ref_file, backend)
+    source_for_iteration, source_mode = resolve_solution_input(args, manifest, cli_solution_file)
+
+    preflight = collect_preflight(args, benchmark_script, source_for_iteration, ref_file, backend)
+    if source_mode == "best_fallback_source":
+        preflight.setdefault("warnings", []).append("resume-from=best fallback to source because best_kernel_path is missing")
     preflight_json = run_dir / "preflight_check.json"
     preflight_md = run_dir / "preflight_check.md"
     write_json(preflight_json, preflight)
@@ -1270,8 +1324,8 @@ def main() -> int:
 
     constraints = merge_strategy_constraints(strategy_memory, global_scope)
 
-    snapshot_file = iter_dir / f"{solution_file.stem}_v{iteration}{solution_file.suffix}"
-    shutil.copy2(solution_file, snapshot_file)
+    snapshot_file = iter_dir / f"{source_for_iteration.stem}_v{iteration}{source_for_iteration.suffix}"
+    shutil.copy2(source_for_iteration, snapshot_file)
     if ref_file:
         shutil.copy2(ref_file, iter_dir / ref_file.name)
 
@@ -1291,6 +1345,7 @@ def main() -> int:
         "benchmark_command": shell_join(bench_cmd),
         "benchmark_stdout": str(benchmark_stdout),
         "benchmark_stderr": str(benchmark_stderr),
+        "benchmark_stderr_preview": trim_output(bench_res.stderr),
         "benchmark_json": str(benchmark_json),
         "benchmark_rc": bench_res.returncode,
         "benchmark_result": bench_json,
@@ -1357,11 +1412,11 @@ def main() -> int:
     preferred_text = ", ".join(constraints.get("preferred") or []) or "none"
     if not proposal_path.exists():
         if backend == "cuda":
-            proposal_stub = "# Optimization proposal\n\n## Backend\n- cuda\n\n## Primary references\n- skills/optimized-skill/reference/cuda/optim.md\n- skills/optimized-skill/reference/cuda/memory-optim.md\n- skills/optimized-skill/reference/cuda/compute-optim.md\n- skills/optimized-skill/reference/cuda/sync-optim.md\n\n## Strategy constraints from memory\n- blocked fingerprints: {blocked}\n- preferred fingerprints: {preferred}\n\n## Strategy tags\n- fill_me_tag\n\n## This iteration\n- Fill in the bottleneck diagnosis from the targeted/full NCU reports.\n- Avoid blocked fingerprints and prioritize preferred fingerprints.\n- Describe the next kernel change for v{iteration_plus_one}.\n"
+            proposal_stub = "# Optimization proposal\n\n## Backend\n- cuda\n\n## Primary references\n- skills/optimized-skill/SKILL.md\n- skills/optimized-skill/reference/cuda/memory-optim.md\n- skills/optimized-skill/reference/cuda/compute-optim.md\n- skills/optimized-skill/reference/cuda/sync-optim.md\n\n## Strategy constraints from memory\n- blocked fingerprints: {blocked}\n- preferred fingerprints: {preferred}\n\n## Strategy tags\n- baseline\n\n## This iteration\n- Fill in the bottleneck diagnosis from the targeted/full NCU reports.\n- Avoid blocked fingerprints and prioritize preferred fingerprints.\n- Describe the next kernel change for v{iteration_plus_one}.\n"
         elif backend == "cutlass":
-            proposal_stub = "# Optimization proposal\n\n## Backend\n- cutlass\n\n## Primary references\n- skills/optimized-skill/reference/cutlass/cutlass-optim.md\n\n## Strategy constraints from memory\n- blocked fingerprints: {blocked}\n- preferred fingerprints: {preferred}\n\n## Strategy tags\n- fill_me_tag\n\n## This iteration\n- Fill in the bottleneck diagnosis from the targeted/full NCU reports.\n- Map the issue to CUTLASS-specific choices: Tensor Core path, tile shape, stage count, epilogue fusion, stream-k/split-k, swizzle, architecture-specific collective builder.\n- Avoid blocked fingerprints and prioritize preferred fingerprints.\n- Describe the next kernel change for v{iteration_plus_one}.\n"
+            proposal_stub = "# Optimization proposal\n\n## Backend\n- cutlass\n\n## Primary references\n- skills/optimized-skill/reference/cutlass/cutlass-optim.md\n\n## Strategy constraints from memory\n- blocked fingerprints: {blocked}\n- preferred fingerprints: {preferred}\n\n## Strategy tags\n- baseline\n\n## This iteration\n- Fill in the bottleneck diagnosis from the targeted/full NCU reports.\n- Map the issue to CUTLASS-specific choices: Tensor Core path, tile shape, stage count, epilogue fusion, stream-k/split-k, swizzle, architecture-specific collective builder.\n- Avoid blocked fingerprints and prioritize preferred fingerprints.\n- Describe the next kernel change for v{iteration_plus_one}.\n"
         else:
-            proposal_stub = "# Optimization proposal\n\n## Backend\n- triton\n\n## Primary references\n- skills/optimized-skill/reference/triton/triton-optim.md\n\n## Strategy constraints from memory\n- blocked fingerprints: {blocked}\n- preferred fingerprints: {preferred}\n\n## Strategy tags\n- fill_me_tag\n\n## This iteration\n- Fill in the bottleneck diagnosis from the targeted/full NCU reports and benchmark results.\n- Map the issue to Triton-specific choices: BLOCK sizes, num_warps, num_stages, coalescing, vectorization hints, swizzle, persistent kernel, split-k, fusion.\n- Avoid blocked fingerprints and prioritize preferred fingerprints.\n- Describe the next kernel change for v{iteration_plus_one}.\n"
+            proposal_stub = "# Optimization proposal\n\n## Backend\n- triton\n\n## Primary references\n- skills/optimized-skill/reference/triton/triton-optim.md\n\n## Strategy constraints from memory\n- blocked fingerprints: {blocked}\n- preferred fingerprints: {preferred}\n\n## Strategy tags\n- baseline\n\n## This iteration\n- Fill in the bottleneck diagnosis from the targeted/full NCU reports and benchmark results.\n- Map the issue to Triton-specific choices: BLOCK sizes, num_warps, num_stages, coalescing, vectorization hints, swizzle, persistent kernel, split-k, fusion.\n- Avoid blocked fingerprints and prioritize preferred fingerprints.\n- Describe the next kernel change for v{iteration_plus_one}.\n"
         write_text(proposal_path, proposal_stub.format(iteration_plus_one=iteration + 1, blocked=blocked_text, preferred=preferred_text))
 
     strategy_source_path = None
@@ -1371,11 +1426,13 @@ def main() -> int:
     if strategy_source_path and strategy_source_path.exists():
         strategy_tags = extract_strategy_tags(strategy_source_path)
         if not strategy_tags:
-            strategy_tags = ["unlabeled_strategy"]
+            strategy_tags = [f"unlabeled_strategy_v{iteration}"]
     else:
         strategy_tags = ["baseline"]
 
     strategy_tags = normalize_strategy_tags(strategy_tags)
+    if not strategy_tags:
+        strategy_tags = ["baseline"] if iteration == 0 else [f"unlabeled_strategy_v{iteration}"]
 
     strategy_fingerprint = build_strategy_fingerprint(backend, strategy_tags)
 
@@ -1384,16 +1441,23 @@ def main() -> int:
         previous_record = next((item for item in manifest.get("iterations", []) if item.get("iteration") == iteration - 1), None)
 
     outcome, reason = classify_strategy_outcome(record, previous_record)
+    base_outcome = outcome
+    base_reason = reason
     strategy_blocked = strategy_fingerprint in set(constraints.get("blocked") or [])
     if strategy_blocked:
         outcome = "rejected"
-        reason = "blocked_strategy_reused"
+        if base_outcome == "rejected":
+            reason = f"{base_reason};blocked_strategy_reused"
+        else:
+            reason = "blocked_strategy_reused"
 
     record["strategy"] = {
         "tags": strategy_tags,
         "fingerprint": strategy_fingerprint,
         "outcome": outcome,
         "reason": reason,
+        "base_outcome": base_outcome,
+        "base_reason": base_reason,
         "blocked_before_iteration": strategy_blocked,
         "constraints": constraints,
     }
