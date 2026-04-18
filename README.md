@@ -90,12 +90,12 @@
 2. 跑 correctness + benchmark（记录 baseline）
 3. 跑 targeted NCU
 4. 跑 full NCU
-5. 写 `optimization_proposal.md`（必须含 `## Strategy tags`）
+5. 写 `optimization_proposal.md`（必须含 `## Strategy tags`、`## Optimization method delta`、`## NCU symptom evidence`、`## Method sources`）
 6. 生成下一版算子
 7. 重复 correctness/benchmark/NCU
 8. 在用户指定轮数内选出最优版本
 
-从第 2 轮开始，必须以“上一轮 full NCU + benchmark”作为定向优化依据，不做无差别堆技巧。
+从第 2 轮开始，必须以“上一轮 full NCU + benchmark”作为定向优化依据，不做无差别堆技巧；且每轮仅新增 1 个优化方法。该方法必须由当前 NCU 症状驱动，来源仅限本地 reference、官方文档，或基于该症状定向检索得到的方法证据。
 
 ---
 

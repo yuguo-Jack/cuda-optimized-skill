@@ -27,6 +27,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 TARGETED_SECTIONS = [
@@ -53,7 +54,19 @@ BACKEND_REFERENCE_DOCS = {
 }
 
 STRATEGY_TAGS_HEADER = "## Strategy tags"
+METHOD_DELTA_HEADER = "## Optimization method delta"
+NCU_SYMPTOM_HEADER = "## NCU symptom evidence"
+METHOD_SOURCES_HEADER = "## Method sources"
 DEFAULT_SCOPE_TOKEN = "na"
+
+OFFICIAL_SOURCE_HOSTS = {
+    "docs.nvidia.com",
+    "developer.nvidia.com",
+    "nvidia.github.io",
+    "github.com",
+    "raw.githubusercontent.com",
+    "triton-lang.org",
+}
 
 
 def now_iso() -> str:
@@ -610,6 +623,111 @@ def extract_strategy_tags(proposal_path: Path) -> list[str]:
         if in_section and stripped.startswith("-"):
             tags.append(stripped.lstrip("-").strip())
     return normalize_strategy_tags(tags)
+
+
+def extract_section_bullets(markdown_text: str, header: str) -> list[str]:
+    lines = markdown_text.splitlines()
+    bullets: list[str] = []
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.lower() == header.lower():
+            in_section = True
+            continue
+        if in_section and stripped.startswith("## "):
+            break
+        if in_section and stripped.startswith("-"):
+            value = stripped.lstrip("-").strip()
+            if value:
+                bullets.append(value)
+    return bullets
+
+
+def load_text_if_exists(path: str) -> str:
+    if not path:
+        return ""
+    target = Path(path)
+    if not target.exists():
+        return ""
+    try:
+        return target.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
+def source_is_allowed(source: str) -> bool:
+    if source.startswith("skills/optimized-skill/reference/"):
+        return True
+    parsed = urlparse(source)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.netloc or "").split(":", 1)[0].lower()
+    if not host:
+        return False
+    if host in OFFICIAL_SOURCE_HOSTS:
+        return True
+    return any(host.endswith(f".{item}") for item in OFFICIAL_SOURCE_HOSTS)
+
+
+def validate_proposal_contract(
+    proposal_path: Path,
+    previous_record: dict[str, Any] | None,
+) -> tuple[bool, list[str], dict[str, Any]]:
+    if not proposal_path.exists():
+        errors = ["missing_proposal"]
+        return False, errors, {
+            "method_delta": "",
+            "ncu_symptoms": [],
+            "method_sources": [],
+            "search_evidence": [],
+        }
+
+    content = proposal_path.read_text(encoding="utf-8")
+    method_delta = extract_section_bullets(content, METHOD_DELTA_HEADER)
+    ncu_symptoms = extract_section_bullets(content, NCU_SYMPTOM_HEADER)
+    method_sources = extract_section_bullets(content, METHOD_SOURCES_HEADER)
+
+    errors: list[str] = []
+    if len(method_delta) != 1:
+        errors.append("multi_method_delta" if len(method_delta) > 1 else "missing_method_delta")
+
+    if not ncu_symptoms:
+        errors.append("missing_ncu_symptom")
+
+    if not method_sources:
+        errors.append("missing_method_sources")
+
+    search_evidence = [item for item in method_sources if item.lower().startswith("search:")]
+    concrete_sources = [item for item in method_sources if not item.lower().startswith("search:")]
+
+    if not concrete_sources:
+        errors.append("missing_concrete_source")
+
+    invalid_sources = [item for item in concrete_sources if not source_is_allowed(item)]
+    if invalid_sources:
+        errors.append("invalid_source")
+
+    evidence_text_parts: list[str] = []
+    if previous_record:
+        full_import = previous_record.get("full_import") or {}
+        evidence_text_parts.append(load_text_if_exists(str(full_import.get("summary_txt") or "")))
+        evidence_text_parts.append(load_text_if_exists(str(full_import.get("details_txt") or "")))
+    evidence_text = "\n".join(part for part in evidence_text_parts if part).lower()
+
+    if ncu_symptoms and not evidence_text:
+        errors.append("missing_previous_ncu_evidence")
+    elif ncu_symptoms:
+        missing = [sym for sym in ncu_symptoms if sym.lower() not in evidence_text]
+        if missing:
+            errors.append("ncu_symptom_mismatch")
+
+    parsed = {
+        "method_delta": method_delta[0] if len(method_delta) == 1 else "",
+        "ncu_symptoms": ncu_symptoms,
+        "method_sources": concrete_sources,
+        "search_evidence": search_evidence,
+    }
+    return len(errors) == 0, errors, parsed
 
 
 def build_strategy_fingerprint(backend: str, tags: list[str]) -> str:
@@ -1412,21 +1530,35 @@ def main() -> int:
     preferred_text = ", ".join(constraints.get("preferred") or []) or "none"
     if not proposal_path.exists():
         if backend == "cuda":
-            proposal_stub = "# Optimization proposal\n\n## Backend\n- cuda\n\n## Primary references\n- skills/optimized-skill/SKILL.md\n- skills/optimized-skill/reference/cuda/memory-optim.md\n- skills/optimized-skill/reference/cuda/compute-optim.md\n- skills/optimized-skill/reference/cuda/sync-optim.md\n\n## Strategy constraints from memory\n- blocked fingerprints: {blocked}\n- preferred fingerprints: {preferred}\n\n## Strategy tags\n- baseline\n\n## This iteration\n- Fill in the bottleneck diagnosis from the targeted/full NCU reports.\n- Avoid blocked fingerprints and prioritize preferred fingerprints.\n- Describe the next kernel change for v{iteration_plus_one}.\n"
+            proposal_stub = "# Optimization proposal\n\n## Backend\n- cuda\n\n## Primary references\n- skills/optimized-skill/SKILL.md\n- skills/optimized-skill/reference/cuda/memory-optim.md\n- skills/optimized-skill/reference/cuda/compute-optim.md\n- skills/optimized-skill/reference/cuda/sync-optim.md\n\n## Strategy constraints from memory\n- blocked fingerprints: {blocked}\n- preferred fingerprints: {preferred}\n\n## Strategy tags\n- baseline\n\n## Optimization method delta\n- fill_one_method_only\n\n## NCU symptom evidence\n- symptom_keyword_from_previous_ncu\n\n## Method sources\n- skills/optimized-skill/reference/cuda/memory-optim.md\n- https://docs.nvidia.com/\n- search: query=<ncu_symptom_based_query>; url=<result_url>; why=<adoption_reason>\n\n## This iteration\n- Fill in the bottleneck diagnosis from the targeted/full NCU reports.\n- Avoid blocked fingerprints and prioritize preferred fingerprints.\n- Describe the next kernel change for v{iteration_plus_one}.\n"
         elif backend == "cutlass":
-            proposal_stub = "# Optimization proposal\n\n## Backend\n- cutlass\n\n## Primary references\n- skills/optimized-skill/reference/cutlass/cutlass-optim.md\n\n## Strategy constraints from memory\n- blocked fingerprints: {blocked}\n- preferred fingerprints: {preferred}\n\n## Strategy tags\n- baseline\n\n## This iteration\n- Fill in the bottleneck diagnosis from the targeted/full NCU reports.\n- Map the issue to CUTLASS-specific choices: Tensor Core path, tile shape, stage count, epilogue fusion, stream-k/split-k, swizzle, architecture-specific collective builder.\n- Avoid blocked fingerprints and prioritize preferred fingerprints.\n- Describe the next kernel change for v{iteration_plus_one}.\n"
+            proposal_stub = "# Optimization proposal\n\n## Backend\n- cutlass\n\n## Primary references\n- skills/optimized-skill/reference/cutlass/cutlass-optim.md\n\n## Strategy constraints from memory\n- blocked fingerprints: {blocked}\n- preferred fingerprints: {preferred}\n\n## Strategy tags\n- baseline\n\n## Optimization method delta\n- fill_one_method_only\n\n## NCU symptom evidence\n- symptom_keyword_from_previous_ncu\n\n## Method sources\n- skills/optimized-skill/reference/cutlass/cutlass-optim.md\n- https://github.com/NVIDIA/cutlass\n- search: query=<ncu_symptom_based_query>; url=<result_url>; why=<adoption_reason>\n\n## This iteration\n- Fill in the bottleneck diagnosis from the targeted/full NCU reports.\n- Map the issue to CUTLASS-specific choices: Tensor Core path, tile shape, stage count, epilogue fusion, stream-k/split-k, swizzle, architecture-specific collective builder.\n- Avoid blocked fingerprints and prioritize preferred fingerprints.\n- Describe the next kernel change for v{iteration_plus_one}.\n"
         else:
-            proposal_stub = "# Optimization proposal\n\n## Backend\n- triton\n\n## Primary references\n- skills/optimized-skill/reference/triton/triton-optim.md\n\n## Strategy constraints from memory\n- blocked fingerprints: {blocked}\n- preferred fingerprints: {preferred}\n\n## Strategy tags\n- baseline\n\n## This iteration\n- Fill in the bottleneck diagnosis from the targeted/full NCU reports and benchmark results.\n- Map the issue to Triton-specific choices: BLOCK sizes, num_warps, num_stages, coalescing, vectorization hints, swizzle, persistent kernel, split-k, fusion.\n- Avoid blocked fingerprints and prioritize preferred fingerprints.\n- Describe the next kernel change for v{iteration_plus_one}.\n"
+            proposal_stub = "# Optimization proposal\n\n## Backend\n- triton\n\n## Primary references\n- skills/optimized-skill/reference/triton/triton-optim.md\n\n## Strategy constraints from memory\n- blocked fingerprints: {blocked}\n- preferred fingerprints: {preferred}\n\n## Strategy tags\n- baseline\n\n## Optimization method delta\n- fill_one_method_only\n\n## NCU symptom evidence\n- symptom_keyword_from_previous_ncu\n\n## Method sources\n- skills/optimized-skill/reference/triton/triton-optim.md\n- https://triton-lang.org/\n- search: query=<ncu_symptom_based_query>; url=<result_url>; why=<adoption_reason>\n\n## This iteration\n- Fill in the bottleneck diagnosis from the targeted/full NCU reports and benchmark results.\n- Map the issue to Triton-specific choices: BLOCK sizes, num_warps, num_stages, coalescing, vectorization hints, swizzle, persistent kernel, split-k, fusion.\n- Avoid blocked fingerprints and prioritize preferred fingerprints.\n- Describe the next kernel change for v{iteration_plus_one}.\n"
         write_text(proposal_path, proposal_stub.format(iteration_plus_one=iteration + 1, blocked=blocked_text, preferred=preferred_text))
 
     strategy_source_path = None
     if iteration > 0:
         strategy_source_path = run_dir / f"iter_v{iteration - 1}" / "optimization_proposal.md"
 
+    previous_record = None
+    if iteration > 0:
+        previous_record = next((item for item in manifest.get("iterations", []) if item.get("iteration") == iteration - 1), None)
+
+    contract_ok = iteration == 0
+    contract_errors: list[str] = [] if iteration == 0 else ["missing_proposal"]
+    contract_info: dict[str, Any] = {
+        "method_delta": "baseline",
+        "ncu_symptoms": [],
+        "method_sources": [],
+        "search_evidence": [],
+    }
+
     if strategy_source_path and strategy_source_path.exists():
         strategy_tags = extract_strategy_tags(strategy_source_path)
         if not strategy_tags:
             strategy_tags = [f"unlabeled_strategy_v{iteration}"]
+        contract_ok, contract_errors, contract_info = validate_proposal_contract(strategy_source_path, previous_record)
     else:
         strategy_tags = ["baseline"]
 
@@ -1436,11 +1568,10 @@ def main() -> int:
 
     strategy_fingerprint = build_strategy_fingerprint(backend, strategy_tags)
 
-    previous_record = None
-    if iteration > 0:
-        previous_record = next((item for item in manifest.get("iterations", []) if item.get("iteration") == iteration - 1), None)
-
     outcome, reason = classify_strategy_outcome(record, previous_record)
+    if not contract_ok:
+        outcome = "rejected"
+        reason = "proposal_contract_violation:" + ",".join(contract_errors)
     base_outcome = outcome
     base_reason = reason
     strategy_blocked = strategy_fingerprint in set(constraints.get("blocked") or [])
@@ -1460,6 +1591,12 @@ def main() -> int:
         "base_reason": base_reason,
         "blocked_before_iteration": strategy_blocked,
         "constraints": constraints,
+        "proposal_contract_ok": contract_ok,
+        "proposal_contract_errors": contract_errors,
+        "method_delta": contract_info.get("method_delta", ""),
+        "ncu_symptoms": contract_info.get("ncu_symptoms", []),
+        "method_sources": contract_info.get("method_sources", []),
+        "search_evidence": contract_info.get("search_evidence", []),
     }
 
     current_run_memory = strategy_memory.get("current_run") or {}

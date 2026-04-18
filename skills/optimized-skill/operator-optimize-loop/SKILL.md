@@ -78,7 +78,9 @@ description: Run a multi-iteration optimization loop for CUDA/CUTLASS/Triton ope
 
 策略要求：
 - 首轮：广覆盖但必须与算子形态相容
-- 后续轮：每轮只优先解决 1~2 个最明确瓶颈
+- 后续轮：每轮仅新增 1 个优化方法（控制变量）
+- 该方法必须由当前 NCU 症状驱动
+- 方法来源仅限：`skills/optimized-skill/reference/`、官方文档，或基于当前 NCU 症状定向检索得到的方法
 - 每轮必须显式评估双缓冲/多级流水线是否适配
 
 ## Strategy memory
@@ -91,10 +93,21 @@ description: Run a multi-iteration optimization loop for CUDA/CUTLASS/Triton ope
 ```md
 ## Strategy tags
 - tag_a
-- tag_b
+
+## Optimization method delta
+- exactly_one_method
+
+## NCU symptom evidence
+- symptom_keyword_from_previous_ncu
+
+## Method sources
+- skills/optimized-skill/reference/...
+- https://docs.nvidia.com/...
+- search: query=<ncu_symptom_based_query>; url=<result_url>; why=<adoption_reason>
 ```
 
 自动判定：
+- proposal 合规失败（单方法/NCU 症状命中/来源约束任一不满足）-> `rejected`
 - correctness 失败 -> `rejected`
 - benchmark 失败 -> `rejected`
 - targeted/full NCU 失败或 full 缺失 -> `rejected`

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-04-17T00:01:54",
+  "updated_at": "2026-04-17T19:49:56",
   "scopes": {
     "cutlass__cutlass_softmax__cutlass_softmax_ref__auto_arch__339090bb90fe": {
       "meta": {
@@ -280,13 +280,13 @@
           ],
           "first_iteration": 0,
           "last_iteration": 0,
-          "count": 9,
+          "count": 10,
           "last_outcome": "positive",
           "last_reason": "baseline_seed",
           "evidence": {
             "baseline_iteration": null,
             "baseline_median_ms": null,
-            "current_median_ms": 0.10337280035018921
+            "current_median_ms": 0.10316799879074097
           }
         },
         "693f19f37331ba8b": {
@@ -356,6 +356,40 @@
             "baseline_iteration": 0,
             "baseline_median_ms": 0.10337280035018921,
             "current_median_ms": 0.10306559801101685
+          }
+        },
+        "dc57a84a76d3ad00": {
+          "tags": [
+            "fuse_row_reductions",
+            "pairwise_max_sum_reduce",
+            "register_cached_exp"
+          ],
+          "first_iteration": 2,
+          "last_iteration": 2,
+          "count": 1,
+          "last_outcome": "positive",
+          "last_reason": "faster_than_previous",
+          "evidence": {
+            "baseline_iteration": 1,
+            "baseline_median_ms": 0.1037824034690857,
+            "current_median_ms": 0.10286879539489746
+          }
+        },
+        "28a8b3459b532f35": {
+          "tags": [
+            "packed_shared_pair_stats",
+            "pairwise_max_sum_reduce",
+            "shared_exchange_compaction"
+          ],
+          "first_iteration": 3,
+          "last_iteration": 3,
+          "count": 1,
+          "last_outcome": "positive",
+          "last_reason": "faster_than_previous",
+          "evidence": {
+            "baseline_iteration": 2,
+            "baseline_median_ms": 0.10286879539489746,
+            "current_median_ms": 0.1026047945022583
           }
         }
       },
@@ -491,6 +525,23 @@
             "baseline_median_ms": 0.1036303997039795,
             "current_median_ms": 0.11499520540237426
           }
+        },
+        "dabc3f80f22f8cb6": {
+          "tags": [
+            "four_rows_per_block",
+            "remove_block_sync",
+            "warp_per_row_specialization"
+          ],
+          "first_iteration": 1,
+          "last_iteration": 1,
+          "count": 1,
+          "last_outcome": "negative",
+          "last_reason": "slower_or_equal_to_previous",
+          "evidence": {
+            "baseline_iteration": 0,
+            "baseline_median_ms": 0.10316799879074097,
+            "current_median_ms": 0.1037824034690857
+          }
         }
       },
       "rejected": {
@@ -558,6 +609,238 @@
             "baseline_iteration": 3,
             "baseline_median_ms": 0.11270079612731934,
             "current_median_ms": 0.10332159996032715
+          }
+        }
+      }
+    },
+    "cutlass__src_b5386ab84e44__cutlass_softmax_ref__sm_86__339090bb90fe": {
+      "meta": {
+        "backend": "cutlass",
+        "source_file": "/home/aa24aa/work/cuda-optimized-skill/example/cutlass_softmax.cu",
+        "reference_file": "/home/aa24aa/work/cuda-optimized-skill/example/cutlass_softmax_ref.py",
+        "dims_args": [
+          "--rows=4096",
+          "--cols=1024"
+        ],
+        "arch": "sm_86"
+      },
+      "positive": {
+        "d576b5ea15008131": {
+          "tags": [
+            "baseline"
+          ],
+          "first_iteration": 0,
+          "last_iteration": 0,
+          "count": 2,
+          "last_outcome": "positive",
+          "last_reason": "baseline_seed",
+          "evidence": {
+            "baseline_iteration": null,
+            "baseline_median_ms": null,
+            "current_median_ms": 0.10368000268936158
+          }
+        },
+        "1124dea49745c957": {
+          "tags": [
+            "two_phase_row_reduction"
+          ],
+          "first_iteration": 2,
+          "last_iteration": 2,
+          "count": 1,
+          "last_outcome": "positive",
+          "last_reason": "faster_than_previous",
+          "evidence": {
+            "baseline_iteration": 1,
+            "baseline_median_ms": 0.2233344078063965,
+            "current_median_ms": 0.104038405418396
+          }
+        },
+        "f752631d9596d9db": {
+          "tags": [
+            "row128_specialization"
+          ],
+          "first_iteration": 3,
+          "last_iteration": 3,
+          "count": 1,
+          "last_outcome": "positive",
+          "last_reason": "faster_than_previous",
+          "evidence": {
+            "baseline_iteration": 2,
+            "baseline_median_ms": 0.104038405418396,
+            "current_median_ms": 0.10327039957046509
+          }
+        }
+      },
+      "negative": {
+        "2510179100323402": {
+          "tags": [
+            "streaming_cache_operators"
+          ],
+          "first_iteration": 1,
+          "last_iteration": 1,
+          "count": 1,
+          "last_outcome": "negative",
+          "last_reason": "slower_or_equal_to_previous",
+          "evidence": {
+            "baseline_iteration": 0,
+            "baseline_median_ms": 0.10368000268936158,
+            "current_median_ms": 0.2233344078063965
+          }
+        }
+      },
+      "rejected": {}
+    },
+    "cuda__src_9f11c3502138__conv2d_ref__sm_86__6173c6a8f967": {
+      "meta": {
+        "backend": "cuda",
+        "source_file": "/home/aa24aa/work/cuda-optimized-skill/example/conv2d.cu",
+        "reference_file": "/home/aa24aa/work/cuda-optimized-skill/example/conv2d_ref.py",
+        "dims_args": [
+          "--H=4096",
+          "--W=4096",
+          "--Kh=3",
+          "--Kw=3"
+        ],
+        "arch": "sm_86"
+      },
+      "positive": {
+        "40f2b8f0ca5ba355": {
+          "tags": [
+            "baseline"
+          ],
+          "first_iteration": 0,
+          "last_iteration": 0,
+          "count": 1,
+          "last_outcome": "positive",
+          "last_reason": "baseline_seed",
+          "evidence": {
+            "baseline_iteration": null,
+            "baseline_median_ms": null,
+            "current_median_ms": 1.0999808311462402
+          }
+        },
+        "6ca4eb5ba9316aa2": {
+          "tags": [
+            "constant_memory_filter_cache"
+          ],
+          "first_iteration": 3,
+          "last_iteration": 3,
+          "count": 1,
+          "last_outcome": "positive",
+          "last_reason": "faster_than_previous",
+          "evidence": {
+            "baseline_iteration": 2,
+            "baseline_median_ms": 1.0150912284851075,
+            "current_median_ms": 0.9310208320617676
+          }
+        }
+      },
+      "negative": {
+        "ee5de3d25d99a241": {
+          "tags": [
+            "linearized_cooperative_preload"
+          ],
+          "first_iteration": 2,
+          "last_iteration": 2,
+          "count": 1,
+          "last_outcome": "negative",
+          "last_reason": "slower_or_equal_to_previous",
+          "evidence": {
+            "baseline_iteration": 1,
+            "baseline_median_ms": 0.9745408058166504,
+            "current_median_ms": 1.0150912284851075
+          }
+        }
+      },
+      "rejected": {
+        "bedb8a51ff26c724": {
+          "tags": [
+            "warp_aligned_tile_32x8"
+          ],
+          "first_iteration": 1,
+          "last_iteration": 1,
+          "count": 1,
+          "last_outcome": "rejected",
+          "last_reason": "proposal_contract_violation:ncu_symptom_mismatch",
+          "evidence": {
+            "baseline_iteration": 0,
+            "baseline_median_ms": 1.0999808311462402,
+            "current_median_ms": 0.9745408058166504
+          }
+        },
+        "40f2b8f0ca5ba355": {
+          "tags": [
+            "baseline"
+          ],
+          "first_iteration": 4,
+          "last_iteration": 0,
+          "count": 5,
+          "last_outcome": "rejected",
+          "last_reason": "blocked_strategy_reused",
+          "evidence": {
+            "baseline_iteration": null,
+            "baseline_median_ms": null,
+            "current_median_ms": 0.852785587310791
+          }
+        },
+        "c3bbc5f651a677bb": {
+          "tags": [
+            "specialized_fixed_3x3_kernel"
+          ],
+          "first_iteration": 1,
+          "last_iteration": 1,
+          "count": 3,
+          "last_outcome": "rejected",
+          "last_reason": "blocked_strategy_reused",
+          "evidence": {
+            "baseline_iteration": 0,
+            "baseline_median_ms": 0.852785587310791,
+            "current_median_ms": 0.7674047946929932
+          }
+        },
+        "f5fbd6a5799ff10c": {
+          "tags": [
+            "interior_border_split_fast_path"
+          ],
+          "first_iteration": 2,
+          "last_iteration": 2,
+          "count": 1,
+          "last_outcome": "rejected",
+          "last_reason": "proposal_contract_violation:ncu_symptom_mismatch",
+          "evidence": {
+            "baseline_iteration": 1,
+            "baseline_median_ms": 0.7674047946929932,
+            "current_median_ms": 0.43238401412963867
+          }
+        },
+        "384acd9d19e76372": {
+          "tags": [
+            "prefer_l1_cache_config_for_interior"
+          ],
+          "first_iteration": 3,
+          "last_iteration": 3,
+          "count": 1,
+          "last_outcome": "rejected",
+          "last_reason": "proposal_contract_violation:ncu_symptom_mismatch",
+          "evidence": {
+            "baseline_iteration": 2,
+            "baseline_median_ms": 0.43238401412963867,
+            "current_median_ms": 0.4320767879486084
+          }
+        },
+        "e3f05cceb56fc5c4": {
+          "tags": [
+            "explicit_ldg_readonly_loads"
+          ],
+          "first_iteration": 4,
+          "last_iteration": 4,
+          "count": 1,
+          "last_outcome": "rejected",
+          "last_reason": "proposal_contract_violation:ncu_symptom_mismatch",
+          "evidence": {
+            "baseline_iteration": 3,
+            "baseline_median_ms": 0.4320767879486084,
+            "current_median_ms": 0.46305279731750487
           }
         }
       }
