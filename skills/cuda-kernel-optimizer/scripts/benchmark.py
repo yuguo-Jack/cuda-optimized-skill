@@ -248,6 +248,16 @@ def infer_backend(solution_file: str, backend: str) -> str:
     suffix = os.path.splitext(solution_file)[1].lower()
     if suffix == ".py":
         return "triton"
+    if suffix == ".cu":
+        try:
+            text = Path(solution_file).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return "cuda"
+        stripped = re.sub(r"//.*", "", text)
+        stripped = re.sub(r"/\*[\s\S]*?\*/", "", stripped)
+        if re.search(r"#\s*include\s*<\s*(cutlass|cute)/", stripped) or re.search(r"\b(cutlass|cute)::", stripped):
+            return "cutlass"
+        return "cuda"
     return "cuda"
 
 
@@ -402,15 +412,19 @@ def _validate_outputs(kernel_tensors, ref_tensors, output_params, atol, rtol):
 
         if not match:
             diff_mask = ~torch.isclose(kt, rt, atol=atol, rtol=rtol)
-            bad_idx = diff_mask.nonzero(as_tuple=True)[0]
-            n_bad = bad_idx.numel()
+            bad_idx = diff_mask.nonzero()
+            n_bad = bad_idx.shape[0]
             print(f"         mismatches: {n_bad} / {kt.numel()}")
             if n_bad > 0:
-                idx = bad_idx[0].item()
-                print(f"         first bad   @ idx={idx}:  kernel={kt[idx].item():.6f}  ref={rt[idx].item():.6f}")
+                coord = tuple(int(v) for v in bad_idx[0].tolist())
+                flat_idx = int(torch.tensor(coord).dot(torch.tensor(kt.stride())).item()) if kt.ndim > 1 else coord[0]
+                print(
+                    f"         first bad   @ idx={flat_idx} coord={coord}:  "
+                    f"kernel={kt[coord].item():.6f}  ref={rt[coord].item():.6f}"
+                )
 
-        k_preview = kernel_tensors[pname][:PREVIEW].float().cpu().tolist()
-        r_preview = ref_tensors[pname][:PREVIEW].float().cpu().tolist()
+        k_preview = kernel_tensors[pname].reshape(-1)[:PREVIEW].float().cpu().tolist()
+        r_preview = ref_tensors[pname].reshape(-1)[:PREVIEW].float().cpu().tolist()
         print(f"         kernel[:{PREVIEW}] = {_fmt_vals(k_preview)}")
         print(f"         ref   [:{PREVIEW}] = {_fmt_vals(r_preview)}")
         print()
@@ -758,7 +772,8 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
         print(f"\n[preview] first {preview} elements before kernel call:")
         for item in state["preview_tensors"]:
             tag = "IN " if item["role"] == "input" else "OUT"
-            print(f"  {tag} {item['name']:>6s} = {_fmt_vals(item['tensor'][:preview].float().cpu().tolist())}")
+            vals = item["tensor"].reshape(-1)[:preview].float().cpu().tolist()
+            print(f"  {tag} {item['name']:>6s} = {_fmt_vals(vals)}")
 
         state["callable"]()
         torch.cuda.synchronize()
@@ -766,7 +781,8 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
         print(f"\n[preview] first {preview} elements after 1 kernel call:")
         for item in state["preview_tensors"]:
             tag = "IN " if item["role"] == "input" else "OUT"
-            print(f"  {tag} {item['name']:>6s} = {_fmt_vals(item['tensor'][:preview].float().cpu().tolist())}")
+            vals = item["tensor"].reshape(-1)[:preview].float().cpu().tolist()
+            print(f"  {tag} {item['name']:>6s} = {_fmt_vals(vals)}")
 
     print(f"\n[warmup] kernel  {warmup} iterations ...")
     times_kernel = _time_iterations(state["callable"], warmup, repeat)

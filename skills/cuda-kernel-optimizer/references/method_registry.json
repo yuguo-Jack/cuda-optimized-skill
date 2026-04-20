@@ -1,0 +1,47 @@
+{
+  "$schema_note": "Machine-readable mirror of references/optimization_catalog.md. Each entry's id/axis/priority MUST match the catalog exactly. Update both together.",
+  "methods": {
+    "compute.tensor_core":            { "axis": "compute", "priority": 1,  "min_sm": 70, "name": "Tensor Core / 专用硬件利用" },
+    "compute.overlap_compute_memory": { "axis": "compute", "priority": 2,  "min_sm": 0,  "name": "计算与访存重叠" },
+    "compute.launch_config":          { "axis": "compute", "priority": 3,  "min_sm": 0,  "name": "Launch Configuration / Tile Shape" },
+    "compute.reduction":              { "axis": "compute", "priority": 4,  "min_sm": 0,  "name": "归约优化" },
+    "compute.warp_shuffle":           { "axis": "compute", "priority": 5,  "min_sm": 30, "name": "Warp Shuffle 用于计算" },
+    "compute.loop_unroll":            { "axis": "compute", "priority": 6,  "min_sm": 0,  "name": "循环展开" },
+    "compute.fma_and_fast_math":      { "axis": "compute", "priority": 7,  "min_sm": 0,  "name": "FMA + 编译选项" },
+    "compute.strength_reduce":        { "axis": "compute", "priority": 8,  "min_sm": 0,  "name": "强度削减 + __restrict__" },
+    "compute.warp_specialization":    { "axis": "compute", "priority": 9,  "min_sm": 80, "name": "Warp Specialization" },
+    "compute.branch_eliminate":       { "axis": "compute", "priority": 10, "min_sm": 0,  "name": "分支消除 + 谓词化" },
+
+    "memory.kernel_fusion":           { "axis": "memory",  "priority": 1,  "min_sm": 0,  "name": "Kernel Fusion" },
+    "memory.coalesced_access":        { "axis": "memory",  "priority": 2,  "min_sm": 0,  "name": "合并访问" },
+    "memory.tiling_smem":             { "axis": "memory",  "priority": 3,  "min_sm": 0,  "name": "Tiling / Shared Memory 分块" },
+    "memory.register_pressure":       { "axis": "memory",  "priority": 4,  "min_sm": 0,  "name": "寄存器压力控制" },
+    "memory.multi_stage_pipeline":    { "axis": "memory",  "priority": 5,  "min_sm": 80, "name": "双缓冲 / 多级流水线" },
+    "memory.vectorized_access":       { "axis": "memory",  "priority": 6,  "min_sm": 0,  "name": "向量化访存" },
+    "memory.async_copy":              { "axis": "memory",  "priority": 7,  "min_sm": 80, "name": "异步拷贝 (cp.async / TMA)" },
+    "memory.bank_conflict":           { "axis": "memory",  "priority": 8,  "min_sm": 0,  "name": "Bank Conflict 消除" },
+    "memory.data_layout":             { "axis": "memory",  "priority": 9,  "min_sm": 0,  "name": "SoA / 对齐 / Padding / 数据重排" },
+    "memory.cache_and_readonly":      { "axis": "memory",  "priority": 10, "min_sm": 0,  "name": "L2/只读路径 + smem 容量配置" },
+
+    "latency.warp_shuffle_sync":      { "axis": "latency", "priority": 1,  "min_sm": 30, "name": "Warp Shuffle 替代 Shared Memory 同步" },
+    "latency.reduce_sync_count":      { "axis": "latency", "priority": 2,  "min_sm": 0,  "name": "减少 __syncthreads() 次数" },
+    "latency.async_pipeline":         { "axis": "latency", "priority": 3,  "min_sm": 80, "name": "异步流水线消除同步等待" },
+    "latency.cooperative_cluster":    { "axis": "latency", "priority": 4,  "min_sm": 0,  "name": "Cooperative Groups / Cluster 同步" },
+    "latency.cuda_graphs":            { "axis": "latency", "priority": 5,  "min_sm": 0,  "name": "CUDA Graphs 减少调度开销" },
+    "latency.stream_event":           { "axis": "latency", "priority": 6,  "min_sm": 0,  "name": "Stream / Event 细粒度依赖" },
+    "latency.persistent_kernel":      { "axis": "latency", "priority": 7,  "min_sm": 0,  "name": "持久化 / Stream-K 调度" },
+    "latency.atomic_optimize":        { "axis": "latency", "priority": 8,  "min_sm": 0,  "name": "Atomic 操作优化" }
+  },
+  "coupled_methods": [
+    {
+      "ids": ["memory.multi_stage_pipeline", "latency.async_pipeline"],
+      "note": "These two are different names for essentially the same optimization (multi-stage cp.async/TMA pipeline). Selecting both counts as one; the second axis must pick a different method."
+    }
+  ],
+  "skip_reason_codes": [
+    "already_selected",
+    "arch_incompatible",
+    "skip_condition",
+    "no_trigger"
+  ]
+}

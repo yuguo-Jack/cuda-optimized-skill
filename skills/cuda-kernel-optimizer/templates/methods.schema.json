@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "methods.json",
+  "description": "Produced by Claude each iteration. Exactly three entries (one per axis) consumed by scripts/state.py update.",
+  "type": "object",
+  "required": ["iter", "methods"],
+  "properties": {
+    "iter": { "type": "integer", "minimum": 1 },
+    "methods": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "axis", "priority", "description"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable identifier from references/optimization_catalog.md, e.g. 'compute.tensor_core'"
+          },
+          "name": {
+            "type": "string",
+            "description": "Short human-friendly label"
+          },
+          "axis": {
+            "type": "string",
+            "enum": ["compute", "memory", "latency"]
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "description": "Priority level from the catalog (P1=1, P2=2, ...). Lower is higher priority."
+          },
+          "skipped_higher": {
+            "type": "array",
+            "description": "List of higher-priority methods that were skipped on this axis, with reasons",
+            "items": {
+              "type": "object",
+              "required": ["id", "priority", "reason"],
+              "properties": {
+                "id": { "type": "string" },
+                "priority": { "type": "integer" },
+                "reason": { "type": "string", "description": "Why this higher-priority method was skipped: 'already_selected' | 'arch_incompatible' | 'skip_condition' | 'no_trigger'" }
+              }
+            }
+          },
+          "description": {
+            "type": "string",
+            "description": "One-paragraph concrete description of what changed from best_file"
+          },
+          "ncu_evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["metric", "value"],
+              "properties": {
+                "metric": { "type": "string" },
+                "value": { "type": "number" },
+                "unit": { "type": "string" }
+              }
+            }
+          },
+          "expected_metric_shift": {
+            "type": "string",
+            "description": "What ncu changes we expect on the new kernel"
+          }
+        }
+      }
+    }
+  }
+}
