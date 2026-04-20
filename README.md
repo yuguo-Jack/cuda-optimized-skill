@@ -157,8 +157,8 @@ I ran the CUTLASS softmax operator optimization example, using the `softmax` fun
 
 The kernel median dropped from `0.14894 ms` in v0 to `0.10245 ms` in v3, a latency reduction of about `31.2%`, equivalent to a `1.45x` improvement. The final version achieved a `2.04x` speedup relative to the reference. The main bottleneck has already converged from "structural multiple read/write passes" to an obvious memory-bound regime: the v3 NCU report shows DRAM throughput around `92.26%` and memory bandwidth around `322.81 GB/s`, while there is still some L1TEX scoreboard stall. So this version is already fairly close to the bandwidth ceiling for this shape on the RTX 3060.
 
-![alt text](asset/image1.png)
-![alt text](asset/image.png)
+![alt text](asset/1.png)
+![alt text](asset/4.png)
 
 ## License / attribution
 
