@@ -1,15 +1,15 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "methods.json",
-  "description": "Produced by Claude each iteration. Exactly three entries (one per axis) consumed by scripts/state.py update.",
+  "description": "Produced by Claude each iteration. Method count equals sum of axis budgets from roofline.json (typically 3, range 1-6). Consumed by scripts/state.py update.",
   "type": "object",
   "required": ["iter", "methods"],
   "properties": {
     "iter": { "type": "integer", "minimum": 1 },
     "methods": {
       "type": "array",
-      "minItems": 3,
-      "maxItems": 3,
+      "minItems": 1,
+      "maxItems": 6,
       "items": {
         "type": "object",
         "required": ["id", "name", "axis", "priority", "description"],
@@ -60,6 +60,12 @@
                 "unit": { "type": "string" }
               }
             }
+          },
+          "trigger_strength": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Continuous trigger strength (0-1) for same-axis multi-method ranking. Only required when axis budget >= 2."
           },
           "expected_metric_shift": {
             "type": "string",

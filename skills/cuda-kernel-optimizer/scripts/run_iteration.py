@@ -31,12 +31,17 @@ def _dims_argv(dims: dict) -> list[str]:
     return [f"--{k}={v}" for k, v in dims.items()]
 
 
+def _ptr_size_argv(ptr_size: int) -> list[str]:
+    return ["--ptr-size", str(ptr_size)] if ptr_size and ptr_size > 0 else []
+
+
 def _run_bench(
     *,
     benchmark_py: str,
     solution: str,
     ref: str,
     dims: dict,
+    ptr_size: int,
     json_out: str,
     stderr_out: str,
     warmup: int,
@@ -48,7 +53,7 @@ def _run_bench(
         "--warmup", str(warmup),
         "--repeat", str(repeat),
         "--json-out", json_out,
-    ] + _dims_argv(dims)
+    ] + _ptr_size_argv(ptr_size) + _dims_argv(dims)
     print(f"[bench] {' '.join(cmd)}", file=sys.stderr)
 
     Path(json_out).parent.mkdir(parents=True, exist_ok=True)
@@ -96,6 +101,7 @@ def cmd_seed_baseline(args: argparse.Namespace) -> None:
         solution=state["baseline_file"],
         ref=state["ref_file"],
         dims=state.get("dims", {}),
+        ptr_size=state.get("ptr_size", 0),
         json_out=json_out,
         stderr_out=stderr_out,
         warmup=args.warmup,
@@ -128,6 +134,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         solution=kernel,
         ref=state["ref_file"],
         dims=state.get("dims", {}),
+        ptr_size=state.get("ptr_size", 0),
         json_out=json_out,
         stderr_out=stderr_out,
         warmup=args.warmup,

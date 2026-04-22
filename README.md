@@ -8,7 +8,7 @@ This is a **skill package**, not a standalone tool. Claude reads `SKILL.md` and 
 
 ---
 
-![alt text](asset/3.png)
+![alt text](asset/en_arch.png)
 
 ## Usage
 ```text

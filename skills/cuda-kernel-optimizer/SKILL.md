@@ -1,9 +1,9 @@
 ---
 name: cuda-kernel-optimizer
-description: Iteratively optimize a CUDA/CUTLASS/Triton kernel against a reference implementation using ncu-guided reasoning. Use this skill whenever the user asks to optimize, speed up, or improve the performance of a .cu kernel (CUDA or CUTLASS) or a Triton/Python kernel file, especially when they provide a baseline operator and a reference, mention "ncu", "Nsight Compute", "iterative optimization", "kernel tuning", or ask Claude to "make this kernel faster". The skill drives a multi-iteration optimization loop: profile with ncu → pick top compute/memory/latency metrics → propose three complementary optimization methods (one per axis) → generate a new kernel → validate + benchmark → update global state. Each iteration's artifacts (kernel, CoT analysis, ncu-rep) are persisted under a timestamped run folder, and a final summary is emitted.
+description: Iteratively optimize a CUDA/CUTLASS/Triton kernel against a reference implementation using ncu-guided reasoning. Use this skill whenever the user asks to optimize, speed up, or improve the performance of a .cu kernel (CUDA or CUTLASS) or a Triton/Python kernel file, especially when they provide a baseline operator and a reference, mention "ncu", "Nsight Compute", "iterative optimization", "kernel tuning", or ask Claude to "make this kernel faster". The skill drives a multi-iteration roofline-guided optimization loop: profile with ncu → compute roofline gaps → allocate axis budgets → pick methods by priority scan → generate K branch candidates → validate + benchmark → select champion → ablation attribution → SASS verification → update global state. Each iteration's artifacts (kernel, CoT analysis, ncu-rep) are persisted under a timestamped run folder, and a final summary is emitted.
 ---
 
-# CUDA Kernel Iterative Optimizer
+# CUDA Kernel Iterative Optimizer (v2 — Roofline-Driven)
 
 ## What this skill does
 
@@ -11,9 +11,17 @@ Given:
 - a **baseline kernel file** (`.cu` for CUDA / CUTLASS, or `.py` for Triton),
 - a **reference** Python file (exposes `reference(**kwargs)` — same contract as `benchmark.py --ref`),
 - kernel dimension arguments (e.g. `--M=4096 --N=4096 --K=4096`),
-- optional iteration count `N` (default **3**) and `ncu_num` (default **5**),
+- optional iteration count `N` (default **3**), `ncu_num` (default **5**), and `branches` (default **4**),
 
-the skill runs an **ncu-guided iterative optimization loop** and produces a timestamped directory of per-iteration artifacts plus a final summary.
+the skill runs a **roofline-guided, branch-and-select iterative optimization loop** and produces a timestamped directory of per-iteration artifacts plus a final summary.
+
+## Key point
+
+1. **Roofline-driven axis budget**: compute/memory/latency axis budgets are allocated proportionally to measured Δ gaps, with a per-axis cap of 2. 
+2. **Branch-and-Select**: each iteration generates K candidate kernels (hyperparameter/implementation variants), benchmarks all, selects champion. 
+3. **Ablation attribution**: after selecting champion, each method is individually ablated to determine its actual contribution.
+4. **SASS verification**: `cuobjdump --dump-sass` confirms claimed optimizations actually appear in generated code.
+5. **Every iteration produces a full ncu report** on the champion kernel.
 
 ## Inputs the skill expects from the user
 
@@ -24,29 +32,36 @@ Before starting, confirm you have:
 3. **Dimensions** — kernel-signature scalars like `--M=4096 --N=4096 --K=4096`
 4. **Iteration count `N`** (default 3)
 5. **`ncu_num`** — how many top metrics to extract per axis (default 5)
+6. **`branches`** — how many hyperparameter variants per iteration (default 4)
 
-> `benchmark.py` is bundled at `scripts/benchmark.py`; all scripts default to it automatically. Override with `--benchmark <path>` only if you have a custom version.
+> `benchmark.py` is bundled at `scripts/benchmark.py`; all scripts default to it automatically.
 
 If any of these are missing, ask the user once — briefly — then proceed.
 
 ## The loop at a glance
 
 ```
-0. check_env        → env.json (GPU, nvcc, CUTLASS, ncu)
-1. init run folder  → run_YYYYMMDD_HHMMSS/
-2. copy baseline    → baseline/ + bench once to seed `best`
+0. check_env          → env.json (GPU, nvcc, CUTLASS, ncu)
+1. init run folder    → run_YYYYMMDD_HHMMSS/
+2. copy baseline      → baseline/ + bench once to seed `best`
 3. for i in 1..N:
-     a. profile best_kernel with ncu        → iterv{i}/best_input.ncu-rep
-     b. extract top compute/mem/latency     → ncu_top.json
-     c. Claude picks 3 methods (1 per axis) → analysis.md (CoT)
-     d. Claude writes new kernel            → iterv{i}/kernel.{cu|py}
-     e. benchmark.py --ref ...              → validate + time
-     f. if FAIL: regenerate with reason (max 3 retries)
-     g. if PASS: profile new kernel, update state
+     a. profile best_kernel with ncu (--set full)  → iterv{i}/best_input.ncu-rep
+     b. extract top compute/mem/latency            → ncu_top.json
+     c. roofline.py: compute Δ_c, Δ_m, Δ_l        → roofline.json + axis_budget
+        if near_peak (all Δ < 0.15) → early stop
+     d. Claude picks methods (b_axis per axis, cap=2) → analysis.md (CoT)
+     e. Claude writes K branch kernels (same methods, diff hyperparams)
+     f. branch_explore.py: compile + bench all K   → select champion
+     g. if champion FAIL: regenerate (max 3 retries)
+     h. ncu profile champion (--set full)          → iterv{i}/kernel.ncu-rep
+     i. ablate.py: single-method rollback bench    → attribution.json
+     j. sass_check.py: verify SASS signatures      → sass_check.json
+     k. update state with attribution + SASS results
 4. emit summary.md
 ```
 
-Steps (a), (b), (e), (f) are **deterministic** — run them via `scripts/`. Steps (c) and (d) are **where Claude thinks** — follow the reasoning rules in `references/optimization_catalog.md` and `references/ncu_metrics_guide.md`.
+Steps (a), (b), (c), (f), (h), (i), (j) are **deterministic** — run via scripts.
+Steps (d) and (e) are **where Claude thinks** — follow the reasoning rules in `references/optimization_catalog.md` and `references/ncu_metrics_guide.md`.
 
 ---
 
@@ -58,7 +73,7 @@ Run the env probe **before** doing anything else:
 python <skill>/scripts/check_env.py --out ./env.json
 ```
 
-It records: GPU name + compute capability (SM arch), nvcc path + version, ncu path + version, CUTLASS include dir (if detectable), CUDA driver, torch + triton versions. If **ncu is not available** or the user is not running as root / lacks `--access=all` perf counters, warn the user explicitly — the skill can degrade to benchmark-only mode, but ncu-guided reasoning is significantly weaker without it.
+It records: GPU name + compute capability (SM arch), nvcc path + version, ncu path + version, CUTLASS include dir (if detectable), CUDA driver, torch + triton versions, GPU peak FLOPS and bandwidth (for roofline). If **ncu is not available** or the user is not running as root / lacks `--access=all` perf counters, warn the user explicitly — the skill can degrade to benchmark-only mode, but ncu-guided reasoning is significantly weaker without it.
 
 ## Step 0b — Preflight the baseline + ref contract
 
@@ -69,7 +84,7 @@ python <skill>/scripts/preflight.py \
   --dims     '{"M":4096,"N":4096,"K":4096}'
 ```
 
-Validates, before any compilation or profiling: baseline has `extern "C" void solve(...)` (CUDA/CUTLASS) *or* `setup(**kwargs)` + `run_kernel(**kwargs)` (Triton); ref has `reference(**kwargs)`; every `int`/`long` parameter of `solve` has a value supplied in `--dims`. On failure the script prints exactly what's missing — surface that directly to the user instead of pushing forward. `orchestrate.py setup` runs this automatically.
+Validates baseline and reference contracts. On failure, surface errors directly to the user. `orchestrate.py setup` runs this automatically.
 
 ## Step 1 — Initialize the run folder
 
@@ -79,28 +94,33 @@ python <skill>/scripts/state.py init \
   --ref ./ref.py \
   --iterations 3 \
   --ncu-num 5 \
+  --branches 4 \
   --dims '{"M":4096,"N":4096,"K":4096}' \
   --env ./env.json
 ```
 
-This creates `./run_YYYYMMDD_HHMMSS/` next to the baseline file, copies the baseline into `baseline/`, and writes `state.json` with:
+Creates `./run_YYYYMMDD_HHMMSS/` next to the baseline file and writes `state.json`:
 
 ```jsonc
 {
   "run_dir": "...",
   "baseline_file": "...",
   "ref_file": "...",
-  "best_file": "<baseline>",        // updated as we find better ones
-  "best_metric_ms": null,           // filled by first bench
+  "best_file": "<baseline>",
+  "best_metric_ms": null,
   "best_ncu_rep": null,
   "env": {...},
   "iterations_total": 3,
   "ncu_num": 5,
-  "selected_methods": [],           // ${当前已经选择过的优化方法}
-  "effective_methods": [],          // ${当前有效的优化方法}
-  "ineffective_methods": [],        // ${当前无效的优化方法}
+  "branches": 4,
+  "selected_methods": [],
+  "effective_methods": [],
+  "ineffective_methods": [],
+  "implementation_failed_methods": [],
   "dims": {...},
-  "history": []                      // per-iteration records
+  "history": [],
+  "roofline_history": [],
+  "frontier": []
 }
 ```
 
@@ -111,13 +131,9 @@ python <skill>/scripts/run_iteration.py seed-baseline \
   --state ./run_*/state.json
 ```
 
-This runs `benchmark.py` against the baseline with `--ref` (correctness must pass), stores the JSON metrics, and records `best_metric_ms` in `state.json`. If the **baseline itself fails validation**, halt and report to the user — something is wrong with the input pair.
-
----
-
 ## Step 3 — Iteration loop (repeat for i = 1..N)
 
-### 3a. Profile the current `best` with ncu
+### 3a. Profile the current `best` with ncu (FULL report — mandatory)
 
 ```bash
 python <skill>/scripts/profile_ncu.py \
@@ -126,91 +142,91 @@ python <skill>/scripts/profile_ncu.py \
   --which best_input
 ```
 
-This writes:
-- `iterv{i}/best_input.ncu-rep` — full ncu report
-- `iterv{i}/ncu_top.json` — top-`ncu_num` metrics per axis (compute / memory / latency), chosen using the rubric in `references/ncu_metrics_guide.md`
+Writes `iterv{i}/best_input.ncu-rep` (full ncu report) and `iterv{i}/ncu_top.json`.
 
-The profiler uses `ncu --set full --launch-count 3 -k solve` for CUDA/CUTLASS, and `--launch-count 3` with no `-k` filter for Triton (kernel names are not stable, so we let ncu capture all launches inside the first few benchmark reps). If ncu is unavailable, the script writes `ncu_top.json` with a `"degraded": true` flag — Claude should then reason from static code features only.
+### 3b. Compute roofline gaps and axis budgets
 
-### 3b. Decide on 3 optimization methods (Claude reasons here)
+```bash
+python <skill>/scripts/roofline.py \
+  --state ./run_*/state.json \
+  --iter $i
+```
+
+Reads `ncu_top.json` + `env.json`, computes:
+- `Δ_c` = compute utilization gap
+- `Δ_m` = bandwidth utilization gap
+- `Δ_l` = max stall percentage
+
+Writes `iterv{i}/roofline.json`:
+```jsonc
+{
+  "delta_compute": 0.85,
+  "delta_memory": 0.60,
+  "delta_latency": 0.55,
+  "bound": "compute",
+  "near_peak": false,
+  "axis_budget": {"compute": 1, "memory": 1, "latency": 1}
+}
+```
+
+**Budget allocation rule**: proportional to Δ, rounded, cap per axis = 2, total = 3. If all Δ < 0.15 → `near_peak: true` → **early stop**.
+
+### 3c. Select methods (Claude reasons here)
 
 **Read** (in this order):
-1. `references/optimization_catalog.md` — **the catalog is priority-ordered; selection MUST follow priority**
-2. `iterv{i}/ncu_top.json` — current bottleneck metrics (the trigger evidence)
-3. `state.json` — `best_file`, `selected_methods`, `effective_methods`, `ineffective_methods`, `env`
-4. The current `best_file` source code
-5. `references/ncu_metrics_guide.md` — metric → root cause mapping
+1. `references/optimization_catalog.md` — priority-ordered catalog
+2. `iterv{i}/roofline.json` — axis budgets and bound classification
+3. `iterv{i}/ncu_top.json` — current bottleneck metrics
+4. `state.json` — `best_file`, `selected_methods`, `effective_methods`, `ineffective_methods`
+5. The current `best_file` source code
+6. `references/ncu_metrics_guide.md` — metric → root cause mapping
 
-**Selection rule — STRICT PRIORITY SCAN**:
-For each axis (compute / memory / latency), scan the catalog **from P1 downward**. For each priority level, check:
+**Selection rule — BUDGET-AWARE PRIORITY SCAN**:
+
+For each axis with `b_axis > 0`, scan the catalog **from P1 downward**. For each priority level, check:
 1. Is `method.id` already in `selected_methods`? → skip (already tried)
 2. Does the detected `sm_arch` meet the method's arch requirement? → skip if not
 3. Does the method's **skip condition** apply? → skip (record reason in analysis.md)
 4. Does the method's **trigger condition** match the ncu evidence? → skip if no bottleneck here
 
-Select the **first method that passes all four checks**. **Do NOT skip a higher-priority applicable method to try a lower-priority one.** If you must skip a high-priority method, document the specific reason in analysis.md's "排除候选" section.
+Select the **first method that passes all four checks**. Continue scanning until `b_axis` methods are selected for that axis. If `b_axis >= 2`, after collecting all candidates that pass checks, rank by **trigger strength** and take the top `b_axis`.
 
-**Produce** exactly **three methods** (one per axis). For each, write a Chain-of-Thought: specific ncu metric value → root-cause hypothesis → proposed method (citing catalog id + priority) → expected metric shifts.
+**Produce** exactly **B methods** (sum of axis budgets, typically 3). For each, write Chain-of-Thought.
 
 **Hard constraints**:
-1. If `memory.multi_stage_pipeline` (P5) and `latency.async_pipeline` (P3) are both selected, they count as one optimization — replace one with the next applicable method on that axis.
-2. Methods in `ineffective_methods` are **blocked** unless the ncu bottleneck profile has fundamentally changed (must cite specific metric deltas in analysis.md).
-3. All three methods must be **arch-compatible** and **mutually orthogonal** (see catalog's Combining Rules).
+1. If `memory.multi_stage_pipeline` (P5) and `latency.async_pipeline` (P3) are both selected, they count as one — replace one with next applicable method on that axis.
+2. Methods in `ineffective_methods` are **blocked** unless ncu bottleneck has fundamentally changed.
+3. Methods in `implementation_failed_methods` require explicit acknowledgment of the prior failure.
+4. All methods must be **arch-compatible** and **mutually orthogonal** (see catalog's Combining Rules).
+5. **Per-axis cap is 2** — no axis can receive more than 2 methods.
 
-Save the decision to `iterv{i}/analysis.md` using the template in `templates/iteration_report.md`.
+Save to `iterv{i}/analysis.md` using the template in `templates/iteration_report.md`.
 
-> **Enforcement**: `methods.json` is automatically validated by `scripts/validate_methods.py` when `state.py update` is called (via `orchestrate.py close-iter`). The validator checks against `references/method_registry.json` and rejects submissions where:
-> - Any method id is not in the registry
-> - Submitted priority / axis don't match the registry
-> - A method's priority is > 1 but `skipped_higher` doesn't account for every higher-priority method on that axis
-> - Skip reason codes are not in `{already_selected, arch_incompatible, skip_condition, no_trigger}`
-> - Both sides of a coupled pair are selected (e.g. `memory.multi_stage_pipeline` + `latency.async_pipeline`)
-> - The method is already in `selected_methods`, or in `ineffective_methods` without `--allow-ineffective` override
-> - The method's `min_sm` exceeds the detected `sm_arch`
->
-> On rejection, the iteration is NOT recorded to state and Claude must fix `methods.json` and retry. This is the mechanism that makes priority discipline enforceable rather than advisory.
+### 3d. Generate K branch kernels (Claude writes code)
 
-### 3c. Generate the new kernel (Claude writes code)
+All K branches share the **same method combination** from step 3c. They differ in **hyperparameters and implementation details**:
+- Tile sizes (BLOCK_M, BLOCK_N, BLOCK_K)
+- Pipeline stage count (num_stages)
+- Warp count (num_warps)
+- Implementation variant within a method (e.g., swizzle mode, MMA atom selection)
 
-Take `best_file` as the starting point and apply all 3 methods to produce `iterv{i}/kernel.<ext>`. Preserve the `extern "C" void solve(...)` signature (for CUDA/CUTLASS) or the `setup(**kwargs)` + `run_kernel(**kwargs)` contract (for Triton). Do not change the public signature — `benchmark.py` relies on it.
+Write K kernels under `iterv{i}/branches/b{1..K}/kernel.<ext>`.
 
-### 3d. Validate + benchmark
+### 3e. Branch explore: compile + benchmark all K
 
 ```bash
-python <skill>/scripts/run_iteration.py benchmark \
+python <skill>/scripts/branch_explore.py \
   --state ./run_*/state.json \
   --iter $i
 ```
 
-This calls `benchmark.py solution_file --ref ref.py --json-out iterv{i}/bench.json <dims>`. Outcomes:
+Compiles and benchmarks all K branches (no ncu). Selects champion = fastest valid branch. Non-champions saved to `state.frontier`.
 
-- **Validation fail** → read `bench.json["correctness"]["passed"] == false` and the stderr capture. Go to 3e.
-- **Validation pass** → read `bench.json["kernel"]["average_ms"]`. Compare to `state.best_metric_ms`. Go to 3f.
+### 3f. Repair on validation failure (up to 3 retries per iteration)
 
-### 3e. Repair on validation failure (up to 3 retries per iteration)
+If champion fails correctness, Claude rewrites and re-runs 3e.
 
-If correctness failed, read the validation diff (max|delta|, first-bad-idx, previews from `bench.json`). Claude rewrites `iterv{i}/kernel.<ext>` incorporating the failure reason, **without abandoning the 3 chosen methods** (unless one is fundamentally incompatible — then log that as the reason). Re-run 3d. After 3 retries, mark the iteration as a failed attempt in `state.history`, move on, and **do not** add the methods to any list.
-
-### 3f. Update global state
-
-On success:
-
-```bash
-python <skill>/scripts/state.py update \
-  --state ./run_*/state.json \
-  --iter $i \
-  --kernel iterv{i}/kernel.<ext> \
-  --bench iterv{i}/bench.json \
-  --methods-json iterv{i}/methods.json
-```
-
-Rules implemented by the script:
-- `selected_methods += 3 methods` (always, since they were actually tried)
-- If `new_ms < best_ms` by more than **noise_threshold (default 2%)** → methods go to `effective_methods`, `best_file` := `iterv{i}/kernel.<ext>`, `best_metric_ms` := `new_ms`, also save `iterv{i}/kernel.ncu-rep` as the new `best_ncu_rep`.
-- Otherwise → methods go to `ineffective_methods`. `best` stays the same.
-- Append a record to `state.history` with {iter, methods, ms, speedup, status}.
-
-Then profile the new kernel so the next iteration has fresh data even if it didn't become `best`:
+### 3g. Profile champion with ncu (FULL report — mandatory)
 
 ```bash
 python <skill>/scripts/profile_ncu.py \
@@ -219,13 +235,58 @@ python <skill>/scripts/profile_ncu.py \
   --which kernel
 ```
 
-(If the new kernel *is* the new best, the profiler reuses that report for next iteration's 3a — skipping re-profiling.)
+Writes `iterv{i}/kernel.ncu-rep` — **every iteration must have a full ncu report on the champion**.
+
+### 3h. Ablation attribution
+
+```bash
+python <skill>/scripts/ablate.py \
+  --state ./run_*/state.json \
+  --iter $i
+```
+
+For each method, generates an ablated kernel (champion minus that one method), benchmarks it. Computes attribution:
+```
+attribution(m) = ms_without_m - ms_champion
+```
+Positive attribution = the method contributed positively. Near-zero or negative = the method was not helpful.
+
+Writes `iterv{i}/attribution.json`.
+
+### 3i. SASS verification
+
+```bash
+python <skill>/scripts/sass_check.py \
+  --state ./run_*/state.json \
+  --iter $i
+```
+
+Runs `cuobjdump --dump-sass` on the compiled champion and greps for expected instruction patterns from `references/sass_signatures.json`. Writes `iterv{i}/sass_check.json`.
+
+### 3j. Update global state
+
+```bash
+python <skill>/scripts/state.py update \
+  --state ./run_*/state.json \
+  --iter $i \
+  --kernel iterv{i}/kernel.<ext> \
+  --bench iterv{i}/bench.json \
+  --methods-json iterv{i}/methods.json \
+  --attribution iterv{i}/attribution.json \
+  --sass-check iterv{i}/sass_check.json
+```
+
+Rules:
+- `selected_methods += all methods` (always)
+- Method enters `effective_methods` **only if**: attribution > noise_threshold **AND** SASS verified
+- Method enters `implementation_failed_methods` if: SASS check says signature missing
+- Method enters `ineffective_methods` if: attribution ≤ noise_threshold but SASS was fine
+- If `new_ms < best_ms` by more than noise_threshold → `best_file` updated
+- Append record to `state.history` and `state.roofline_history`
 
 ---
 
 ## Step 4 — Final summary
-
-After the loop:
 
 ```bash
 python <skill>/scripts/summarize.py \
@@ -233,33 +294,30 @@ python <skill>/scripts/summarize.py \
   --out ./run_*/summary.md
 ```
 
-The summary includes: env snapshot, per-iteration timeline (methods + ms + speedup + status), final best kernel + final speedup vs baseline, consolidated effective/ineffective method catalogs, and a short Claude-written retrospective (what worked, what didn't, what to try next).
-
 ---
 
 ## Reasoning references
 
-- **`references/optimization_catalog.md`** — Catalog of CUDA / CUTLASS / Triton optimization methods organized by axis (compute / memory / latency). Use this as the menu when selecting the 3 methods. Each entry notes arch requirements and typical ncu signatures.
-- **`references/ncu_metrics_guide.md`** — How to read ncu output, which metrics matter per axis, and the mapping from bottleneck signature → probable optimization.
-
-Read both before the first iteration and re-consult per-axis sections in later iterations.
+- **`references/optimization_catalog.md`** — Catalog of optimization methods by axis, with algorithmic methods section.
+- **`references/ncu_metrics_guide.md`** — How to read ncu output and map bottleneck signatures.
+- **`references/sass_signatures.json`** — Expected SASS instruction patterns per method.
 
 ---
 
 ## Failure modes to watch for
 
-- **Benchmark crashes, not just fails validation** → the kernel has UB or a launch error. Check the `bench.json` `"error"` field; the captured process stderr often lives next to the JSON.
-- **ncu reports all-zero metrics** → likely means `ncu` didn't attach (permissions) or the launch-count filter missed the kernel. Re-run with `--no-kernel-filter` (the profile script exposes this).
-- **`can_read_counters: false` in env.json** → container / non-root setup blocks perf counters. ncu output will be scalar-only or empty. Tell the user; don't silently pretend the `ncu_top.json` is trustworthy. The skill flags this by setting `"degraded": true` in `ncu_top.json` on zero-metric collections.
-- **ncu older than 2022.1** → the CSV column names differ slightly (capitalization, unit suffix). `profile_ncu.py` handles both, but if you see `metric_count_collected: 0` with `degraded: false`, check `*.ncu.log` and pass `--no-kernel-filter` or bump ncu.
-- **Triton + `@triton.autotune`** → autotuning **under ncu** triggers a profile per config, which can balloon from seconds to many minutes and sometimes time out. Before the first profile, either (a) hard-code the most promising config and remove `autotune`, or (b) call `--launch-count 1 --warmup 0 --repeat 1` to limit profiled launches. Note this in `analysis.md`.
-- **Massive speedup claims with small absolute ms** → measurement noise. The skill's 2% threshold guards against this, but call it out in `analysis.md` if the best time is < 50 µs.
-- **Triton + CUTLASS mix** — unusual but legal. If the user swaps backends mid-loop, note it in `analysis.md`; the benchmark script auto-detects backend per file.
-- **Methods chosen but the generated kernel has the same SASS** — can happen when Claude "intends" an optimization (e.g. `unroll_inner_loop`) but nvcc was already unrolling. Confirm by diffing `iterv{i}/kernel.ncu-rep` against `iterv{i}/best_input.ncu-rep` metric-by-metric — if nothing moved on the targeted axis, mark that method ineffective in the retrospective.
+- **Benchmark crashes** → check `bench.json` `"error"` field.
+- **ncu reports all-zero metrics** → permissions issue or launch filter miss.
+- **`can_read_counters: false` in env.json** → warn user; degrade gracefully.
+- **Triton + `@triton.autotune`** → hard-code config before profiling.
+- **Champion chosen but all methods have near-zero attribution** → the speedup came from hyperparameter change, not methods. Record in analysis.md.
+- **SASS signature missing but kernel is faster** → nvcc took a different path. Mark method as `implementation_failed` but keep the kernel if it's faster.
+- **Branch explore: all K branches fail validation** → Claude must rewrite with different approach.
+- **Early stop triggered** → all Δ < 0.15, kernel is near roofline. Report to user.
 
 ---
 
-## Output contract (what the user gets)
+## Output contract
 
 ```
 <baseline-dir>/run_YYYYMMDD_HHMMSS/
@@ -269,16 +327,19 @@ Read both before the first iteration and re-consult per-axis sections in later i
 │   ├── <baseline>           (copied)
 │   └── bench.json
 ├── iterv1/
-│   ├── kernel.<ext>
-│   ├── analysis.md          (ncu metrics + 3 methods + CoT)
+│   ├── kernel.<ext>          (champion)
+│   ├── analysis.md           (roofline + methods + CoT)
 │   ├── methods.json
-│   ├── best_input.ncu-rep   (profile of best going INTO this iter)
+│   ├── roofline.json
+│   ├── best_input.ncu-rep    (profile of best going INTO this iter)
 │   ├── ncu_top.json
-│   ├── kernel.ncu-rep       (profile of the new kernel)
-│   └── bench.json
+│   ├── kernel.ncu-rep        (profile of champion — ALWAYS present)
+│   ├── attribution.json
+│   ├── sass_check.json
+│   ├── bench.json
+│   └── branches/
+│       ├── b1/ ... b4/       (all branch candidates)
 ├── iterv2/...
 ├── iterv3/...
 └── summary.md
 ```
-
-Announce the `run_dir` path at the end so the user can open any iteration directly.

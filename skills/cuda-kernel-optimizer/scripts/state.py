@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Global state manager for the optimization loop.
+"""Global state manager for the optimization loop (v2 — roofline-driven).
 
 Subcommands:
-  init           create run_YYYYMMDD_HHMMSS/ next to the baseline file,
-                 seed state.json with empty method lists.
-  update         after a successful iteration, merge the new methods into
-                 selected / effective / ineffective lists, update best_file
-                 and best_metric_ms when the new kernel is strictly faster.
-  show           pretty-print current state (debug).
+  init               create run_YYYYMMDD_HHMMSS/, seed state.json
+  update             after a successful iteration, merge methods into
+                     selected / effective / ineffective / implementation_failed
+                     lists using attribution + SASS verification data
+  set-baseline-metric  called by run_iteration.py seed-baseline
+  set-best-ncu-rep   helper called by profile_ncu after promoting best
+  show               pretty-print current state (debug)
 
 state.json schema (all paths stored absolute):
 {
@@ -17,19 +18,20 @@ state.json schema (all paths stored absolute):
   "best_file": str,
   "best_metric_ms": float | null,
   "best_ncu_rep": str | null,
-  "env": {...},                      # inlined snapshot for reproducibility
+  "env": {...},
   "iterations_total": int,
   "ncu_num": int,
-  "noise_threshold_pct": float,      # speedup must exceed this to count as improvement
+  "branches": int,
+  "noise_threshold_pct": float,
+  "ptr_size": int,
   "dims": dict,
   "selected_methods":   [ {id, name, axis, iter} ],
-  "effective_methods":  [ {id, name, axis, iter, speedup} ],
+  "effective_methods":  [ {id, name, axis, iter, attribution_ms} ],
   "ineffective_methods":[ {id, name, axis, iter} ],
-  "history": [
-     {iter, kernel_file, status, methods:[ids],
-      ms, ref_ms, speedup_vs_ref, speedup_vs_best_before,
-      validation_passed, retries}
-  ]
+  "implementation_failed_methods": [ {id, name, axis, iter, note} ],
+  "history": [ per-iteration records ],
+  "roofline_history": [ {iter, delta_c, delta_m, delta_l, bound, budget} ],
+  "frontier": [ {iter, branch, kernel, ms, methods} ]
 }
 """
 
@@ -40,6 +42,7 @@ import datetime as _dt
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -101,12 +104,17 @@ def cmd_init(args: argparse.Namespace) -> None:
         "env": env,
         "iterations_total": int(args.iterations),
         "ncu_num": int(args.ncu_num),
+        "branches": int(args.branches),
         "noise_threshold_pct": float(args.noise_threshold_pct),
+        "ptr_size": int(args.ptr_size),
         "dims": dims,
         "selected_methods": [],
         "effective_methods": [],
         "ineffective_methods": [],
+        "implementation_failed_methods": [],
         "history": [],
+        "roofline_history": [],
+        "frontier": [],
         "created_at": ts,
     }
     state_path = os.path.join(run_dir, "state.json")
@@ -119,18 +127,17 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
-# update
+# update  (v2: uses attribution + sass_check)
 # ---------------------------------------------------------------------------
 
 def _method_key(m: dict) -> str:
-    # Prefer explicit id; fall back to lowercased name+axis
     if "id" in m and m["id"]:
         return str(m["id"]).strip().lower()
     return f"{str(m.get('name','')).strip().lower()}::{str(m.get('axis','')).strip().lower()}"
 
 
 def _merge_unique(bag: list[dict], new_items: list[dict]) -> list[dict]:
-    seen = { _method_key(m) for m in bag }
+    seen = {_method_key(m) for m in bag}
     for m in new_items:
         k = _method_key(m)
         if k not in seen:
@@ -142,22 +149,16 @@ def _merge_unique(bag: list[dict], new_items: list[dict]) -> list[dict]:
 def cmd_update(args: argparse.Namespace) -> None:
     state = _read(args.state)
     bench = _read(args.bench)
-    methods = _read(args.methods_json)  # expected: {"methods": [ {id,name,axis,priority,...}, ... ]}
+    methods = _read(args.methods_json)
 
     if not isinstance(methods, dict) or "methods" not in methods:
         sys.exit("methods-json must contain a top-level 'methods' list")
     methods_list = methods["methods"]
-    if len(methods_list) != 3:
-        print(f"[warn] expected 3 methods, got {len(methods_list)}", file=sys.stderr)
 
-    # --- NEW: priority-compliance validation ---
-    # Run validate_methods.py against the registry + state. Skip only if the
-    # caller explicitly passes --skip-validation (emergency escape hatch,
-    # should never be used in normal runs).
+    # --- Priority-compliance validation ---
     if not args.skip_validation:
-        import subprocess as _sp
         validator = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "validate_methods.py")
+                                "validate_methods.py")
         cmd = [
             sys.executable, validator,
             "--methods", args.methods_json,
@@ -165,18 +166,14 @@ def cmd_update(args: argparse.Namespace) -> None:
         ]
         if args.allow_ineffective:
             cmd.append("--allow-ineffective")
-        rv = _sp.run(cmd, capture_output=True, text=True,
-                     encoding="utf-8", errors="ignore")
+        rv = subprocess.run(cmd, capture_output=True, text=True,
+                            encoding="utf-8", errors="ignore")
         if rv.returncode != 0:
             sys.stderr.write(
-                "\n[state update] methods.json failed priority-compliance validation:\n"
+                "\n[state update] methods.json failed validation:\n"
             )
             sys.stderr.write(rv.stdout or "")
             sys.stderr.write(rv.stderr or "")
-            sys.stderr.write(
-                "\nFix methods.json (re-scan from P1, document all skipped "
-                "higher-priority methods in skipped_higher) and re-run.\n"
-            )
             sys.exit(1)
 
     validation_passed = bool(bench.get("correctness", {}).get("passed", True))
@@ -187,15 +184,27 @@ def cmd_update(args: argparse.Namespace) -> None:
     if bench.get("reference"):
         ref_ms = bench["reference"].get("average_ms")
 
+    # Load attribution and sass_check if provided
+    attribution_data = {}
+    if args.attribution and os.path.isfile(args.attribution):
+        attr = _read(args.attribution)
+        for a in attr.get("attributions", []):
+            attribution_data[a["method_id"]] = a
+
+    sass_data = {}
+    if args.sass_check and os.path.isfile(args.sass_check):
+        sass = _read(args.sass_check)
+        for c in sass.get("checks", []):
+            sass_data[c["method_id"]] = c
+
     # Decide improvement
     best_before = state.get("best_metric_ms")
-    threshold = 1.0 - (state.get("noise_threshold_pct", 2.0) / 100.0)  # e.g. 0.98
+    threshold = 1.0 - (state.get("noise_threshold_pct", 2.0) / 100.0)
     improved = False
     speedup_vs_best_before = None
     if validation_passed and new_ms and new_ms > 0:
         if best_before is None:
-            improved = True  # first timing
-            speedup_vs_best_before = None
+            improved = True
         else:
             speedup_vs_best_before = best_before / new_ms
             improved = new_ms < best_before * threshold
@@ -205,20 +214,66 @@ def cmd_update(args: argparse.Namespace) -> None:
         m.setdefault("id", _method_key(m))
         m["iter"] = int(args.iter)
 
-    # Always: selected
+    # Always: add to selected
     _merge_unique(state["selected_methods"], methods_list)
 
+    # Classify each method based on attribution + SASS
+    for m in methods_list:
+        mid = m["id"]
+        attr_info = attribution_data.get(mid, {})
+        sass_info = sass_data.get(mid, {})
+
+        sass_verified = sass_info.get("verified", True)  # Default True if no check
+        contributed = attr_info.get("contributed", None)
+        attr_ms = attr_info.get("attribution_ms", None)
+
+        m_entry = dict(m)
+
+        if not sass_verified:
+            # SASS signature missing — implementation failed
+            m_entry["note"] = f"SASS patterns not found: {sass_info.get('patterns_missing', [])}"
+            state["implementation_failed_methods"].append(m_entry)
+        elif contributed is True or contributed is None:
+            # Contributed (or no ablation data — assume effective if overall improved)
+            if validation_passed and improved:
+                if attr_ms is not None:
+                    m_entry["attribution_ms"] = attr_ms
+                if speedup_vs_best_before is not None:
+                    m_entry["speedup_vs_best_before"] = speedup_vs_best_before
+                state["effective_methods"].append(m_entry)
+            elif validation_passed:
+                state["ineffective_methods"].append(m_entry)
+        elif contributed is False:
+            # Attribution says it didn't help
+            m_entry["note"] = f"attribution_ms={attr_ms}"
+            state["ineffective_methods"].append(m_entry)
+
+    # Update best
     if validation_passed and improved:
-        for m in methods_list:
-            m_e = dict(m)
-            if speedup_vs_best_before is not None:
-                m_e["speedup_vs_best_before"] = speedup_vs_best_before
-            state["effective_methods"].append(m_e)
         state["best_file"] = os.path.abspath(args.kernel)
         state["best_metric_ms"] = new_ms
-        # best_ncu_rep may be set separately by profile_ncu.py when profiling the new kernel
-    elif validation_passed:
-        state["ineffective_methods"].extend(methods_list)
+
+    # Load roofline data if available
+    iter_dir = os.path.join(state["run_dir"], f"iterv{args.iter}")
+    roofline_path = os.path.join(iter_dir, "roofline.json")
+    if os.path.isfile(roofline_path):
+        roofline = _read(roofline_path)
+        state["roofline_history"].append({
+            "iter": int(args.iter),
+            "delta_compute": roofline.get("delta_compute"),
+            "delta_memory": roofline.get("delta_memory"),
+            "delta_latency": roofline.get("delta_latency"),
+            "bound": roofline.get("bound"),
+            "axis_budget": roofline.get("axis_budget"),
+        })
+
+    # Load frontier from branch_results if available
+    branch_results_path = os.path.join(iter_dir, "branch_results.json")
+    if os.path.isfile(branch_results_path):
+        br = _read(branch_results_path)
+        for fe in br.get("frontier", []):
+            fe["methods"] = [m["id"] for m in methods_list]
+            state["frontier"].append(fe)
 
     status = (
         "improved" if (validation_passed and improved)
@@ -251,7 +306,7 @@ def cmd_update(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
-# set-best-ncu-rep  (helper called by profile_ncu after we promote best)
+# set-best-ncu-rep
 # ---------------------------------------------------------------------------
 
 def cmd_set_best_ncu(args: argparse.Namespace) -> None:
@@ -262,7 +317,7 @@ def cmd_set_best_ncu(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
-# seed baseline metric (called by run_iteration.py seed-baseline)
+# seed baseline metric
 # ---------------------------------------------------------------------------
 
 def cmd_set_baseline_metric(args: argparse.Namespace) -> None:
@@ -296,9 +351,11 @@ def main() -> None:
     pi.add_argument("--ref", required=True)
     pi.add_argument("--iterations", type=int, default=3)
     pi.add_argument("--ncu-num", type=int, default=5)
+    pi.add_argument("--branches", type=int, default=4)
     pi.add_argument("--dims", type=str, default="{}", help="JSON dict of dim name -> int")
     pi.add_argument("--env", type=str, default="")
     pi.add_argument("--noise-threshold-pct", type=float, default=2.0)
+    pi.add_argument("--ptr-size", type=int, default=0)
     pi.set_defaults(func=cmd_init)
 
     pu = sub.add_parser("update")
@@ -307,14 +364,13 @@ def main() -> None:
     pu.add_argument("--kernel", required=True)
     pu.add_argument("--bench", required=True)
     pu.add_argument("--methods-json", required=True)
+    pu.add_argument("--attribution", type=str, default=None,
+                    help="Path to attribution.json from ablation step")
+    pu.add_argument("--sass-check", type=str, default=None,
+                    help="Path to sass_check.json from SASS verification step")
     pu.add_argument("--retries", type=int, default=0)
-    pu.add_argument("--skip-validation", action="store_true",
-                    help="DO NOT USE in normal runs. Skips the priority-compliance "
-                         "check on methods.json. Emergency escape hatch only.")
-    pu.add_argument("--allow-ineffective", action="store_true",
-                    help="Allow re-selecting a method that is in "
-                         "state.ineffective_methods. analysis.md must document "
-                         "why the bottleneck profile has changed.")
+    pu.add_argument("--skip-validation", action="store_true")
+    pu.add_argument("--allow-ineffective", action="store_true")
     pu.set_defaults(func=cmd_update)
 
     pb = sub.add_parser("set-baseline-metric")

@@ -8,7 +8,7 @@
 
 ---
 
-![alt text](asset/2.png)
+![alt text](asset/chinese_arch.png)
 
 ## 使用方法
 ```text

@@ -27,6 +27,7 @@ import subprocess
 import ctypes
 import argparse
 import importlib.util
+from pathlib import Path
 import torch
 
 # ---------------------------------------------------------------------------
@@ -173,6 +174,10 @@ def find_cutlass_include_dir() -> str:
 def compile_cu(cu_file: str, output_so: str, arch: str, nvcc_bin: str, backend: str = "cuda"):
     """Compile .cu to a shared library."""
     clean_file = _preprocess_cu(cu_file)
+    try:
+        source = Path(cu_file).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        source = ""
     cmd = [nvcc_bin]
     if os.name != "nt":
         cmd.extend(["-Xcompiler", "-fPIC"])
@@ -195,6 +200,9 @@ def compile_cu(cu_file: str, output_so: str, arch: str, nvcc_bin: str, backend: 
             )
             sys.exit(1)
         cmd.extend(["-I", cutlass_include_dir])
+
+    if "#include <cublas_v2.h>" in source or "#include <cublasLt.h>" in source:
+        cmd.extend(["-lcublas", "-lcublasLt"])
 
     cmd.extend(["-shared", "-std=c++17", f"-arch={arch}", "-O3", "-o", output_so, clean_file])
     print(f"[compile] {' '.join(cmd)}")
@@ -266,6 +274,51 @@ def clone_value(value):
     if isinstance(value, torch.Tensor):
         return value.clone()
     return copy.deepcopy(value)
+
+
+
+def _reset_tensor_inputs(state):
+    """Restore tensor_inputs to their pristine initial state in-place.
+
+    Uses torch.Tensor.copy_() so that the underlying data_ptr() stays valid —
+    critical for the CUDA/CUTLASS path, where kernel_call_args holds raw pointers
+    that were captured at setup time. Does nothing if pristine snapshots are
+    absent (backwards-compat with any caller that doesn't populate them).
+    """
+    pristine = state.get("pristine_tensors") or {}
+    for name, tensor in state["tensor_inputs"].items():
+        snap = pristine.get(name)
+        if snap is not None:
+            tensor.copy_(snap)
+
+
+
+def _regenerate_pristine(state, new_seed):
+    """Re-draw random values into pristine snapshots under a new seed.
+
+    This also refreshes reference_inputs (for the tensor entries). Used by the
+    multi-seed validation path — each seed gets a fresh independent random draw
+    so seed-specific bugs surface.
+
+    Signature info cached at setup time tells us which tensors are const inputs
+    (re-draw random) versus outputs (zero-init). Non-tensor entries in
+    reference_inputs are left alone.
+    """
+    torch.manual_seed(new_seed)
+    sig = state.get("signature") or []
+    const_names = {item["name"] for item in sig if item.get("is_const")}
+
+    for name, snap in state["pristine_tensors"].items():
+        if name in const_names:
+            if snap.dtype.is_floating_point:
+                snap.normal_()
+            else:
+                snap.random_()
+        else:
+            snap.zero_()
+        # Keep reference_inputs in sync with pristine tensors (fresh clones).
+        if name in state["reference_inputs"] and isinstance(state["reference_inputs"][name], torch.Tensor):
+            state["reference_inputs"][name].copy_(snap)
 
 
 
@@ -457,8 +510,9 @@ def _setup_cuda(solution_file, dim_values, ptr_size_override, arch, nvcc_bin, se
     if seed is not None:
         torch.manual_seed(seed)
 
-    tensor_inputs = {}
-    reference_inputs = {}
+    tensor_inputs = {}        # mutable; kernel operates on these via data_ptr
+    reference_inputs = {}      # pristine kwargs for ref_fn; tensors are INDEPENDENT clones
+    pristine_tensors = {}      # in-memory snapshot for resetting tensor_inputs
     output_specs = []
     kernel_call_args = []
     argtypes = []
@@ -467,12 +521,23 @@ def _setup_cuda(solution_file, dim_values, ptr_size_override, arch, nvcc_bin, se
     for ptype, pname, is_const in params:
         if ptype in DTYPE_MAP:
             dtype = DTYPE_MAP[ptype]
-            if dtype.is_floating_point:
-                tensor = torch.randn(ptr_elems, device="cuda", dtype=dtype)
+            if is_const:
+                # Input (const) buffer: random, representative of real data distribution
+                if dtype.is_floating_point:
+                    tensor = torch.randn(ptr_elems, device="cuda", dtype=dtype)
+                else:
+                    tensor = torch.zeros(ptr_elems, device="cuda", dtype=dtype).random_()
             else:
-                tensor = torch.zeros(ptr_elems, device="cuda", dtype=dtype).random_()
+                # Output (non-const) buffer: ZERO-initialized to match real-world
+                # callers that typically hand the kernel a freshly-allocated/zeroed
+                # output tensor. Random-init here masks RMW / read-output bugs.
+                tensor = torch.zeros(ptr_elems, device="cuda", dtype=dtype)
             tensor_inputs[pname] = tensor
-            reference_inputs[pname] = tensor
+            # Keep an independent pristine snapshot so we can reset between phases.
+            pristine_tensors[pname] = tensor.clone()
+            # Reference gets its OWN clone — decoupled from tensor_inputs so kernel
+            # mutations can never leak into the reference path.
+            reference_inputs[pname] = tensor.clone()
             if not is_const:
                 output_specs.append((pname, ptype))
             kernel_call_args.append(ctypes.c_void_p(tensor.data_ptr()))
@@ -505,6 +570,7 @@ def _setup_cuda(solution_file, dim_values, ptr_size_override, arch, nvcc_bin, se
         "callable": lambda: lib.solve(*kernel_call_args),
         "tensor_inputs": tensor_inputs,
         "reference_inputs": reference_inputs,
+        "pristine_tensors": pristine_tensors,
         "output_specs": output_specs,
         "ptr_elems": ptr_elems,
         "total_ptr_bytes": total_ptr_bytes,
@@ -534,22 +600,50 @@ def _setup_triton(solution_file, dim_values, seed=None):
     if not isinstance(prepared, dict):
         raise TypeError("Triton setup() must return a dict")
 
-    reference_inputs = prepared.get("inputs")
+    setup_inputs = prepared.get("inputs")
     outputs = prepared.get("outputs")
-    if not isinstance(reference_inputs, dict):
+    if not isinstance(setup_inputs, dict):
         raise TypeError("Triton setup() must return dict['inputs'] as a mapping")
     if not isinstance(outputs, (list, tuple)):
         raise TypeError("Triton setup() must return dict['outputs'] as a list/tuple")
 
     for name in outputs:
-        if name not in reference_inputs:
+        if name not in setup_inputs:
             raise ValueError(f"Triton output '{name}' not found in setup()['inputs']")
-        if not isinstance(reference_inputs[name], torch.Tensor):
+        if not isinstance(setup_inputs[name], torch.Tensor):
             raise TypeError(f"Triton output '{name}' must be a torch.Tensor")
 
+    # Zero out output tensors to match real-world callers (setup() cannot be
+    # trusted to do this reliably — user code may have pre-filled them).
+    outputs_set = set(outputs)
+    for name in outputs:
+        setup_inputs[name].zero_()
+
+    # tensor_inputs: the tensors the kernel actually operates on (may be mutated).
+    # Keep references into setup_inputs so run_kernel(**kernel_kwargs) works.
     tensor_inputs = {
-        name: value for name, value in reference_inputs.items() if isinstance(value, torch.Tensor)
+        name: value for name, value in setup_inputs.items() if isinstance(value, torch.Tensor)
     }
+
+    # pristine_tensors: independent snapshots taken BEFORE any kernel runs.
+    pristine_tensors = {
+        name: value.clone() for name, value in tensor_inputs.items()
+    }
+
+    # reference_inputs: INDEPENDENT kwargs dict for ref_fn. Tensors are clones,
+    # non-tensors are deep-copied. Kernel mutations cannot leak into this path.
+    reference_inputs = {
+        name: (value.clone() if isinstance(value, torch.Tensor) else copy.deepcopy(value))
+        for name, value in setup_inputs.items()
+    }
+
+    # kernel_kwargs: what run_kernel() gets called with. Points at tensor_inputs
+    # (mutable) for tensors; non-tensor args are shared as-is.
+    kernel_kwargs = {
+        name: (tensor_inputs[name] if name in tensor_inputs else value)
+        for name, value in setup_inputs.items()
+    }
+
     ptr_elems = sum(value.numel() for value in tensor_inputs.values())
     total_ptr_bytes = sum(value.nelement() * value.element_size() for value in tensor_inputs.values())
 
@@ -559,18 +653,18 @@ def _setup_triton(solution_file, dim_values, seed=None):
             {
                 "name": name,
                 "type": str(value.dtype).replace("torch.", ""),
-                "role": "output" if name in outputs else "input",
+                "role": "output" if name in outputs_set else "input",
                 "tensor": value,
             }
         )
 
     signature = []
-    for name, value in reference_inputs.items():
+    for name, value in setup_inputs.items():
         if isinstance(value, torch.Tensor):
             signature.append({
                 "type": f"tensor[{str(value.dtype).replace('torch.', '')}]",
                 "name": name,
-                "is_const": name not in outputs,
+                "is_const": name not in outputs_set,
             })
         elif isinstance(value, int):
             signature.append({"type": "int", "name": name, "is_const": True})
@@ -586,15 +680,16 @@ def _setup_triton(solution_file, dim_values, seed=None):
 
     output_specs = []
     for name in outputs:
-        dtype_name = str(reference_inputs[name].dtype).replace("torch.", "")
+        dtype_name = str(setup_inputs[name].dtype).replace("torch.", "")
         output_specs.append((name, dtype_name))
 
     return {
         "backend": "triton",
         "signature": signature,
-        "callable": lambda: module.run_kernel(**reference_inputs),
+        "callable": lambda: module.run_kernel(**kernel_kwargs),
         "tensor_inputs": tensor_inputs,
         "reference_inputs": reference_inputs,
+        "pristine_tensors": pristine_tensors,
         "output_specs": output_specs,
         "ptr_elems": ptr_elems,
         "total_ptr_bytes": total_ptr_bytes,
@@ -624,7 +719,7 @@ def _setup_backend(solution_file, backend, dim_values, ptr_size_override, arch, 
 # ---------------------------------------------------------------------------
 
 
-def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, arch, atol, rtol, seed, json_out="", nvcc_bin="nvcc", backend="auto"):
+def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, arch, atol, rtol, seed, json_out="", nvcc_bin="nvcc", backend="auto", validation_seeds=None):
     """Main benchmark pipeline."""
     resolved_backend = infer_backend(solution_file, backend)
     has_ref = bool(ref_file)
@@ -710,34 +805,66 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
         print("\n[warn] No output tensors detected. Nothing to validate.", file=sys.stderr)
 
     if has_ref:
-        ref_inputs = {
-            name: clone_value(value) for name, value in state["reference_inputs"].items()
-        }
+        # Multi-seed validation. Every seed starts from a clean pristine state and
+        # uses independent reference_inputs — kernel mutations cannot leak across
+        # iterations, and reference inputs stay decoupled from kernel outputs.
+        seeds_to_check = list(validation_seeds) if validation_seeds else [seed]
+        seeds_to_check = [s for s in seeds_to_check if s is not None]
+        if not seeds_to_check:
+            seeds_to_check = [seed]
 
-        print("\n[kernel]    running ... ", end="", flush=True)
-        state["callable"]()
-        torch.cuda.synchronize()
-        print("done")
+        per_seed_results = []
+        overall_pass = True
+        for seed_idx, cur_seed in enumerate(seeds_to_check):
+            if len(seeds_to_check) > 1:
+                print(f"\n--- Validation seed {seed_idx + 1}/{len(seeds_to_check)}: seed={cur_seed} ---")
 
-        print("[reference] running ... ", end="", flush=True)
-        ref_fn(**ref_inputs)
-        torch.cuda.synchronize()
-        print("done")
+            # Re-seed and regenerate inputs by resetting pristine from a fresh random draw.
+            # For seed=original-seed we already have the right pristine; for other seeds
+            # we need to regenerate. We do this by re-seeding and redrawing into pristine.
+            if seed_idx > 0 or (cur_seed is not None and cur_seed != seed):
+                _regenerate_pristine(state, cur_seed)
 
-        kernel_outputs = {
-            name: tensor for name, tensor in state["tensor_inputs"].items() if name in {spec[0] for spec in state["output_specs"]}
-        }
-        ref_outputs = {
-            name: tensor for name, tensor in ref_inputs.items() if isinstance(tensor, torch.Tensor) and name in kernel_outputs
-        }
+            # Reset kernel buffers to pristine (critical: outputs must be zero'd again
+            # before the kernel call so we're not passing the previous iteration's data).
+            _reset_tensor_inputs(state)
 
-        validation_passed = _validate_outputs(
-            kernel_outputs,
-            ref_outputs,
-            state["output_specs"],
-            _atol,
-            _rtol,
-        )
+            # Independent kwargs for ref_fn — cloned from pristine reference_inputs.
+            ref_inputs = {
+                name: clone_value(value) for name, value in state["reference_inputs"].items()
+            }
+
+            print("\n[kernel]    running ... ", end="", flush=True)
+            state["callable"]()
+            torch.cuda.synchronize()
+            print("done")
+
+            print("[reference] running ... ", end="", flush=True)
+            ref_fn(**ref_inputs)
+            torch.cuda.synchronize()
+            print("done")
+
+            kernel_outputs = {
+                name: tensor for name, tensor in state["tensor_inputs"].items()
+                if name in {spec[0] for spec in state["output_specs"]}
+            }
+            ref_outputs = {
+                name: tensor for name, tensor in ref_inputs.items()
+                if isinstance(tensor, torch.Tensor) and name in kernel_outputs
+            }
+
+            seed_passed = _validate_outputs(
+                kernel_outputs,
+                ref_outputs,
+                state["output_specs"],
+                _atol,
+                _rtol,
+            )
+            per_seed_results.append({"seed": cur_seed, "passed": seed_passed})
+            if not seed_passed:
+                overall_pass = False
+
+        validation_passed = overall_pass
 
         print("=" * 60)
         print(f"  Target     : {os.path.basename(solution_file)}")
@@ -748,18 +875,25 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
         print(f"  Dims       : {dim_values}")
         print(f"  Buf/ptr    : {state['ptr_elems']} elems")
         print(f"  Tolerance  : atol={_atol}  rtol={_rtol}")
+        print(f"  Seeds      : {seeds_to_check}")
         print("-" * 60)
         result_str = "ALL PASS" if validation_passed else "FAILED"
         print(f"  Result     : {_color(result_str, validation_passed)}")
+        if len(seeds_to_check) > 1:
+            for entry in per_seed_results:
+                tag = _color("PASS", entry["passed"]) if entry["passed"] else _color("FAIL", False)
+                print(f"    seed={entry['seed']:>6}  {tag}")
         print("=" * 60)
 
         result["correctness"]["passed"] = validation_passed
+        result["correctness"]["seeds"] = per_seed_results
         if not validation_passed:
             _write_json_out(json_out, result)
             sys.exit(1)
 
     times_ref = None
     if has_ref:
+        # reference_inputs is pristine (never touched by kernel); clone for benchmark.
         ref_bench_inputs = {
             name: clone_value(value) for name, value in state["reference_inputs"].items()
         }
@@ -783,6 +917,12 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
             tag = "IN " if item["role"] == "input" else "OUT"
             vals = item["tensor"].reshape(-1)[:preview].float().cpu().tolist()
             print(f"  {tag} {item['name']:>6s} = {_fmt_vals(vals)}")
+
+    # Reset kernel buffers to pristine state before timing. Without this, the
+    # kernel's benchmark measures performance on whatever state the validation
+    # step (or a previous iteration) left behind — for RMW kernels this means
+    # accumulating garbage into outputs and producing stale timings.
+    _reset_tensor_inputs(state)
 
     print(f"\n[warmup] kernel  {warmup} iterations ...")
     times_kernel = _time_iterations(state["callable"], warmup, repeat)
@@ -871,6 +1011,10 @@ def main():
     parser.add_argument("--atol", type=float, default=1e-4, help="Absolute tolerance for validation (default: 1e-4)")
     parser.add_argument("--rtol", type=float, default=1e-3, help="Relative tolerance for validation (default: 1e-3)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for input tensors when validating (default: 42)")
+    parser.add_argument("--validation-seeds", type=str, default="",
+                        help="Comma-separated list of seeds to validate against (e.g. '1,2,3,42'). "
+                             "If set, runs validation once per seed and only reports PASS if ALL seeds pass. "
+                             "Overrides --seed for validation (--seed is still used for single-shot timing).")
     parser.add_argument("--json-out", type=str, default="", help="Optional path to write structured benchmark results as JSON")
     parser.add_argument("--nvcc-bin", type=str, default="nvcc", help="NVCC executable or full path")
 
@@ -887,6 +1031,14 @@ def main():
     torch.cuda.set_device(args.gpu)
     arch = args.arch if args.arch else detect_arch(args.gpu)
 
+    validation_seeds = None
+    if args.validation_seeds.strip():
+        try:
+            validation_seeds = [int(s.strip()) for s in args.validation_seeds.split(",") if s.strip()]
+        except ValueError as exc:
+            print(f"Error: --validation-seeds must be comma-separated integers ({exc})", file=sys.stderr)
+            sys.exit(2)
+
     run(
         solution_file=args.solution_file,
         ref_file=args.ref,
@@ -901,8 +1053,11 @@ def main():
         json_out=args.json_out,
         nvcc_bin=args.nvcc_bin,
         backend=args.backend,
+        validation_seeds=validation_seeds,
     )
 
 
 if __name__ == "__main__":
     main()
+
+

@@ -1,0 +1,323 @@
+{
+  "$note": "Expected SASS instruction patterns per optimization method (v4). Used by sass_check.py to verify that claimed optimizations actually appear in compiled code. require_any=true means at least one pattern must match; require_any=false means all patterns must match. Empty sass_patterns means SASS-level verification is not applicable (verified by ncu metrics or runtime behavior instead).",
+  "$version": "4.0",
+  "methods": {
+    "compute.tensor_core": {
+      "sass_patterns": ["HMMA", "WGMMA", "HGMMA", "IMMA", "UMMA", "QGMMA"],
+      "require_any": true,
+      "note": "Tensor Core instructions: HMMA (Ampere FP16/BF16), WGMMA (Hopper), HGMMA (Hopper FP16), UMMA (Blackwell tcgen05), IMMA (INT8), QGMMA (Hopper FP8)"
+    },
+    "compute.mixed_precision": {
+      "sass_patterns": ["HMMA", "WGMMA", "HGMMA", "UMMA", "HFMA2", "H2F", "F2H"],
+      "require_any": true,
+      "note": "TC instructions or FP16 conversion instructions indicating mixed-precision path"
+    },
+    "compute.warp_specialization": {
+      "sass_patterns": ["MBARRIER", "BAR\\.ARRIVE", "DEPBAR", "SETMAXREG"],
+      "require_any": true,
+      "note": "Barrier primitives and register reallocation used for producer-consumer warp coordination"
+    },
+    "compute.launch_config": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Launch config is runtime, not visible in SASS — verified by ncu occupancy metrics"
+    },
+    "compute.thread_coarsening": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Verified by reduced grid size and increased per-thread instruction count"
+    },
+    "compute.ilp_unroll_register_tile": {
+      "sass_patterns": ["FFMA", "HFMA2"],
+      "require_any": true,
+      "note": "Dense FMA sequences with register operands indicate outer-product register tile"
+    },
+    "compute.overlap_compute_memory": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "No specific SASS signature — verified via ncu occupancy/IPC metrics"
+    },
+    "compute.gemm_softmax_interleave": {
+      "sass_patterns": ["WGMMA", "UMMA", "MUFU\\.EX2", "MBARRIER"],
+      "require_any": true,
+      "note": "GEMM instructions interleaved with MUFU.EX2 (exp2 for softmax) and mbarrier sync"
+    },
+    "compute.two_level_accumulation_promotion": {
+      "sass_patterns": ["WGMMA", "QGMMA", "FFMA", "F2F"],
+      "require_any": true,
+      "note": "FP8 WGMMA followed by CUDA-core FFMA promotion (F2F converts FP16 accum to FP32)"
+    },
+    "compute.fp8_fast_accumulation_mode": {
+      "sass_patterns": ["QGMMA"],
+      "require_any": true,
+      "note": "Fast-accum FP8 WGMMA without interleaved FFMA promotion. Also verified by absence of F2F after WGMMA."
+    },
+    "compute.block_scaled_precision": {
+      "sass_patterns": ["UMMA", "QGMMA"],
+      "require_any": true,
+      "note": "Blackwell tcgen05 MMA (UMMA) or FP8 wgmma (QGMMA) with block-scaled operands"
+    },
+    "compute.tf32_emulation_3xtf32_bf16x6": {
+      "sass_patterns": ["HMMA\\.16816\\.F32\\.TF32", "WGMMA.*tf32"],
+      "require_any": true,
+      "note": "TF32 or BF16 TC instructions used to emulate FP32 via 3x/6x repetition. Verified by dense TF32/BF16 MMA sequences."
+    },
+    "compute.mufu_ex2_softmax_replacement": {
+      "sass_patterns": ["MUFU\\.EX2"],
+      "require_any": true,
+      "note": "SFU ex2.approx.f32 replacing exp() in softmax paths"
+    },
+    "compute.reduction": {
+      "sass_patterns": ["SHFL", "RED"],
+      "require_any": true,
+      "note": "Shuffle instructions or atomic reductions"
+    },
+    "compute.warp_shuffle": {
+      "sass_patterns": ["SHFL"],
+      "require_any": true,
+      "note": "Warp shuffle instructions"
+    },
+    "compute.loop_unroll": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Verified by checking SASS does NOT have loop back-edge branches in hot region"
+    },
+    "compute.fma_and_fast_math": {
+      "sass_patterns": ["FFMA", "DFMA", "HFMA2", "MUFU"],
+      "require_any": true,
+      "note": "FMA instructions or MUFU (multi-function unit for fast math: rcp, rsqrt, sin, cos, ex2)"
+    },
+    "compute.lop3_bit_manipulation": {
+      "sass_patterns": ["LOP3"],
+      "require_any": true,
+      "note": "Three-operand boolean logic instruction for int4→fp16 bit manipulation dequantization"
+    },
+    "compute.pragma_no_alias": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Verified by reduced instruction count and improved IPC — compiler optimization not directly visible"
+    },
+    "compute.strength_reduce": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Verified by absence of integer division instructions (IDIV/IMAD.WIDE.S64) in hot loop"
+    },
+    "compute.branch_eliminate": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Verified by reduced branch count (BRA/SSY) in SASS and improved warp execution efficiency"
+    },
+    "compute.handwritten_ptx_inline": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Verified by matching SASS output to intended PTX inline asm — patterns are case-specific"
+    },
+
+    "memory.kernel_fusion": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Verified by reduced kernel launch count and dram bytes — not a SASS-level signature"
+    },
+    "memory.coalesced_access": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Verified via ncu Sectors/Request metric approaching 1"
+    },
+    "memory.tiling_smem": {
+      "sass_patterns": ["STS", "LDS"],
+      "require_any": true,
+      "note": "Shared memory store (STS) and load (LDS) instructions"
+    },
+    "memory.vectorized_access": {
+      "sass_patterns": ["LDG\\.E\\.128", "STG\\.E\\.128", "LDG\\.E\\.64", "STG\\.E\\.64"],
+      "require_any": true,
+      "note": "Wide vector load/store instructions (64-bit or 128-bit)"
+    },
+    "memory.async_copy": {
+      "sass_patterns": ["LDGSTS", "CP\\.ASYNC", "UTMALDG", "UTMASTG"],
+      "require_any": true,
+      "note": "Async copy: cp.async (Ampere LDGSTS), TMA load (UTMALDG) / TMA store (UTMASTG) on Hopper+"
+    },
+    "memory.multi_stage_pipeline": {
+      "sass_patterns": ["LDGSTS", "CP\\.ASYNC", "LDSM", "DEPBAR"],
+      "require_any": true,
+      "note": "Async copy with dependency barriers and LDSM for register staging"
+    },
+    "memory.epilogue_fusion": {
+      "sass_patterns": ["FFMA", "HFMA2", "MUFU", "STG"],
+      "require_any": true,
+      "note": "FMA/activation in epilogue before final global store — verified by reduced dram_write_bytes"
+    },
+    "memory.bank_conflict": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Verified via ncu bank conflict counter = 0"
+    },
+    "memory.ldmatrix_stmatrix": {
+      "sass_patterns": ["LDSM\\.16\\.M88", "STSM", "MOVM"],
+      "require_any": true,
+      "note": "ldmatrix (LDSM.16.M88.x4) / stmatrix (STSM) / movmatrix (MOVM) for efficient smem→register transfer in TC kernels"
+    },
+    "memory.register_pressure": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Verified via ptxas -v spill count = 0"
+    },
+    "memory.tma_multicast": {
+      "sass_patterns": ["UTMALDG"],
+      "require_any": true,
+      "note": "TMA load with multicast — UTMALDG with cluster multicast mask"
+    },
+    "memory.tma_descriptor_tuning": {
+      "sass_patterns": ["UTMALDG", "UTMASTG"],
+      "require_any": true,
+      "note": "TMA instructions — verified by bank_conflict=0 and correct swizzle mode in descriptor"
+    },
+    "memory.epilogue_visitor_tree_fusion": {
+      "sass_patterns": ["FFMA", "HFMA2", "MUFU", "WGMMA", "UTMASTG"],
+      "require_any": true,
+      "note": "Complex epilogue: FMA/MUFU chained on accumulator + TMA store. Verified by single dram_bytes_write burst."
+    },
+    "memory.data_layout": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Data layout is a host-side concern, not visible in SASS"
+    },
+    "memory.ldg_cache_modifier_hint": {
+      "sass_patterns": ["LDG\\.E\\.CG", "LDG\\.E\\.CS", "LDG\\.E\\.CI"],
+      "require_any": true,
+      "note": "Explicit cache modifiers: CG (cache global, bypass L1), CS (streaming), CI (constant invariant)"
+    },
+    "memory.l2_persistence_window": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "L2 persistence is configured via CUDA runtime API, not visible in kernel SASS"
+    },
+    "memory.split_k_parallel_reduce": {
+      "sass_patterns": ["ATOM", "RED"],
+      "require_any": true,
+      "note": "Split-K partial results combined via atomicAdd or two-phase reduction kernel"
+    },
+    "memory.cache_and_readonly": {
+      "sass_patterns": ["LDG\\.E\\.CI", "LDG\\.E\\.CONSTANT"],
+      "require_any": true,
+      "note": "Constant/read-only cache loads"
+    },
+    "memory.smem_register_spilling": {
+      "sass_patterns": ["STS", "LDS"],
+      "require_any": true,
+      "note": "Compiler-inserted smem spill stores/loads — verified by reduced local memory (STL/LDL) traffic"
+    },
+    "memory.tma_im2col_implicit_conv": {
+      "sass_patterns": ["UTMALDG\\.IM2COL"],
+      "require_any": true,
+      "note": "TMA im2col mode instruction variant for Hopper implicit convolution"
+    },
+    "memory.distributed_smem": {
+      "sass_patterns": ["LDS\\.U\\.CLUSTER", "STS\\.U\\.CLUSTER"],
+      "require_any": true,
+      "note": "Cluster-scope shared memory load/store for distributed shared memory"
+    },
+    "memory.tensor_map_rebuild_avoid": {
+      "sass_patterns": ["UTMALDG", "PREFETCH\\.TENSORMAP"],
+      "require_any": true,
+      "note": "TMA instructions with __grid_constant__ descriptor; PREFETCH.TENSORMAP in kernel prologue"
+    },
+
+    "latency.async_pipeline": {
+      "sass_patterns": ["LDGSTS", "CP\\.ASYNC", "DEPBAR"],
+      "require_any": true,
+      "note": "Async pipeline instructions — cp.async with dependency barriers"
+    },
+    "latency.reduce_sync_count": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Verified by reduced BAR.SYNC count in SASS disassembly"
+    },
+    "latency.warp_shuffle_sync": {
+      "sass_patterns": ["SHFL"],
+      "require_any": true,
+      "note": "Shuffle instructions replacing shared memory sync"
+    },
+    "latency.tile_scheduler_swizzle": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Tile scheduling is visible in kernel logic (blockIdx remapping) but not as specific SASS opcode"
+    },
+    "latency.persistent_kernel": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Persistent kernel visible as outer loop in SASS but hard to grep specifically"
+    },
+    "latency.stream_k_load_balancing": {
+      "sass_patterns": ["ATOM", "RED"],
+      "require_any": true,
+      "note": "Stream-K work stealing uses atomicCAS for job queue — verified by atomic ops + persistent outer loop"
+    },
+    "latency.online_recomputation": {
+      "sass_patterns": ["MUFU\\.EX2", "FFMA", "HFMA2"],
+      "require_any": true,
+      "note": "Online softmax: EX2 (exp2) + FMA for rescaling — verified by absence of O(N²) DRAM traffic"
+    },
+    "latency.warp_aggregated_atomics": {
+      "sass_patterns": ["VOTE", "SHFL", "ATOM", "POPC"],
+      "require_any": false,
+      "note": "Warp vote + shuffle + single atomic + popc — leader election pattern. require_all=true ensures pattern integrity."
+    },
+    "latency.asymmetric_mbarrier_sync": {
+      "sass_patterns": ["MBARRIER\\.ARRIVE", "MBARRIER\\.TRY_WAIT"],
+      "require_any": true,
+      "note": "Hardware mbarrier arrive/wait replacing __syncthreads for asymmetric producer-consumer"
+    },
+    "latency.pingpong_warpgroup_schedule": {
+      "sass_patterns": ["WGMMA", "BAR\\.ARRIVE", "BAR\\.SYNC", "SETMAXREG"],
+      "require_any": false,
+      "note": "FA3 pingpong pattern: WGMMA + named barrier toggle between warpgroups + register reallocation"
+    },
+    "latency.producer_regdealloc_setmaxnreg": {
+      "sass_patterns": ["SETMAXREG\\.INC", "SETMAXREG\\.DEC"],
+      "require_any": true,
+      "note": "PTX setmaxnreg.dec (producer deallocates) / setmaxnreg.inc (consumer allocates)"
+    },
+    "latency.intra_wg_gemm_softmax_pipeline": {
+      "sass_patterns": ["WGMMA", "MUFU\\.EX2", "DEPBAR"],
+      "require_any": false,
+      "note": "Intra-warpgroup pipeline: WGMMA interleaved with softmax EX2 and dep barriers"
+    },
+    "latency.pdl_overlap": {
+      "sass_patterns": ["GRIDDEPCONTROL"],
+      "require_any": true,
+      "note": "Programmatic Dependent Launch: griddepcontrol.launch_dependents / griddepcontrol.wait"
+    },
+    "latency.cooperative_cluster": {
+      "sass_patterns": ["BAR\\.ARRIVE", "MBARRIER"],
+      "require_any": true,
+      "note": "Cooperative group/cluster barrier instructions"
+    },
+    "latency.static_launch_grid_graph": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Static grid + early exit verified by kernel containing early-return branch on blockIdx"
+    },
+    "latency.cuda_graphs": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "CUDA Graphs is a runtime feature, not visible in kernel SASS"
+    },
+    "latency.cluster_launch_control_scheduler": {
+      "sass_patterns": ["CLC\\.TRY_CANCEL", "CLC\\.QUERY"],
+      "require_any": true,
+      "note": "Blackwell Cluster Launch Control: clusterlaunchcontrol.try_cancel / query for dynamic work stealing"
+    },
+    "latency.stream_event": {
+      "sass_patterns": [],
+      "require_any": true,
+      "note": "Stream/event is a runtime feature, not visible in kernel SASS"
+    },
+    "latency.atomic_optimize": {
+      "sass_patterns": ["ATOM", "RED"],
+      "require_any": true,
+      "note": "Atomic and reduction instructions — verify reduced count/contention. For warp-aggregated variant see latency.warp_aggregated_atomics."
+    }
+  }
+}

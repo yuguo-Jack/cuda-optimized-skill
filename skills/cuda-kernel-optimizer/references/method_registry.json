@@ -1,47 +1,612 @@
 {
-  "$schema_note": "Machine-readable mirror of references/optimization_catalog.md. Each entry's id/axis/priority MUST match the catalog exactly. Update both together.",
+  "$schema_note": "Machine-readable mirror of optimization_catalog.md (v4). Methods globally re-ranked by actual importance = typical speedup × applicability probability × non-substitutability. 63 methods total: compute P1-P22, memory P1-P22, latency P1-P19.",
+  "$version": "4.0",
+  "$changelog": "v4 (2026-04-21): Added 12 high-value methods (FA3 pingpong, DeepGEMM two-level accum, warp-aggregated atomics, stream-K, EVT fusion, etc.). Major re-ranking: vectorized_access P7→P4; launch_config P6→P4; bank_conflict P10→P8; ldmatrix P11→P9; persistent_kernel P6→P5; online_recomputation P5→P7. Added required_features[] for per-arch gating and complements[] for FA3-style compound methods.",
   "methods": {
-    "compute.tensor_core":            { "axis": "compute", "priority": 1,  "min_sm": 70, "name": "Tensor Core / 专用硬件利用" },
-    "compute.overlap_compute_memory": { "axis": "compute", "priority": 2,  "min_sm": 0,  "name": "计算与访存重叠" },
-    "compute.launch_config":          { "axis": "compute", "priority": 3,  "min_sm": 0,  "name": "Launch Configuration / Tile Shape" },
-    "compute.reduction":              { "axis": "compute", "priority": 4,  "min_sm": 0,  "name": "归约优化" },
-    "compute.warp_shuffle":           { "axis": "compute", "priority": 5,  "min_sm": 30, "name": "Warp Shuffle 用于计算" },
-    "compute.loop_unroll":            { "axis": "compute", "priority": 6,  "min_sm": 0,  "name": "循环展开" },
-    "compute.fma_and_fast_math":      { "axis": "compute", "priority": 7,  "min_sm": 0,  "name": "FMA + 编译选项" },
-    "compute.strength_reduce":        { "axis": "compute", "priority": 8,  "min_sm": 0,  "name": "强度削减 + __restrict__" },
-    "compute.warp_specialization":    { "axis": "compute", "priority": 9,  "min_sm": 80, "name": "Warp Specialization" },
-    "compute.branch_eliminate":       { "axis": "compute", "priority": 10, "min_sm": 0,  "name": "分支消除 + 谓词化" },
+    "compute.tensor_core": {
+      "axis": "compute", "priority": 1, "min_sm": 70,
+      "name": "Tensor Core / 专用硬件利用",
+      "trigger_metric": "sm__pipe_tensor_op_hmma_cycles_active.pct_of_peak",
+      "trigger_good": 60, "trigger_bad": 20, "trigger_direction": "low_is_bad",
+      "required_features": ["tensor_core"],
+      "reference_impl": "CUTLASS examples/48 (Hopper) / CUTLASS examples/74 (Blackwell)",
+      "typical_speedup": "8-16x for GEMM"
+    },
+    "compute.mixed_precision": {
+      "axis": "compute", "priority": 2, "min_sm": 0,
+      "name": "混合精度 / 低位宽计算",
+      "trigger_metric": "sm__pipe_fp32_cycles_active.pct_of_peak",
+      "trigger_good": 30, "trigger_bad": 50, "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "PyTorch amp / CUTLASS half_t+float accumulator",
+      "typical_speedup": "2-4x"
+    },
+    "compute.warp_specialization": {
+      "axis": "compute", "priority": 3, "min_sm": 80,
+      "name": "Warp Specialization (producer-consumer)",
+      "trigger_metric": "smsp__warp_issue_stalled_long_scoreboard.pct",
+      "trigger_good": 10, "trigger_bad": 40, "trigger_direction": "high_is_bad",
+      "required_features": ["mbarrier"],
+      "reference_impl": "ThunderKittens LCSF template / CUTLASS TmaWarpSpecializedPingpong",
+      "typical_speedup": "1.5-3x on Hopper attention"
+    },
+    "compute.launch_config": {
+      "axis": "compute", "priority": 4, "min_sm": 0,
+      "name": "Launch Configuration / Tile Shape",
+      "trigger_metric": "sm__warps_active.pct_of_peak",
+      "trigger_good": 50, "trigger_bad": 25, "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "cudaOccupancyMaxPotentialBlockSize / triton.autotune",
+      "typical_speedup": "1.2-2x baseline sanity check"
+    },
+    "compute.thread_coarsening": {
+      "axis": "compute", "priority": 5, "min_sm": 0,
+      "name": "线程粗化 / 寄存器级 Tiling",
+      "trigger_metric": "sm__inst_executed.avg.per_cycle_active",
+      "trigger_good": 2.0, "trigger_bad": 1.0, "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "siboehm SGEMM kernel 4-7",
+      "typical_speedup": "2-5x on memory-bound"
+    },
+    "compute.ilp_unroll_register_tile": {
+      "axis": "compute", "priority": 6, "min_sm": 0,
+      "name": "8×8 寄存器瓦片 outer-product ILP",
+      "trigger_metric": "sm__inst_executed.avg.per_cycle_active",
+      "trigger_good": 2.0, "trigger_bad": 1.0, "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "siboehm SGEMM kernel 8-10 (outer-product 2D register blocktiling)",
+      "typical_speedup": "2-3x when TC unavailable"
+    },
+    "compute.overlap_compute_memory": {
+      "axis": "compute", "priority": 7, "min_sm": 0,
+      "name": "计算与访存重叠（延迟隐藏）",
+      "trigger_metric": "sm__inst_executed.avg.per_cycle_active",
+      "trigger_good": 2.0, "trigger_bad": 1.0, "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "CUTLASS MainloopSm80CpAsync 4-stage",
+      "typical_speedup": "1.3-2x when multi_stage unavailable"
+    },
+    "compute.gemm_softmax_interleave": {
+      "axis": "compute", "priority": 8, "min_sm": 90,
+      "name": "GEMM-Softmax 两阶段乒乓流水",
+      "trigger_metric": "smsp__warp_issue_stalled_wait.pct",
+      "trigger_good": 5, "trigger_bad": 20, "trigger_direction": "high_is_bad",
+      "required_features": ["wgmma", "warp_specialization"],
+      "reference_impl": "FlashAttention-3 flash_fwd_kernel_sm90 / sm90_gemm_tma_warpspecialized_pingpong.hpp",
+      "complements": ["latency.pingpong_warpgroup_schedule", "latency.intra_wg_gemm_softmax_pipeline"],
+      "typical_speedup": "1.5-2x attention FP16"
+    },
+    "compute.two_level_accumulation_promotion": {
+      "axis": "compute", "priority": 9, "min_sm": 90,
+      "name": "FP8 两级累加精度提升 (DeepGEMM)",
+      "trigger_metric": "fp8_relative_error",
+      "trigger_good": 0.003, "trigger_bad": 0.02, "trigger_direction": "high_is_bad",
+      "required_features": ["fp8_e4m3", "wgmma"],
+      "reference_impl": "DeepGEMM csrc/jit_kernels/gemm_fp8.cuh",
+      "conflict_with": ["compute.fp8_fast_accumulation_mode"],
+      "typical_speedup": "0.85x (trade speed for accuracy) — required for FP8 training"
+    },
+    "compute.fp8_fast_accumulation_mode": {
+      "axis": "compute", "priority": 10, "min_sm": 90,
+      "name": "FP8 Fast Accumulation (CUTLASS fastAccum)",
+      "trigger_metric": "wgmma_throughput_pct",
+      "trigger_good": 70, "trigger_bad": 40, "trigger_direction": "low_is_bad",
+      "required_features": ["fp8_e4m3", "wgmma"],
+      "reference_impl": "CUTLASS examples/54_hopper_fp8_warp_specialized_gemm",
+      "conflict_with": ["compute.two_level_accumulation_promotion"],
+      "typical_speedup": "2x vs two-level accum, at cost of 14-bit accum precision"
+    },
+    "compute.block_scaled_precision": {
+      "axis": "compute", "priority": 11, "min_sm": 100,
+      "name": "NVFP4 / MXFP8 / MXFP6 块缩放精度",
+      "trigger_metric": "sm__pipe_tensor_op_hmma_cycles_active.pct_of_peak",
+      "trigger_good": 60, "trigger_bad": 20, "trigger_direction": "low_is_bad",
+      "required_features": ["tcgen05", "tmem", "block_scaling"],
+      "reference_impl": "CUTLASS examples/72-79 (Blackwell narrow-precision)",
+      "typical_speedup": "2x vs FP8 on Blackwell"
+    },
+    "compute.tf32_emulation_3xtf32_bf16x6": {
+      "axis": "compute", "priority": 12, "min_sm": 80,
+      "name": "FP32 via 3×TF32 or 6×BF16 Tensor Core 仿真",
+      "trigger_metric": "sm__pipe_tensor_op_hmma_cycles_active.pct_of_peak",
+      "trigger_good": 30, "trigger_bad": 15, "trigger_direction": "low_is_bad",
+      "required_features": ["tensor_core"],
+      "reference_impl": "Triton tt.dot inputPrecision=tf32x3/bf16x6",
+      "typical_speedup": "3-5x vs FP32 CUDA core, with IEEE-close accuracy"
+    },
+    "compute.mufu_ex2_softmax_replacement": {
+      "axis": "compute", "priority": 13, "min_sm": 70,
+      "name": "SFU ex2 替代 exp (softmax)",
+      "trigger_metric": "smsp__inst_executed_pipe_xu.sum",
+      "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": [],
+      "reference_impl": "FlashAttention-3 uses exp2(x*1.4427) instead of exp(x)",
+      "typical_speedup": "1.4x on softmax SFU throughput"
+    },
+    "compute.reduction": {
+      "axis": "compute", "priority": 14, "min_sm": 0,
+      "name": "归约优化",
+      "trigger_metric": null, "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": [],
+      "reference_impl": "CUB BlockReduce / Mark Harris reduction tutorial",
+      "typical_speedup": "2-4x on reduction-heavy kernels"
+    },
+    "compute.warp_shuffle": {
+      "axis": "compute", "priority": 15, "min_sm": 30,
+      "name": "Warp Shuffle 用于计算",
+      "trigger_metric": null, "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": [],
+      "reference_impl": "__shfl_xor_sync / CUB WarpReduce",
+      "typical_speedup": "1.2-2x on warp-scope reductions"
+    },
+    "compute.loop_unroll": {
+      "axis": "compute", "priority": 16, "min_sm": 0,
+      "name": "循环展开",
+      "trigger_metric": "smsp__warp_issue_stalled_short_scoreboard.pct",
+      "trigger_good": 5, "trigger_bad": 20, "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "#pragma unroll / CUTLASS_PRAGMA_UNROLL",
+      "typical_speedup": "1.1-1.3x"
+    },
+    "compute.fma_and_fast_math": {
+      "axis": "compute", "priority": 17, "min_sm": 0,
+      "name": "FMA + 编译选项 fast_math",
+      "trigger_metric": null, "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": [],
+      "reference_impl": "-use_fast_math / __fmaf_rn / __frcp_rn",
+      "typical_speedup": "1.1-1.4x on transcendental-heavy code"
+    },
+    "compute.lop3_bit_manipulation": {
+      "axis": "compute", "priority": 18, "min_sm": 70,
+      "name": "lop3 三目逻辑 int4/int8→fp16 反量化",
+      "trigger_metric": "dram__bytes.sum",
+      "trigger_good": null, "trigger_bad": null, "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "Marlin / Machete W4A16 kernels",
+      "typical_speedup": "2-4x on W4A16 dequant"
+    },
+    "compute.pragma_no_alias": {
+      "axis": "compute", "priority": 19, "min_sm": 0,
+      "name": "__restrict__ + #pragma unroll + 别名消除",
+      "trigger_metric": "smsp__warp_issue_stalled_short_scoreboard.pct",
+      "trigger_good": 5, "trigger_bad": 20, "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "NVIDIA blog: cuda-pro-tip-optimize-pointer-aliasing",
+      "typical_speedup": "1.2-2x when aliasing blocks vectorization"
+    },
+    "compute.strength_reduce": {
+      "axis": "compute", "priority": 20, "min_sm": 0,
+      "name": "强度削减 (整数除法 → 移位 / FastDivmod)",
+      "trigger_metric": null, "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": [],
+      "reference_impl": "CUTLASS FastDivmod",
+      "typical_speedup": "1.1-1.3x if idx math in hot loop"
+    },
+    "compute.branch_eliminate": {
+      "axis": "compute", "priority": 21, "min_sm": 0,
+      "name": "分支消除 + 谓词化",
+      "trigger_metric": null, "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": [],
+      "reference_impl": "CUTLASS CpAsyncPredicated / Triton tl.where",
+      "typical_speedup": "1.1-1.5x when branch divergence severe"
+    },
+    "compute.handwritten_ptx_inline": {
+      "axis": "compute", "priority": 22, "min_sm": 0,
+      "name": "手写 inline PTX (后防线)",
+      "trigger_metric": null, "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": [],
+      "reference_impl": "DeepGEMM post-compilation SASS opts (pre-NVCC 12.9)",
+      "typical_speedup": "1.05-1.15x; last resort"
+    },
 
-    "memory.kernel_fusion":           { "axis": "memory",  "priority": 1,  "min_sm": 0,  "name": "Kernel Fusion" },
-    "memory.coalesced_access":        { "axis": "memory",  "priority": 2,  "min_sm": 0,  "name": "合并访问" },
-    "memory.tiling_smem":             { "axis": "memory",  "priority": 3,  "min_sm": 0,  "name": "Tiling / Shared Memory 分块" },
-    "memory.register_pressure":       { "axis": "memory",  "priority": 4,  "min_sm": 0,  "name": "寄存器压力控制" },
-    "memory.multi_stage_pipeline":    { "axis": "memory",  "priority": 5,  "min_sm": 80, "name": "双缓冲 / 多级流水线" },
-    "memory.vectorized_access":       { "axis": "memory",  "priority": 6,  "min_sm": 0,  "name": "向量化访存" },
-    "memory.async_copy":              { "axis": "memory",  "priority": 7,  "min_sm": 80, "name": "异步拷贝 (cp.async / TMA)" },
-    "memory.bank_conflict":           { "axis": "memory",  "priority": 8,  "min_sm": 0,  "name": "Bank Conflict 消除" },
-    "memory.data_layout":             { "axis": "memory",  "priority": 9,  "min_sm": 0,  "name": "SoA / 对齐 / Padding / 数据重排" },
-    "memory.cache_and_readonly":      { "axis": "memory",  "priority": 10, "min_sm": 0,  "name": "L2/只读路径 + smem 容量配置" },
+    "memory.kernel_fusion": {
+      "axis": "memory", "priority": 1, "min_sm": 0,
+      "name": "Kernel Fusion",
+      "trigger_metric": "dram__bytes.sum",
+      "trigger_good": null, "trigger_bad": null, "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "torch.compile / Triton single-kernel design",
+      "typical_speedup": "2-10x when eliminating intermediate materialization"
+    },
+    "memory.coalesced_access": {
+      "axis": "memory", "priority": 2, "min_sm": 0,
+      "name": "合并访问",
+      "trigger_metric": "l1tex__t_sector_hit_rate.pct",
+      "trigger_good": 80, "trigger_bad": 30, "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "CUDA C Best Practices — Coalesced Global Memory Access",
+      "typical_speedup": "4-8x on uncoalesced access"
+    },
+    "memory.tiling_smem": {
+      "axis": "memory", "priority": 3, "min_sm": 0,
+      "name": "Tiling / Shared Memory 分块",
+      "trigger_metric": "lts__t_sector_hit_rate.pct",
+      "trigger_good": 70, "trigger_bad": 30, "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "siboehm SGEMM kernel 3 (smem blocktiling)",
+      "typical_speedup": "3-5x on GEMM-like"
+    },
+    "memory.vectorized_access": {
+      "axis": "memory", "priority": 4, "min_sm": 0,
+      "name": "向量化访存 (float4/int4/128-bit LDG)",
+      "trigger_metric": "smsp__warp_issue_stalled_mio_throttle.pct",
+      "trigger_good": 5, "trigger_bad": 20, "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "NVIDIA blog: cuda-pro-tip-increase-performance-with-vectorized-memory-access",
+      "typical_speedup": "1.5-2x on memory-bound kernels"
+    },
+    "memory.async_copy": {
+      "axis": "memory", "priority": 5, "min_sm": 80,
+      "name": "异步拷贝 (cp.async / TMA)",
+      "trigger_metric": "smsp__warp_issue_stalled_long_scoreboard.pct",
+      "trigger_good": 10, "trigger_bad": 40, "trigger_direction": "high_is_bad",
+      "required_features": ["cp_async"],
+      "reference_impl": "CUTLASS MainloopSm80CpAsync / MainloopSm90Tma",
+      "typical_speedup": "1.5-3x (enabler for multi_stage)"
+    },
+    "memory.multi_stage_pipeline": {
+      "axis": "memory", "priority": 6, "min_sm": 80,
+      "name": "双缓冲 / 多级流水线",
+      "trigger_metric": "smsp__warp_issue_stalled_long_scoreboard.pct",
+      "trigger_good": 10, "trigger_bad": 40, "trigger_direction": "high_is_bad",
+      "required_features": ["cp_async"],
+      "reference_impl": "CUTLASS Stages=3-6",
+      "typical_speedup": "1.3-2x"
+    },
+    "memory.epilogue_fusion": {
+      "axis": "memory", "priority": 7, "min_sm": 80,
+      "name": "Epilogue Fusion (bias+activation+cast)",
+      "trigger_metric": "dram__bytes_write.sum",
+      "trigger_good": null, "trigger_bad": null, "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "CUTLASS LinearCombinationGeneric",
+      "typical_speedup": "1.3-2x on GEMM+activation chains"
+    },
+    "memory.bank_conflict": {
+      "axis": "memory", "priority": 8, "min_sm": 0,
+      "name": "Bank Conflict 消除 (padding / swizzle)",
+      "trigger_metric": "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum",
+      "trigger_good": 0, "trigger_bad": 100, "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "Lei Mao blog: CUDA Shared Memory Swizzling",
+      "typical_speedup": "1.2-2x"
+    },
+    "memory.ldmatrix_stmatrix": {
+      "axis": "memory", "priority": 9, "min_sm": 75,
+      "name": "ldmatrix / stmatrix 合并 SMEM→register",
+      "trigger_metric": "smsp__warp_issue_stalled_mio_throttle.pct",
+      "trigger_good": 5, "trigger_bad": 20, "trigger_direction": "high_is_bad",
+      "required_features": ["tensor_core"],
+      "reference_impl": "CuTe SM75_U32x4_LDSM_N Copy_Traits",
+      "typical_speedup": "1.2-1.5x on TC kernels"
+    },
+    "memory.register_pressure": {
+      "axis": "memory", "priority": 10, "min_sm": 0,
+      "name": "寄存器压力控制 (__launch_bounds__)",
+      "trigger_metric": "launch__occupancy_limit_registers",
+      "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": [],
+      "reference_impl": "__launch_bounds__(256, 2) / -maxrregcount",
+      "typical_speedup": "1.2-2x when spilling"
+    },
+    "memory.tma_multicast": {
+      "axis": "memory", "priority": 11, "min_sm": 90,
+      "name": "TMA Multicast 跨 CTA 数据复用",
+      "trigger_metric": "dram__bytes.sum",
+      "trigger_good": null, "trigger_bad": null, "trigger_direction": "high_is_bad",
+      "required_features": ["tma", "cluster"],
+      "reference_impl": "CUTLASS Cluster Shape 2x1x1 cooperative schedule",
+      "typical_speedup": "1.5-2x (bytes reduction 1/cluster_size)"
+    },
+    "memory.tma_descriptor_tuning": {
+      "axis": "memory", "priority": 12, "min_sm": 90,
+      "name": "TMA descriptor swizzle / multicast 精调",
+      "trigger_metric": "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum",
+      "trigger_good": 0, "trigger_bad": 100, "trigger_direction": "high_is_bad",
+      "required_features": ["tma"],
+      "reference_impl": "CuTe Swizzle<3,4,3> + SM90_TMA_LOAD_MULTICAST",
+      "typical_speedup": "1.1-1.3x on TMA-using kernels"
+    },
+    "memory.epilogue_visitor_tree_fusion": {
+      "axis": "memory", "priority": 13, "min_sm": 90,
+      "name": "Epilogue Visitor Tree (EVT) 任意 DAG 融合",
+      "trigger_metric": "dram__bytes_write.sum",
+      "trigger_good": null, "trigger_bad": null, "trigger_direction": "high_is_bad",
+      "required_features": ["wgmma"],
+      "reference_impl": "Colfax epilogue_visitor_tree / CUTLASS Sm90EVT",
+      "typical_speedup": "1.3-2x beyond basic epilogue_fusion"
+    },
+    "memory.data_layout": {
+      "axis": "memory", "priority": 14, "min_sm": 0,
+      "name": "SoA / 对齐 / Padding / 数据重排",
+      "trigger_metric": null, "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": [],
+      "reference_impl": "NHWC for TC / cudaMallocPitch",
+      "typical_speedup": "1.3-2x when AoS→SoA"
+    },
+    "memory.ldg_cache_modifier_hint": {
+      "axis": "memory", "priority": 15, "min_sm": 70,
+      "name": "显式 Cache Modifier (__ldcg/__ldcs/__ldca)",
+      "trigger_metric": "l1tex__t_sector_hit_rate.pct",
+      "trigger_good": 70, "trigger_bad": 30, "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "PTX ld.global.nc / ld.global.cs",
+      "typical_speedup": "1.1-1.3x for streaming reads that shouldn't pollute L1"
+    },
+    "memory.l2_persistence_window": {
+      "axis": "memory", "priority": 16, "min_sm": 80,
+      "name": "L2 Persistent Cache Window",
+      "trigger_metric": "lts__t_sector_hit_rate.pct",
+      "trigger_good": 70, "trigger_bad": 30, "trigger_direction": "low_is_bad",
+      "required_features": ["l2_persistence"],
+      "reference_impl": "cudaAccessPolicyWindow + hitProp=persisting",
+      "typical_speedup": "1.2-1.5x for small hot data (KV cache)"
+    },
+    "memory.split_k_parallel_reduce": {
+      "axis": "memory", "priority": 17, "min_sm": 0,
+      "name": "Split-K 并行规约 (GEMM K-dim 切分)",
+      "trigger_metric": "sm__cycles_active.pct_of_peak",
+      "trigger_good": 80, "trigger_bad": 50, "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "CUTLASS Split-K / cuBLASlt kSplitK",
+      "conflict_with": ["latency.stream_k_load_balancing"],
+      "typical_speedup": "1.5-3x on tall-skinny M×N small K large"
+    },
+    "memory.cache_and_readonly": {
+      "axis": "memory", "priority": 18, "min_sm": 35,
+      "name": "L2/只读路径 + smem 容量配置",
+      "trigger_metric": null, "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": [],
+      "reference_impl": "const __restrict__ + __ldg() + cudaFuncSetAttribute 228KB",
+      "typical_speedup": "1.1-1.3x"
+    },
+    "memory.smem_register_spilling": {
+      "axis": "memory", "priority": 19, "min_sm": 80,
+      "name": "Shared-memory register spilling (CUDA 13.0)",
+      "trigger_metric": "launch__occupancy_limit_registers",
+      "trigger_good": null, "trigger_bad": null, "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "#pragma nv_enable_smem_spilling (CUDA 13.0+)",
+      "typical_speedup": "1.05-1.1x (QUDA reported)"
+    },
+    "memory.tma_im2col_implicit_conv": {
+      "axis": "memory", "priority": 20, "min_sm": 90,
+      "name": "TMA im2col 隐式卷积",
+      "trigger_metric": "dram__bytes.sum",
+      "trigger_good": null, "trigger_bad": null, "trigger_direction": "high_is_bad",
+      "required_features": ["tma"],
+      "reference_impl": "CUTLASS implicit_gemm Hopper examples",
+      "typical_speedup": "1.5-2x vs explicit im2col for convolution"
+    },
+    "memory.distributed_smem": {
+      "axis": "memory", "priority": 21, "min_sm": 90,
+      "name": "分布式共享内存 (DSMEM)",
+      "trigger_metric": null, "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": ["cluster", "dsmem"],
+      "reference_impl": "cluster.map_shared_rank() + Cluster Shape",
+      "typical_speedup": "1.2-1.5x on cluster-scoped workloads"
+    },
+    "memory.tensor_map_rebuild_avoid": {
+      "axis": "memory", "priority": 22, "min_sm": 90,
+      "name": "__grid_constant__ tensor map 复用",
+      "trigger_metric": null, "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": ["tma"],
+      "reference_impl": "cuTensorMapReplaceAddress()",
+      "typical_speedup": "1.02-1.05x launch overhead reduction"
+    },
 
-    "latency.warp_shuffle_sync":      { "axis": "latency", "priority": 1,  "min_sm": 30, "name": "Warp Shuffle 替代 Shared Memory 同步" },
-    "latency.reduce_sync_count":      { "axis": "latency", "priority": 2,  "min_sm": 0,  "name": "减少 __syncthreads() 次数" },
-    "latency.async_pipeline":         { "axis": "latency", "priority": 3,  "min_sm": 80, "name": "异步流水线消除同步等待" },
-    "latency.cooperative_cluster":    { "axis": "latency", "priority": 4,  "min_sm": 0,  "name": "Cooperative Groups / Cluster 同步" },
-    "latency.cuda_graphs":            { "axis": "latency", "priority": 5,  "min_sm": 0,  "name": "CUDA Graphs 减少调度开销" },
-    "latency.stream_event":           { "axis": "latency", "priority": 6,  "min_sm": 0,  "name": "Stream / Event 细粒度依赖" },
-    "latency.persistent_kernel":      { "axis": "latency", "priority": 7,  "min_sm": 0,  "name": "持久化 / Stream-K 调度" },
-    "latency.atomic_optimize":        { "axis": "latency", "priority": 8,  "min_sm": 0,  "name": "Atomic 操作优化" }
-  },
-  "coupled_methods": [
-    {
-      "ids": ["memory.multi_stage_pipeline", "latency.async_pipeline"],
-      "note": "These two are different names for essentially the same optimization (multi-stage cp.async/TMA pipeline). Selecting both counts as one; the second axis must pick a different method."
+    "latency.async_pipeline": {
+      "axis": "latency", "priority": 1, "min_sm": 80,
+      "name": "异步流水线消除同步等待",
+      "trigger_metric": "smsp__warp_issue_stalled_long_scoreboard.pct",
+      "trigger_good": 10, "trigger_bad": 40, "trigger_direction": "high_is_bad",
+      "required_features": ["cp_async"],
+      "reference_impl": "CUTLASS PipelineAsync / PipelineTmaAsync",
+      "typical_speedup": "1.5-2.5x when long_scoreboard dominates"
+    },
+    "latency.reduce_sync_count": {
+      "axis": "latency", "priority": 2, "min_sm": 0,
+      "name": "减少 __syncthreads() 次数",
+      "trigger_metric": "smsp__warp_issue_stalled_barrier.pct",
+      "trigger_good": 5, "trigger_bad": 30, "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "__syncwarp(mask) + compute-sanitizer racecheck",
+      "typical_speedup": "1.2-1.5x"
+    },
+    "latency.warp_shuffle_sync": {
+      "axis": "latency", "priority": 3, "min_sm": 30,
+      "name": "Warp Shuffle 替代 Shared Memory 同步",
+      "trigger_metric": "smsp__warp_issue_stalled_barrier.pct",
+      "trigger_good": 5, "trigger_bad": 20, "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "__shfl_sync family (~1 cycle, no bank conflict)",
+      "typical_speedup": "1.3-2x on warp reductions"
+    },
+    "latency.tile_scheduler_swizzle": {
+      "axis": "latency", "priority": 4, "min_sm": 0,
+      "name": "Tile Scheduler Swizzle / 光栅化顺序优化",
+      "trigger_metric": "lts__t_sector_hit_rate.pct",
+      "trigger_good": 70, "trigger_bad": 30, "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "Triton GROUP_SIZE_M / CUTLASS RasterOrder::Heuristic",
+      "typical_speedup": "1.3-1.8x on large GEMM"
+    },
+    "latency.persistent_kernel": {
+      "axis": "latency", "priority": 5, "min_sm": 0,
+      "name": "持久化 Kernel (launch = #SMs × waves)",
+      "trigger_metric": "sm__cycles_active.pct_of_peak",
+      "trigger_good": 80, "trigger_bad": 50, "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "CUTLASS PersistentTileScheduler",
+      "typical_speedup": "1.2-1.5x"
+    },
+    "latency.stream_k_load_balancing": {
+      "axis": "latency", "priority": 6, "min_sm": 80,
+      "name": "Stream-K 跨 K 动态负载均衡",
+      "trigger_metric": "wave_quantization_tail_pct",
+      "trigger_good": 5, "trigger_bad": 20, "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "CUTLASS DecompositionMode::StreamK / example 47, 74",
+      "conflict_with": ["memory.split_k_parallel_reduce"],
+      "typical_speedup": "1.5-2.5x on wave-quantized GEMM"
+    },
+    "latency.online_recomputation": {
+      "axis": "latency", "priority": 7, "min_sm": 0,
+      "name": "在线重计算 (FlashAttention 范式)",
+      "trigger_metric": "dram__bytes.sum",
+      "trigger_good": null, "trigger_bad": null, "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "FlashAttention-2/3",
+      "complements": ["compute.gemm_softmax_interleave"],
+      "typical_speedup": "5-10x on attention (eliminates O(N²) materialization)"
+    },
+    "latency.warp_aggregated_atomics": {
+      "axis": "latency", "priority": 8, "min_sm": 35,
+      "name": "Warp-Aggregated Atomics",
+      "trigger_metric": "smsp__warp_issue_stalled_membar.pct",
+      "trigger_good": 5, "trigger_bad": 20, "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "NVIDIA blog: cuda-pro-tip-optimized-filtering-warp-aggregated-atomics",
+      "typical_speedup": "up to 32x on atomic-heavy filter/histogram"
+    },
+    "latency.asymmetric_mbarrier_sync": {
+      "axis": "latency", "priority": 9, "min_sm": 90,
+      "name": "mbarrier 非对称同步替换 __syncthreads",
+      "trigger_metric": "smsp__warp_issue_stalled_barrier.pct",
+      "trigger_good": 5, "trigger_bad": 20, "trigger_direction": "high_is_bad",
+      "required_features": ["mbarrier"],
+      "reference_impl": "CUTLASS Pipeline arrive/wait",
+      "typical_speedup": "1.2-1.5x"
+    },
+    "latency.pingpong_warpgroup_schedule": {
+      "axis": "latency", "priority": 10, "min_sm": 90,
+      "name": "FA3 Pingpong Warpgroup Schedule",
+      "trigger_metric": "smsp__warp_issue_stalled_wait.pct",
+      "trigger_good": 5, "trigger_bad": 20, "trigger_direction": "high_is_bad",
+      "required_features": ["wgmma", "warp_specialization"],
+      "reference_impl": "FA3 flash_fwd_kernel_sm90 (WG1 GEMM || WG2 softmax)",
+      "complements": ["latency.intra_wg_gemm_softmax_pipeline"],
+      "typical_speedup": "1.3-1.5x on attention forward"
+    },
+    "latency.producer_regdealloc_setmaxnreg": {
+      "axis": "latency", "priority": 11, "min_sm": 90,
+      "name": "setmaxnreg.dec/inc 寄存器再分配",
+      "trigger_metric": "launch__occupancy_limit_registers",
+      "trigger_good": null, "trigger_bad": null, "trigger_direction": "low_is_bad",
+      "required_features": ["warp_specialization"],
+      "reference_impl": "CUTLASS TmaWarpSpecializedPingpong auto-insertion",
+      "typical_speedup": "1.2-1.4x eliminating consumer spill"
+    },
+    "latency.intra_wg_gemm_softmax_pipeline": {
+      "axis": "latency", "priority": 12, "min_sm": 90,
+      "name": "FA3 单 Warpgroup 内 GEMM-Softmax 2-stage 流水",
+      "trigger_metric": "smsp__warp_issue_stalled_wait.pct",
+      "trigger_good": 5, "trigger_bad": 20, "trigger_direction": "high_is_bad",
+      "required_features": ["wgmma"],
+      "reference_impl": "FA3 csrc/flash-attention/flash_fwd_kernel_sm90 intra-WG pipeline",
+      "complements": ["latency.pingpong_warpgroup_schedule"],
+      "typical_speedup": "1.15-1.3x additional on top of pingpong"
+    },
+    "latency.pdl_overlap": {
+      "axis": "latency", "priority": 13, "min_sm": 90,
+      "name": "Programmatic Dependent Launch (PDL)",
+      "trigger_metric": null, "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": ["pdl"],
+      "reference_impl": "CUTLASS -DCUTLASS_ENABLE_GDC_FOR_SM90",
+      "typical_speedup": "1.05-1.15x on multi-kernel pipeline"
+    },
+    "latency.cooperative_cluster": {
+      "axis": "latency", "priority": 14, "min_sm": 0,
+      "name": "Cooperative Groups / Cluster 同步",
+      "trigger_metric": null, "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": [],
+      "reference_impl": "cooperative_groups::tiled_partition<8>",
+      "typical_speedup": "varies"
+    },
+    "latency.static_launch_grid_graph": {
+      "axis": "latency", "priority": 15, "min_sm": 70,
+      "name": "静态最大 grid + CUDA Graph + 内部早退",
+      "trigger_metric": "sm__cycles_active.pct_of_peak",
+      "trigger_good": 80, "trigger_bad": 50, "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "CUDA Graph capture + kernel internal early-return",
+      "typical_speedup": "1.2-2x on iterative small-kernel apps"
+    },
+    "latency.cuda_graphs": {
+      "axis": "latency", "priority": 16, "min_sm": 0,
+      "name": "CUDA Graphs 减少调度开销",
+      "trigger_metric": null, "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": [],
+      "reference_impl": "cudaStreamBeginCapture + cudaGraphExecUpdate",
+      "typical_speedup": "1.1-2x depending on launch overhead"
+    },
+    "latency.cluster_launch_control_scheduler": {
+      "axis": "latency", "priority": 17, "min_sm": 100,
+      "name": "Cluster Launch Control 动态 tile 调度",
+      "trigger_metric": "sm__cycles_active.pct_of_peak",
+      "trigger_good": 80, "trigger_bad": 50, "trigger_direction": "low_is_bad",
+      "required_features": ["clc"],
+      "reference_impl": "CUTLASS PersistentTileSchedulerSm100StreamK",
+      "typical_speedup": "1.1-1.3x eliminating wave quantization"
+    },
+    "latency.stream_event": {
+      "axis": "latency", "priority": 18, "min_sm": 0,
+      "name": "Stream / Event 细粒度依赖",
+      "trigger_metric": null, "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
+      "required_features": [],
+      "reference_impl": "cudaStreamWaitEvent",
+      "typical_speedup": "varies on multi-kernel workloads"
+    },
+    "latency.atomic_optimize": {
+      "axis": "latency", "priority": 19, "min_sm": 0,
+      "name": "Atomic 操作优化 (局部归约再 atomic)",
+      "trigger_metric": "smsp__warp_issue_stalled_membar.pct",
+      "trigger_good": 5, "trigger_bad": 15, "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "Triton tl.atomic_add sem='relaxed'",
+      "typical_speedup": "1.2-2x on low-contention atomics"
     }
+  },
+
+  "coupled_methods": [
+    { "ids": ["memory.multi_stage_pipeline", "latency.async_pipeline"],
+      "note": "These two are different names for essentially the same optimization. Selecting both counts as one; the second axis must pick a different method." },
+    { "ids": ["memory.async_copy", "latency.async_pipeline"],
+      "note": "async_copy implements the data-movement side of async_pipeline." },
+    { "ids": ["memory.tma_multicast", "memory.distributed_smem"],
+      "note": "Both use Cluster; selecting both on same axis counts as one." },
+    { "ids": ["compute.gemm_softmax_interleave", "latency.online_recomputation"],
+      "note": "GEMM-softmax interleave is a sub-technique of FlashAttention online recomputation." },
+    { "ids": ["compute.two_level_accumulation_promotion", "compute.fp8_fast_accumulation_mode"],
+      "note": "Mutually exclusive FP8 accumulation strategies (accuracy vs speed)." },
+    { "ids": ["memory.split_k_parallel_reduce", "latency.stream_k_load_balancing"],
+      "note": "Mutually exclusive GEMM decomposition strategies for K dimension." },
+    { "ids": ["latency.pingpong_warpgroup_schedule", "latency.intra_wg_gemm_softmax_pipeline"],
+      "note": "Complementary — FA3 uses both. Selecting both together counts as one latency slot." },
+    { "ids": ["memory.epilogue_fusion", "memory.epilogue_visitor_tree_fusion"],
+      "note": "EVT is the sm_90+ superset of basic epilogue_fusion. Pick one." },
+    { "ids": ["latency.atomic_optimize", "latency.warp_aggregated_atomics"],
+      "note": "warp_aggregated_atomics is a specific implementation of atomic_optimize. Pick one." },
+    { "ids": ["latency.cuda_graphs", "latency.static_launch_grid_graph"],
+      "note": "static_launch_grid_graph extends cuda_graphs for dynamic-shape cases. Pick one." }
   ],
+
   "skip_reason_codes": [
     "already_selected",
     "arch_incompatible",
+    "feature_unavailable",
     "skip_condition",
     "no_trigger"
-  ]
+  ],
+
+  "arch_feature_map": {
+    "sm_70": ["tensor_core"],
+    "sm_75": ["tensor_core", "ldmatrix"],
+    "sm_80": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence"],
+    "sm_86": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence"],
+    "sm_89": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence", "fp8_e4m3"],
+    "sm_90": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence", "fp8_e4m3", "tma", "wgmma", "mbarrier", "cluster", "dsmem", "pdl", "warp_specialization"],
+    "sm_100": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence", "fp8_e4m3", "tma", "wgmma", "mbarrier", "cluster", "dsmem", "pdl", "warp_specialization", "tcgen05", "tmem", "block_scaling", "clc"],
+    "sm_120": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence", "fp8_e4m3"]
+  }
 }

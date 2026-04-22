@@ -1,22 +1,12 @@
 #!/usr/bin/env python3
-"""End-to-end orchestrator. Intended to be driven BY Claude (which pauses at
-reasoning steps) but can also be invoked standalone if the user has scripted
-the code-generation step elsewhere.
+"""End-to-end orchestrator (v2 — roofline-driven, branch-and-select).
 
-Typical invocation (Claude drives):
-  # step 0-2: setup
-  python orchestrate.py setup \
-    --baseline ./gemm.cu --ref ./ref.py --benchmark ./benchmark.py \
-    --iterations 3 --ncu-num 5 --dims '{"M":4096,"N":4096,"K":4096}'
-
-  # (Claude reads profile, writes iterv1/kernel.{cu|py} and methods.json)
-
-  # step 3d-3f: validate + record
-  python orchestrate.py close-iter --run-dir <run_dir> --iter 1
-
-For fully automated runs (rare — code generation requires Claude), supply
-a `--code-generator` shell command that accepts state.json + iter and
-produces iterv{i}/kernel.* + methods.json.
+Subcommands:
+  setup       Steps 0-2: env check, preflight, init, seed baseline, profile+roofline for iter 1
+  open-iter   Prepare an iteration: profile best → ncu_top → roofline → axis budgets
+              (Claude then writes K branch kernels + methods.json + analysis.md)
+  close-iter  Steps 3e-3j: branch explore → champion → ncu champion → ablate → sass → update
+  finalize    Step 4: emit summary.md
 """
 
 from __future__ import annotations
@@ -42,18 +32,19 @@ def _read(path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# setup  —  steps 0, 1, 2, and 3a (profile best_input) for iter 1
+# setup  —  steps 0, 1, 2, and open-iter(1)
 # ---------------------------------------------------------------------------
 
 def cmd_setup(args):
     env_json = os.path.abspath(args.env_out or "./env.json")
 
     # 0. env
-    rc = _run([sys.executable, str(SCRIPT_DIR / "check_env.py"), "--out", env_json]).returncode
+    rc = _run([sys.executable, str(SCRIPT_DIR / "check_env.py"),
+               "--out", env_json]).returncode
     if rc != 0:
         sys.exit(f"check_env failed rc={rc}")
 
-    # 0b. preflight — validate baseline + ref contract before we invest anything
+    # 0b. preflight
     rc = _run([
         sys.executable, str(SCRIPT_DIR / "preflight.py"),
         "--baseline", os.path.abspath(args.baseline),
@@ -70,17 +61,17 @@ def cmd_setup(args):
         "--ref", os.path.abspath(args.ref),
         "--iterations", str(args.iterations),
         "--ncu-num", str(args.ncu_num),
+        "--branches", str(args.branches),
         "--dims", args.dims,
         "--env", env_json,
         "--noise-threshold-pct", str(args.noise_threshold_pct),
+        "--ptr-size", str(args.ptr_size),
     ], capture_output=True)
     if init.returncode != 0:
         sys.stderr.write(init.stderr or "")
         sys.exit("state init failed")
     sys.stderr.write(init.stderr or "")
-    # state.py init prints one pretty-printed JSON object. Try that first;
-    # fall back to last-line-is-json in case a future version emits a log
-    # preamble.
+
     init_info = {}
     try:
         init_info = json.loads(init.stdout or "{}")
@@ -98,7 +89,7 @@ def cmd_setup(args):
     if not run_dir or not state_path:
         sys.exit(f"could not parse state init output:\n{init.stdout}")
 
-    # 2. seed baseline (timing-only; correctness must pass)
+    # 2. seed baseline
     rc = _run([
         sys.executable, str(SCRIPT_DIR / "run_iteration.py"), "seed-baseline",
         "--state", state_path,
@@ -107,9 +98,9 @@ def cmd_setup(args):
         "--repeat", str(args.repeat),
     ]).returncode
     if rc != 0:
-        sys.exit("baseline seed failed (likely a correctness failure on the baseline itself)")
+        sys.exit("baseline seed failed")
 
-    # 3a (for iter 1): profile the best_input
+    # 3a for iter 1: profile best_input
     rc = _run([
         sys.executable, str(SCRIPT_DIR / "profile_ncu.py"),
         "--state", state_path,
@@ -118,87 +109,159 @@ def cmd_setup(args):
         "--benchmark", os.path.abspath(args.benchmark),
     ]).returncode
     if rc != 0:
-        print("[warn] ncu profiling failed or degraded; see iterv1/*.ncu.log", file=sys.stderr)
+        print("[warn] ncu profiling failed or degraded", file=sys.stderr)
+
+    # 3b for iter 1: roofline
+    rc = _run([
+        sys.executable, str(SCRIPT_DIR / "roofline.py"),
+        "--state", state_path,
+        "--iter", "1",
+    ]).returncode
+
+    # Check for early stop
+    iter_dir = os.path.join(run_dir, "iterv1")
+    roofline_path = os.path.join(iter_dir, "roofline.json")
+    early_stop = False
+    if os.path.isfile(roofline_path):
+        roofline = _read(roofline_path)
+        early_stop = roofline.get("near_peak", False)
 
     print(json.dumps({
         "run_dir": run_dir,
         "state": state_path,
         "env": env_json,
+        "early_stop": early_stop,
         "next_step": (
-            "Claude should now read iterv1/ncu_top.json and state.json, then write "
-            "iterv1/kernel.<ext>, iterv1/methods.json, and iterv1/analysis.md. "
+            "Claude should now read iterv1/roofline.json (for axis budgets), "
+            "iterv1/ncu_top.json, and state.json, then write "
+            f"iterv1/branches/b{{1..K}}/kernel.<ext>, iterv1/methods.json, "
+            "and iterv1/analysis.md. "
             "After that, run: orchestrate.py close-iter --run-dir <run_dir> --iter 1"
-        ),
+        ) if not early_stop else "Near roofline — consider stopping.",
     }, indent=2))
 
 
 # ---------------------------------------------------------------------------
-# close-iter  —  steps 3d (benchmark) + 3f (state update) + 3a-for-next-iter
+# open-iter  —  profile + roofline for iteration N (if not done by setup)
+# ---------------------------------------------------------------------------
+
+def cmd_open_iter(args):
+    state_path = os.path.join(args.run_dir, "state.json")
+    if not os.path.isfile(state_path):
+        sys.exit(f"state.json missing: {state_path}")
+
+    state = _read(state_path)
+
+    # Profile best_input for this iter
+    rc = _run([
+        sys.executable, str(SCRIPT_DIR / "profile_ncu.py"),
+        "--state", state_path,
+        "--iter", str(args.iter),
+        "--which", "best_input",
+        "--benchmark", os.path.abspath(args.benchmark),
+    ]).returncode
+    if rc != 0:
+        print("[warn] ncu profiling failed or degraded", file=sys.stderr)
+
+    # Roofline
+    rc = _run([
+        sys.executable, str(SCRIPT_DIR / "roofline.py"),
+        "--state", state_path,
+        "--iter", str(args.iter),
+    ]).returncode
+
+    # Check early stop
+    iter_dir = os.path.join(args.run_dir, f"iterv{args.iter}")
+    roofline_path = os.path.join(iter_dir, "roofline.json")
+    early_stop = False
+    if os.path.isfile(roofline_path):
+        roofline = _read(roofline_path)
+        early_stop = roofline.get("near_peak", False)
+
+    # Create branch dirs
+    num_branches = state.get("branches", 4)
+    branches_dir = os.path.join(iter_dir, "branches")
+    for b in range(1, num_branches + 1):
+        os.makedirs(os.path.join(branches_dir, f"b{b}"), exist_ok=True)
+
+    print(json.dumps({
+        "iter": args.iter,
+        "early_stop": early_stop,
+        "branches_dir": branches_dir,
+        "num_branches": num_branches,
+        "next_step": (
+            f"Claude should read iterv{args.iter}/roofline.json and ncu_top.json, "
+            f"write {num_branches} branch kernels under iterv{args.iter}/branches/b{{1..{num_branches}}}/kernel.<ext>, "
+            f"plus iterv{args.iter}/methods.json and iterv{args.iter}/analysis.md. "
+            f"Then run: orchestrate.py close-iter --run-dir {args.run_dir} --iter {args.iter}"
+        ) if not early_stop else "Near roofline — consider stopping.",
+    }, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# close-iter  —  branch explore → ncu champion → ablate → sass → update
 # ---------------------------------------------------------------------------
 
 def cmd_close_iter(args):
     state_path = os.path.join(args.run_dir, "state.json")
     if not os.path.isfile(state_path):
         sys.exit(f"state.json missing: {state_path}")
+
     state = _read(state_path)
     iter_dir = os.path.join(args.run_dir, f"iterv{args.iter}")
-    kernel = next((p for p in [os.path.join(iter_dir, "kernel.cu"),
-                               os.path.join(iter_dir, "kernel.py")]
-                   if os.path.isfile(p)), None)
     methods_json = os.path.join(iter_dir, "methods.json")
-    if not kernel:
-        sys.exit(f"no kernel found under {iter_dir}")
     if not os.path.isfile(methods_json):
         sys.exit(f"methods.json missing at {methods_json}")
 
-    # d. benchmark
-    bench = _run([
-        sys.executable, str(SCRIPT_DIR / "run_iteration.py"), "benchmark",
+    # Step 3e: Branch explore — compile + benchmark all branches
+    branch_result = _run([
+        sys.executable, str(SCRIPT_DIR / "branch_explore.py"),
         "--state", state_path,
         "--iter", str(args.iter),
         "--benchmark", os.path.abspath(args.benchmark),
         "--warmup", str(args.warmup),
         "--repeat", str(args.repeat),
     ], capture_output=True)
-    sys.stderr.write(bench.stderr or "")
-    if bench.returncode not in (0, 1):
-        sys.exit(f"bench subprocess crashed rc={bench.returncode}")
-    try:
-        summary = json.loads(bench.stdout)
-    except Exception:
-        summary = {"passed": False, "error": "could not parse bench output"}
+    sys.stderr.write(branch_result.stderr or "")
 
-    passed = bool(summary.get("passed"))
+    if branch_result.returncode == 2:
+        # All branches failed
+        print(json.dumps({
+            "iter": args.iter,
+            "status": "all_branches_failed",
+            "guidance": "Claude should fix the kernels and retry close-iter.",
+        }, indent=2))
+        sys.exit(2)
+    if branch_result.returncode != 0:
+        sys.exit(f"branch_explore failed rc={branch_result.returncode}")
+
+    # Find champion kernel
+    kernel = None
+    for ext in (".cu", ".py"):
+        candidate = os.path.join(iter_dir, f"kernel{ext}")
+        if os.path.isfile(candidate):
+            kernel = candidate
+            break
+    if not kernel:
+        sys.exit(f"No champion kernel found after branch_explore")
+
     bench_json = os.path.join(iter_dir, "bench.json")
+    if not os.path.isfile(bench_json):
+        sys.exit(f"bench.json missing for champion")
+
+    bench = _read(bench_json)
+    passed = bool(bench.get("correctness", {}).get("passed", False))
 
     if not passed:
         print(json.dumps({
             "iter": args.iter,
             "status": "validation_failed",
             "bench_json": bench_json,
-            "stderr_log": os.path.join(iter_dir, "bench.stderr.txt"),
-            "guidance": (
-                "Claude should read bench.json['correctness'] and bench.stderr.txt, "
-                "fix the kernel, and run close-iter again. After --max-retries failed "
-                "attempts, pass --abandon to skip this iteration."
-            ),
+            "guidance": "Claude should fix the kernel and re-run close-iter.",
         }, indent=2))
         sys.exit(2)
 
-    # f. update state
-    rc = _run([
-        sys.executable, str(SCRIPT_DIR / "state.py"), "update",
-        "--state", state_path,
-        "--iter", str(args.iter),
-        "--kernel", kernel,
-        "--bench", bench_json,
-        "--methods-json", methods_json,
-        "--retries", str(args.retries),
-    ]).returncode
-    if rc != 0:
-        sys.exit("state update failed")
-
-    # Profile the new kernel (so next iter's 3a has fresh data if this became best)
+    # Step 3g: Profile champion with ncu (MANDATORY full report)
     rc = _run([
         sys.executable, str(SCRIPT_DIR / "profile_ncu.py"),
         "--state", state_path,
@@ -207,11 +270,52 @@ def cmd_close_iter(args):
         "--benchmark", os.path.abspath(args.benchmark),
         "--promote-if-best",
     ]).returncode
+    if rc != 0:
+        print("[warn] ncu profiling of champion failed", file=sys.stderr)
 
-    # 3a for the *next* iteration
+    # Step 3h: Ablation attribution (optional — runs if ablation kernels exist)
+    attribution_path = os.path.join(iter_dir, "attribution.json")
+    ablation_dir = os.path.join(iter_dir, "ablations")
+    if os.path.isdir(ablation_dir):
+        _run([
+            sys.executable, str(SCRIPT_DIR / "ablate.py"),
+            "--state", state_path,
+            "--iter", str(args.iter),
+            "--benchmark", os.path.abspath(args.benchmark),
+        ])
+
+    # Step 3i: SASS verification
+    sass_check_path = os.path.join(iter_dir, "sass_check.json")
+    _run([
+        sys.executable, str(SCRIPT_DIR / "sass_check.py"),
+        "--state", state_path,
+        "--iter", str(args.iter),
+    ])
+
+    # Step 3j: Update state
+    update_cmd = [
+        sys.executable, str(SCRIPT_DIR / "state.py"), "update",
+        "--state", state_path,
+        "--iter", str(args.iter),
+        "--kernel", kernel,
+        "--bench", bench_json,
+        "--methods-json", methods_json,
+        "--retries", str(args.retries),
+    ]
+    if os.path.isfile(attribution_path):
+        update_cmd.extend(["--attribution", attribution_path])
+    if os.path.isfile(sass_check_path):
+        update_cmd.extend(["--sass-check", sass_check_path])
+
+    rc = _run(update_cmd).returncode
+    if rc != 0:
+        sys.exit("state update failed")
+
+    # Open next iteration if needed
     state = _read(state_path)
     next_iter = args.iter + 1
     if next_iter <= state["iterations_total"]:
+        # Profile best_input for next iter + roofline
         _run([
             sys.executable, str(SCRIPT_DIR / "profile_ncu.py"),
             "--state", state_path,
@@ -219,12 +323,27 @@ def cmd_close_iter(args):
             "--which", "best_input",
             "--benchmark", os.path.abspath(args.benchmark),
         ])
+        _run([
+            sys.executable, str(SCRIPT_DIR / "roofline.py"),
+            "--state", state_path,
+            "--iter", str(next_iter),
+        ])
+
+        # Check early stop
+        roofline_path = os.path.join(state["run_dir"], f"iterv{next_iter}", "roofline.json")
+        early_stop = False
+        if os.path.isfile(roofline_path):
+            roofline = _read(roofline_path)
+            early_stop = roofline.get("near_peak", False)
+    else:
+        early_stop = False
 
     print(json.dumps({
         "iter": args.iter,
         "status": "closed",
         "best_ms": state.get("best_metric_ms"),
         "next_iter": next_iter if next_iter <= state["iterations_total"] else None,
+        "early_stop": early_stop,
         "state": state_path,
     }, indent=2))
 
@@ -259,27 +378,31 @@ def main():
     ps = sub.add_parser("setup")
     ps.add_argument("--baseline", required=True)
     ps.add_argument("--ref", required=True)
-    ps.add_argument("--benchmark", default=_default_bench,
-                    help="Path to benchmark.py (default: bundled scripts/benchmark.py)")
+    ps.add_argument("--benchmark", default=_default_bench)
     ps.add_argument("--iterations", type=int, default=3)
     ps.add_argument("--ncu-num", type=int, default=5)
+    ps.add_argument("--branches", type=int, default=4)
     ps.add_argument("--dims", required=True, help="JSON dict of name->int")
     ps.add_argument("--noise-threshold-pct", type=float, default=2.0)
+    ps.add_argument("--ptr-size", type=int, default=0)
     ps.add_argument("--env-out", type=str, default="")
     ps.add_argument("--warmup", type=int, default=10)
     ps.add_argument("--repeat", type=int, default=20)
     ps.set_defaults(func=cmd_setup)
 
+    po = sub.add_parser("open-iter")
+    po.add_argument("--run-dir", required=True)
+    po.add_argument("--iter", type=int, required=True)
+    po.add_argument("--benchmark", default=_default_bench)
+    po.set_defaults(func=cmd_open_iter)
+
     pc = sub.add_parser("close-iter")
     pc.add_argument("--run-dir", required=True)
     pc.add_argument("--iter", type=int, required=True)
-    pc.add_argument("--benchmark", default=_default_bench,
-                    help="Path to benchmark.py (default: bundled scripts/benchmark.py)")
-    pc.add_argument("--retries", type=int, default=0,
-                    help="How many correctness retries were already done "
-                         "before this call (recorded in history, doesn't gate).")
+    pc.add_argument("--benchmark", default=_default_bench)
     pc.add_argument("--warmup", type=int, default=10)
     pc.add_argument("--repeat", type=int, default=20)
+    pc.add_argument("--retries", type=int, default=0)
     pc.set_defaults(func=cmd_close_iter)
 
     pf = sub.add_parser("finalize")
