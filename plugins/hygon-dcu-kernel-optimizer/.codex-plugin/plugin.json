@@ -4,11 +4,11 @@
   "description": "Codex skills and scripts for generating Hygon DCU HIP baselines from references and iteratively optimizing HIP/CK Tile kernels.",
   "author": {
     "name": "Local Hygon DCU Kernel Optimizer Maintainers",
-    "email": "",
-    "url": ""
+    "email": "local@example.invalid",
+    "url": "https://github.com/yuguo-Jack/cuda-optimized-skill"
   },
-  "homepage": "",
-  "repository": "",
+  "homepage": "https://github.com/yuguo-Jack/cuda-optimized-skill",
+  "repository": "https://github.com/yuguo-Jack/cuda-optimized-skill",
   "license": "MIT",
   "keywords": [
     "hygon",

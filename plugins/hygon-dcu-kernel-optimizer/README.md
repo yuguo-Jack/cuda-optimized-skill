@@ -9,15 +9,29 @@ The plugin does not include a remote execution skill. Each target project must p
 
 ## User-Level Install
 
-Copy the plugin to your Codex user plugin directory:
+Manual Codex plugin loading uses the installed plugin cache shape. Copy the plugin to:
+
+```text
+%USERPROFILE%\.codex\plugins\cache\codex-local-plugins\hygon-dcu-kernel-optimizer\local
+```
+
+PowerShell:
 
 ```powershell
 $src = "D:\git\cuda-optimized-skill\plugins\hygon-dcu-kernel-optimizer"
-$dst = "$HOME\.codex\plugins\hygon-dcu-kernel-optimizer"
-New-Item -ItemType Directory -Force "$HOME\.codex\plugins" | Out-Null
+$dst = "$HOME\.codex\plugins\cache\codex-local-plugins\hygon-dcu-kernel-optimizer\local"
+New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
 if (Test-Path $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
 Copy-Item -LiteralPath $src -Destination $dst -Recurse -Force
 ```
+
+Optionally keep a source copy at:
+
+```text
+%USERPROFILE%\.codex\plugins\hygon-dcu-kernel-optimizer
+```
+
+but the cache path above is the one that matches already-installed plugins such as GitHub and Superpowers.
 
 Create or update:
 
@@ -52,6 +66,34 @@ with:
 
 Restart or refresh Codex after installation.
 
+Enable the plugin in:
+
+```text
+%USERPROFILE%\.codex\config.toml
+```
+
+Add:
+
+```toml
+[plugins."hygon-dcu-kernel-optimizer@codex-local-plugins"]
+enabled = true
+```
+
+Codex loads the plugin and skill list when a session starts, so restart or refresh Codex after changing `marketplace.json` or `config.toml`.
+
+After restart, the enabled plugin id is:
+
+```text
+hygon-dcu-kernel-optimizer@codex-local-plugins
+```
+
+The plugin contributes these skills:
+
+```text
+hygon-dcu-kernel-optimizer:hygon-hip-baseline-generator
+hygon-dcu-kernel-optimizer:hyhon-hip-kernel-optimizer
+```
+
 ## Project-Level Install
 
 For a single target project, copy the plugin into that project:
@@ -71,6 +113,15 @@ with the same marketplace entry, keeping:
 ```json
 "path": "./plugins/hygon-dcu-kernel-optimizer"
 ```
+
+For repo-local marketplaces, enable the plugin in the Codex config using the marketplace name from that project's `.agents/plugins/marketplace.json`. For example, if the marketplace name is `local-plugins`:
+
+```toml
+[plugins."hygon-dcu-kernel-optimizer@local-plugins"]
+enabled = true
+```
+
+Restart or refresh Codex after enabling it.
 
 ## Using The Plugin
 
@@ -130,9 +181,23 @@ After editing the source plugin, reinstall by replacing the user-level copy:
 
 ```powershell
 $src = "D:\git\cuda-optimized-skill\plugins\hygon-dcu-kernel-optimizer"
-$dst = "$HOME\.codex\plugins\hygon-dcu-kernel-optimizer"
+$dst = "$HOME\.codex\plugins\cache\codex-local-plugins\hygon-dcu-kernel-optimizer\local"
 if (Test-Path $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
 Copy-Item -LiteralPath $src -Destination $dst -Recurse -Force
 ```
 
 Restart or refresh Codex after updating.
+
+If the plugin does not appear in the `@` menu, check:
+
+1. The plugin directory exists under `%USERPROFILE%\.codex\plugins\hygon-dcu-kernel-optimizer`.
+2. The installed cache directory exists under `%USERPROFILE%\.codex\plugins\cache\codex-local-plugins\hygon-dcu-kernel-optimizer\local`.
+3. `%USERPROFILE%\.codex\plugins\marketplace.json` contains the plugin entry.
+4. `%USERPROFILE%\.codex\config.toml` contains:
+
+```toml
+[plugins."hygon-dcu-kernel-optimizer@codex-local-plugins"]
+enabled = true
+```
+
+5. Codex was restarted after the config change.
