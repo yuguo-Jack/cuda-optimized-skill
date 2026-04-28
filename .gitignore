@@ -4,3 +4,6 @@ example
 .codex
 env.json
 tree.py
+hygon_tmp/
+__pycache__/
+*.pyc

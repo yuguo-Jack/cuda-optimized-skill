@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "methods.json",
+  "description": "Produced by the agent each iteration. Method count equals sum of axis budgets from roofline.json (typically 3, range 1-6). Consumed by scripts/state.py update.",
+  "type": "object",
+  "required": ["iter", "methods"],
+  "properties": {
+    "iter": { "type": "integer", "minimum": 1 },
+    "methods": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "axis", "priority", "description"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable identifier from references/optimization_catalog.md, e.g. 'compute.mmac_tensor_core'"
+          },
+          "name": {
+            "type": "string",
+            "description": "Short human-friendly label"
+          },
+          "axis": {
+            "type": "string",
+            "enum": ["compute", "memory", "latency"]
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "description": "Priority level from the catalog (P1=1, P2=2, ...). Lower is higher priority."
+          },
+          "skipped_higher": {
+            "type": "array",
+            "description": "List of higher-priority methods that were skipped on this axis, with reasons",
+            "items": {
+              "type": "object",
+              "required": ["id", "priority", "reason"],
+              "properties": {
+                "id": { "type": "string" },
+                "priority": { "type": "integer" },
+                "reason": { "type": "string", "description": "Why this higher-priority method was skipped: 'already_selected' | 'arch_incompatible' | 'feature_unavailable' | 'skip_condition' | 'no_trigger'" }
+              }
+            }
+          },
+          "description": {
+            "type": "string",
+            "description": "One-paragraph concrete description of what changed from best_file"
+          },
+          "dcu_evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["metric", "value"],
+              "properties": {
+                "metric": { "type": "string" },
+                "value": { "type": "number" },
+                "unit": { "type": "string" }
+              }
+            }
+          },
+          "trigger_strength": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Continuous trigger strength (0-1) for same-axis multi-method ranking. Only required when axis budget >= 2."
+          },
+          "expected_metric_shift": {
+            "type": "string",
+            "description": "What hipprof/PMC/SQTT or dccobjdump changes we expect on the new kernel"
+          }
+        }
+      }
+    }
+  }
+}

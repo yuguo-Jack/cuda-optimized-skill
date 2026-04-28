@@ -1,0 +1,38 @@
+{
+  "name": "hygon-dcu-kernel-optimizer",
+  "version": "0.1.0",
+  "description": "Codex skills and scripts for generating Hygon DCU HIP baselines from references and iteratively optimizing HIP/CK Tile kernels.",
+  "author": {
+    "name": "Local Hygon DCU Kernel Optimizer Maintainers",
+    "email": "",
+    "url": ""
+  },
+  "homepage": "",
+  "repository": "",
+  "license": "MIT",
+  "keywords": [
+    "hygon",
+    "dcu",
+    "hip",
+    "kernel-optimization",
+    "ck-tile"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Hygon DCU Kernel Optimizer",
+    "shortDescription": "Generate and optimize Hygon HIP kernels.",
+    "longDescription": "Provides Codex skills for Hygon DCU work: generate correctness-first HIP baselines from Torch, Triton, TileLang, or Python references, then run a hipprof/dccobjdump-guided iterative optimizer for HIP and CK Tile kernels. Remote execution is intentionally delegated to the target project's own remote workflow.",
+    "developerName": "Local Hygon DCU Kernel Optimizer Maintainers",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Generate a Hygon HIP baseline from this ref and shape.",
+      "Optimize this Hygon HIP kernel for my DCU target.",
+      "Run the Hygon optimizer using this project's remote workflow."
+    ],
+    "brandColor": "#0F766E"
+  }
+}

@@ -1,0 +1,339 @@
+{
+  "$schema_note": "Machine-readable DCU/HIP optimization method registry. Hygon tensorcore paths are HCU/MMOP/MMAC-specific; AMD MFMA guidance is analogy only unless dccobjdump confirms Hygon MMAC ISA. Source-backed HCU builtins are candidates only with exact signatures and target compilation.",
+  "$version": "1.1",
+  "methods": {
+    "compute.mmac_tensor_core": {
+      "axis": "compute",
+      "priority": 1,
+      "min_sm": 936,
+      "name": "HCU MMOP / MMAC matrix core utilization",
+      "trigger_metric": "SQ_INSTS_MMOP",
+      "trigger_direction": "low_is_bad",
+      "required_features": ["hcu_mmac"],
+      "reference_impl": "CK Tile HCU GEMM/conv/attention path, source-backed HCU/AMD-named MMAC builtin with exact signature, or target-compiled inline asm; final proof is v_mmac/MMOP ISA",
+      "source_backed_impls": [
+        "__builtin_amdgcn_mmac_f32_16x16x8f32",
+        "__builtin_amdgcn_mmac_f32_16x16x8tf32",
+        "__builtin_amdgcn_mmac_f32_16x16x16f16",
+        "__builtin_amdgcn_mmac_i32_16x16x32i8",
+        "__builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(reg_a, reg_b, reg_c, false, false)",
+        "__builtin_hcu_mmac_f32_16x16x32_bf8_bf8_lit_lts(reg_a, reg_b, reg_c, false, false)"
+      ],
+      "typical_speedup": "large for GEMM/attention/conv/MoE",
+      "no_fp4": true
+    },
+    "compute.mixed_precision_fp8_bf8": {
+      "axis": "compute",
+      "priority": 2,
+      "min_sm": 938,
+      "name": "gfx938 FP8/BF8/TF32 mixed precision",
+      "trigger_metric": "SQ_INSTS_VALU_F32",
+      "trigger_direction": "high_is_bad",
+      "required_features": ["fp8_bf8", "tf32", "hcu_mmac"],
+      "reference_impl": "compiled CK Tile low-precision path or source-backed gfx938 FP8/BF8 conversion/MMAC forms from paged_attention_938.cu when tolerance permits",
+      "source_backed_impls": [
+        "__builtin_hcu_cvt_f32_fp8(val, false, 0, lane)",
+        "__builtin_hcu_cvt_f32_bf8(val, false, 0, lane)",
+        "__builtin_hcu_cvt_pk_fp8_f32(v1, v2, val, high)",
+        "__builtin_hcu_cvt_pk_bf8_f32(v1, v2, val, high)"
+      ],
+      "typical_speedup": "2-4x when memory and matrix math benefit",
+      "no_fp4": true
+    },
+    "compute.launch_config_wave64": {
+      "axis": "compute",
+      "priority": 3,
+      "min_sm": 0,
+      "name": "Wave64 launch and tile geometry",
+      "trigger_metric": "SQ_WAVES",
+      "trigger_direction": "low_is_bad",
+      "required_features": ["wave64"],
+      "reference_impl": "block sizes as multiples of 64; tune occupancy with LDS/VGPR pressure",
+      "typical_speedup": "1.1-2x"
+    },
+    "compute.thread_coarsening": {
+      "axis": "compute",
+      "priority": 4,
+      "min_sm": 0,
+      "name": "Thread coarsening / register tile",
+      "trigger_metric": "SQ_BUSY_CYCLES",
+      "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "per-thread multiple elements, register tiles, fixed-loop unroll",
+      "typical_speedup": "1.2-5x on simple kernels"
+    },
+    "compute.register_pressure_control": {
+      "axis": "compute",
+      "priority": 5,
+      "min_sm": 0,
+      "name": "VGPR/SGPR pressure control",
+      "trigger_metric": "VGPR|SGPR|OCCUPANCY",
+      "trigger_direction": "manual",
+      "required_features": [],
+      "reference_impl": "scalarize local arrays, reduce live ranges, tune __launch_bounds__, avoid spills",
+      "typical_speedup": "1.05-2x when occupancy/spills are limiting"
+    },
+    "compute.fast_math_intrinsics": {
+      "axis": "compute",
+      "priority": 6,
+      "min_sm": 0,
+      "name": "Fast math / intrinsic replacement",
+      "trigger_metric": "SFU|DIV|SQRT|TRANS",
+      "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "HIP fast math intrinsics or reciprocal/multiply transforms with explicit tolerance",
+      "typical_speedup": "operator-dependent"
+    },
+    "compute.inline_asm_builtin": {
+      "axis": "compute",
+      "priority": 7,
+      "min_sm": 936,
+      "name": "Inline asm / low-level escape hatch",
+      "trigger_metric": "dccobjdump",
+      "trigger_direction": "manual",
+      "required_features": [],
+      "reference_impl": "small asm volatile or source-backed builtin only after higher-level paths fail and a minimal target compile probe passes",
+      "typical_speedup": "last-resort compiler workaround"
+    },
+
+    "memory.coalesced_access": {
+      "axis": "memory",
+      "priority": 1,
+      "min_sm": 0,
+      "name": "Coalesced global memory access",
+      "trigger_metric": "TD_COALESCABLE_WAVEFRONT_sum",
+      "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "contiguous wavefront lanes; SoA or hot-dimension-contiguous layout",
+      "typical_speedup": "2-8x on strided accesses"
+    },
+    "memory.vectorized_global_access": {
+      "axis": "memory",
+      "priority": 2,
+      "min_sm": 0,
+      "name": "Vectorized global load/store",
+      "trigger_metric": "TCC_EA_RDREQ_sum",
+      "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "aligned float2/float4 or packed global load/store operations",
+      "typical_speedup": "1.1-2x on bandwidth-bound streaming kernels"
+    },
+    "memory.aligned_layout_transform": {
+      "axis": "memory",
+      "priority": 3,
+      "min_sm": 0,
+      "name": "Layout / stride transform for locality",
+      "trigger_metric": "TCC_EA_RDREQ_sum",
+      "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "hot-dimension-contiguous layout, aligned strides, direct target-layout writes",
+      "typical_speedup": "operator-dependent, large for cache/KV/attention layouts"
+    },
+    "memory.lds_tiling": {
+      "axis": "memory",
+      "priority": 4,
+      "min_sm": 0,
+      "name": "LDS tiling and data reuse",
+      "trigger_metric": "TCC_EA_RDREQ_sum",
+      "trigger_direction": "high_is_bad",
+      "required_features": ["lds"],
+      "reference_impl": "global -> LDS -> register tiling",
+      "typical_speedup": "2-5x on GEMM-like reuse"
+    },
+    "memory.global_to_lds_async": {
+      "axis": "memory",
+      "priority": 5,
+      "min_sm": 936,
+      "name": "Direct global-to-LDS / async buffer load",
+      "trigger_metric": "VGPR|TCC_EA_RDREQ|dccobjdump",
+      "trigger_direction": "manual",
+      "required_features": ["lds", "global_to_lds"],
+      "reference_impl": "CK Tile loader, buffer_load_* lds, or source-backed __builtin_amdgcn_raw_buffer_load_lds wrapper with address_space(3) LDS destination",
+      "source_backed_impls": [
+        "__builtin_amdgcn_raw_buffer_load_lds(rsrc, address_space(3) int* dst, size, voffset, soffset, imm, auxiliary)"
+      ],
+      "typical_speedup": "1.1-3x when staging overhead or register pressure dominates"
+    },
+    "memory.matrix_load_mls": {
+      "axis": "memory",
+      "priority": 6,
+      "min_sm": 936,
+      "name": "CK Tile MLS / tile staging",
+      "trigger_metric": "TCP_TCC_READ_REQ_LATENCY_sum",
+      "trigger_direction": "high_is_bad",
+      "required_features": ["mls", "matrix_load"],
+      "reference_impl": "target-compiled CK Tile/HCU MLS path or source-backed HCU matrix-load examples",
+      "source_backed_impls": [
+        "__builtin_hcu_matrix_load_32x16_b16(rscr, address_space(3) short* dst, offset, t, r, sw, flags)",
+        "__builtin_hcu_matrix_load_b8(addr, 128, 0, 1, 0, 0, 0, 0)",
+        "__builtin_hcu_ds_read_matrix_trans_format_u16(address_space(3) short* src, lds_offset, row, col, alt)"
+      ],
+      "typical_speedup": "1.2-3x on matrix-tile staging"
+    },
+    "memory.ds_read_matrix_layout": {
+      "axis": "memory",
+      "priority": 7,
+      "min_sm": 936,
+      "name": "DS matrix-read layout contract",
+      "trigger_metric": "dccobjdump",
+      "trigger_direction": "manual",
+      "required_features": ["ds_matrix_read", "lds"],
+      "reference_impl": "compiled inline asm ds_read_m32x16_b16, ds_read_m32x16_b16_alt, or ds_read_m32x32_b8; source-probe ds_read_m32x64_b4 / ds_read_m32x8_b32 before use",
+      "typical_speedup": "required for robust HCU MMAC feed path"
+    },
+    "memory.lds_bank_conflict": {
+      "axis": "memory",
+      "priority": 8,
+      "min_sm": 0,
+      "name": "LDS bank-conflict reduction / swizzle",
+      "trigger_metric": "SQ_LDS_BANK_CONFLICT",
+      "trigger_direction": "high_is_bad",
+      "required_features": ["lds"],
+      "reference_impl": "padding, XOR/Morton swizzle, matrix-read-aware LDS layout",
+      "typical_speedup": "1.1-2x"
+    },
+    "memory.cache_policy_glc_slc": {
+      "axis": "memory",
+      "priority": 9,
+      "min_sm": 936,
+      "name": "Cache policy / coherency modifiers",
+      "trigger_metric": "CACHE|TCC|SYNC",
+      "trigger_direction": "manual",
+      "required_features": ["cache_modifiers"],
+      "reference_impl": "glc/slc flags in Hygon/AMD buffer/global memory operations when justified",
+      "typical_speedup": "case-specific"
+    },
+    "memory.ck_tile_named_pipeline": {
+      "axis": "memory",
+      "priority": 10,
+      "min_sm": 936,
+      "name": "CK Tile named pipeline selection",
+      "trigger_metric": "pipeline",
+      "trigger_direction": "manual",
+      "required_features": ["ck_tile"],
+      "reference_impl": "TLS, MLS, WASP, cshuffle, wavelet, persistent, split-k, preshuffle, dsreadm",
+      "typical_speedup": "operator-dependent"
+    },
+    "memory.epilogue_fusion": {
+      "axis": "memory",
+      "priority": 11,
+      "min_sm": 0,
+      "name": "Epilogue / post-op fusion",
+      "trigger_metric": "KERNEL_LAUNCH|TCC_EA_WRREQ",
+      "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "fuse bias/add/activation/quant/store transform into epilogue",
+      "typical_speedup": "1.1-2x or more when removing a full memory pass"
+    },
+
+    "latency.waitcnt_pipeline": {
+      "axis": "latency",
+      "priority": 1,
+      "min_sm": 0,
+      "name": "Waitcnt-aware software pipeline",
+      "trigger_metric": "STALL|WAIT|LATENCY",
+      "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "overlap global/LDS loads with compute; s_waitcnt vmcnt/lgkmcnt near consumers",
+      "typical_speedup": "1.2-2.5x"
+    },
+    "latency.reduce_barrier": {
+      "axis": "latency",
+      "priority": 2,
+      "min_sm": 0,
+      "name": "Reduce barriers and sync scope",
+      "trigger_metric": "BARRIER|S_BARRIER",
+      "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "remove unnecessary __syncthreads; use wave-level patterns when legal",
+      "typical_speedup": "1.1-1.5x"
+    },
+    "latency.wavefront_shuffle_ds_bpermute": {
+      "axis": "latency",
+      "priority": 3,
+      "min_sm": 0,
+      "name": "Wavefront exchange/reduction via shuffle or DS permute",
+      "trigger_metric": "LDS|BARRIER|REDUCE",
+      "trigger_direction": "high_is_bad",
+      "required_features": ["ds_permute", "wave64"],
+      "reference_impl": "ds_permute_b32 / ds_bpermute_b32 or HIP shuffle/cooperative groups",
+      "typical_speedup": "1.2-2x on wave-scope exchange"
+    },
+    "latency.ilp_unroll": {
+      "axis": "latency",
+      "priority": 4,
+      "min_sm": 0,
+      "name": "ILP, loop unrolling, and schedule fill",
+      "trigger_metric": "STALL|ISSUE|LOOP",
+      "trigger_direction": "high_is_bad",
+      "required_features": [],
+      "reference_impl": "pragma/manual unroll, interleave independent arithmetic and address work",
+      "typical_speedup": "1.05-1.5x"
+    },
+    "latency.persistent_scheduler": {
+      "axis": "latency",
+      "priority": 5,
+      "min_sm": 936,
+      "name": "Persistent or work-queue scheduler",
+      "trigger_metric": "SQ_WAVES",
+      "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "CK Tile persistent/grouped GEMM or custom work queue",
+      "typical_speedup": "1.2-2.5x on tail/wave quantization"
+    },
+    "latency.split_k_streamk": {
+      "axis": "latency",
+      "priority": 6,
+      "min_sm": 0,
+      "name": "Split-K / Stream-K parallelism",
+      "trigger_metric": "SQ_WAVES|CU_ACTIVITY",
+      "trigger_direction": "low_is_bad",
+      "required_features": [],
+      "reference_impl": "split K into partial sums, tune combine/reduction, stream-K for skinny/irregular shapes",
+      "typical_speedup": "operator-dependent, high for skinny GEMM/decode"
+    },
+    "latency.salu_valu_phase_balance": {
+      "axis": "latency",
+      "priority": 7,
+      "min_sm": 0,
+      "name": "SALU/VALU phase balance",
+      "trigger_metric": "SALU|VALU|STALL",
+      "trigger_direction": "manual",
+      "required_features": [],
+      "reference_impl": "hoist scalar address math, precompute invariants, fill empty scheduling phases",
+      "typical_speedup": "case-specific"
+    },
+    "latency.sqtt_stall_triage": {
+      "axis": "latency",
+      "priority": 8,
+      "min_sm": 0,
+      "name": "SQTT stall triage",
+      "trigger_metric": "hipprof --sqtt",
+      "trigger_direction": "manual",
+      "required_features": ["sqtt"],
+      "reference_impl": "hipprof --sqtt --sqtt-type stat_stall/stat_valu",
+      "typical_speedup": "diagnostic, not a source edit by itself"
+    }
+  },
+  "coupled_methods": [
+    {"ids": ["compute.mmac_tensor_core", "memory.ds_read_matrix_layout"], "note": "HCU MMAC correctness depends on the matrix-read/LDS layout contract."},
+    {"ids": ["compute.mmac_tensor_core", "memory.matrix_load_mls"], "note": "Matrix-load staging may be part of the same HCU MMAC feed-path change."},
+    {"ids": ["compute.mmac_tensor_core", "memory.ck_tile_named_pipeline"], "note": "CK Tile HCU paths may already implement MMAC; avoid double-counting."},
+    {"ids": ["memory.matrix_load_mls", "latency.waitcnt_pipeline"], "note": "MLS must be paired with correct s_waitcnt/lgkmcnt scheduling; count once if same code delta."},
+    {"ids": ["memory.lds_tiling", "memory.lds_bank_conflict"], "note": "Bank-conflict work refines LDS tiling; select both only when analysis separates deltas."},
+    {"ids": ["memory.global_to_lds_async", "memory.matrix_load_mls"], "note": "Both can be alternative loader paths; compare as branches rather than blindly stacking."},
+    {"ids": ["latency.persistent_scheduler", "latency.split_k_streamk"], "note": "Both address underfilled grids; choose based on whether work is irregular or K-parallel."}
+  ],
+  "skip_reason_codes": ["already_selected", "arch_incompatible", "feature_unavailable", "skip_condition", "no_trigger"],
+  "arch_feature_map": {
+    "gfx936": ["wave64", "hcu_mmac", "lds", "mls", "matrix_load", "ds_matrix_read", "global_to_lds", "ds_permute", "ck_tile", "sqtt", "cache_modifiers", "tf32", "int4"],
+    "gfx938": ["wave64", "hcu_mmac", "lds", "mls", "matrix_load", "ds_matrix_read", "global_to_lds", "ds_permute", "ck_tile", "sqtt", "cache_modifiers", "tf32", "fp8_bf8", "int4"]
+  },
+  "unsupported_assumptions": [
+    "Do not assume AMD MFMA mnemonic names are sufficient Hygon tensorcore evidence.",
+    "Do not add FP4 hardware methods for current Hygon DCU targets without new toolchain/hardware evidence.",
+    "Do not use CUDA warp32 reduction patterns without wave64 review.",
+    "Do not trust __has_builtin alone for HCU builtin support; compile a source-backed minimal call and inspect final ISA.",
+    "Do not invent HCU builtin signatures from AMD names or spreadsheet rows without a source-backed call site."
+  ]
+}

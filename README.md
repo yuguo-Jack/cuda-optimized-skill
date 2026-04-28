@@ -4,6 +4,10 @@
 
 A Claude skill that iteratively optimizes a CUDA / CUTLASS / Triton kernel against a Python reference, using `nsight-compute` (`ncu`) as the source of evidence for each optimization decision.
 
+Hygon DCU / HIP migration is available under `skills/hyhon-hip-kernel-optimizer`; see [README.hyhon-hip-kernel-optimizer.md](README.hyhon-hip-kernel-optimizer.md) for Codex usage, remote validation, `hipprof`, `dccobjdump`, and CK Tile notes.
+
+If you only have a Torch/Triton/TileLang reference and shape, use `skills/hygon-hip-baseline-generator` first. It scaffolds a correctness-first Hygon HIP baseline before the iterative optimizer takes over.
+
 This is a **skill package**, not a standalone tool. Claude reads `SKILL.md` and drives the loop. The scripts under `scripts/` handle the deterministic parts (environment detection, profiling, benchmarking, state).
 
 ---
@@ -213,4 +217,3 @@ This skill is independent of and does not redistribute CUTLASS, Triton, or Nsigh
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=KernelFlow-ops/cuda-optimized-skill&type=date&legend=top-left" />
  </picture>
 </a>
-

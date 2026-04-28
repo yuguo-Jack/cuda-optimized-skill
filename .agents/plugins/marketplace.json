@@ -1,0 +1,20 @@
+{
+  "name": "hygon-dcu-kernel-optimizer-local",
+  "interface": {
+    "displayName": "Hygon DCU Kernel Optimizer Local"
+  },
+  "plugins": [
+    {
+      "name": "hygon-dcu-kernel-optimizer",
+      "source": {
+        "source": "local",
+        "path": "./plugins/hygon-dcu-kernel-optimizer"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

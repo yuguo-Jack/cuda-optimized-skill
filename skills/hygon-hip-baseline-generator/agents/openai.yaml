@@ -1,0 +1,3 @@
+display_name: Hygon HIP Baseline Generator
+short_description: Generate HIP baselines from refs.
+default_prompt: Generate a Hygon HIP baseline from my reference file and shape, validate correctness, then hand it to the Hygon optimizer.

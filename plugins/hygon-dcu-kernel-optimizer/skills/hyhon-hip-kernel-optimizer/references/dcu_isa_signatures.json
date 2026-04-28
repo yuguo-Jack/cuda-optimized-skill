@@ -1,0 +1,228 @@
+{
+  "$note": "Expected DCU ISA patterns per optimization method. Used by sass_check.py with dccobjdump --show-sass. Source-level builtins are candidate routes only; final verification is target ISA such as v_mmac/MMOP, ds_read_m32x*, matrix_load*, buffer/global LDS, waits, and resource usage.",
+  "$version": "1.1",
+  "methods": {
+    "compute.mmac_tensor_core": {
+      "isa_patterns": [
+        "\\bv_mmac(?:_[a-z0-9]+)+\\b",
+        "\\bmmop\\b"
+      ],
+      "require_any": true,
+      "note": "Hygon HCU matrix core. Source-backed HCU/AMD-named builtins are implementation routes; final proof is v_mmac/MMOP ISA, not source names."
+    },
+    "compute.mixed_precision_fp8_bf8": {
+      "isa_patterns": [
+        "\\b(?:fp8|bf8|tf32)\\b",
+        "\\bv_cvt(?:_[a-z0-9]+)*(?:fp8|bf8|tf32)",
+        "\\bcvt(?:_[a-z0-9]+)*(?:fp8|bf8|tf32)",
+        "\\b(?:v_)?cvt_pk(?:_[a-z0-9]+)*(?:fp8|bf8|bf16|f16)",
+        "\\b(?:v_)?cvt_sr(?:_[a-z0-9]+)*(?:fp8|bf8)",
+        "\\bv_mmac_[a-z0-9_]*(?:fp8|bf8|tf32)[a-z0-9_]*\\b"
+      ],
+      "require_any": true,
+      "note": "gfx938 low-precision conversion or HCU MMAC ISA forms. FP4 is intentionally absent."
+    },
+    "compute.launch_config_wave64": {
+      "isa_patterns": [],
+      "require_any": true,
+      "note": "Launch geometry is verified by timing and occupancy/PMC evidence."
+    },
+    "compute.thread_coarsening": {
+      "isa_patterns": [
+        "\\bv_fma",
+        "\\bv_fmac",
+        "\\bv_add",
+        "\\bv_add_lshl",
+        "\\bv_mul",
+        "\\bv_pk_(?:add|mul|fma)",
+        "\\bv_mad",
+        "\\bvop3r"
+      ],
+      "require_any": true,
+      "note": "Dense VALU arithmetic after coarsening or register tiling."
+    },
+    "compute.register_pressure_control": {
+      "isa_patterns": [],
+      "require_any": true,
+      "note": "Verified by dccobjdump resource usage, hipcc resource usage, occupancy, and timing."
+    },
+    "compute.fast_math_intrinsics": {
+      "isa_patterns": [
+        "\\bv_rcp",
+        "\\bv_rsq",
+        "\\bv_sqrt",
+        "\\bv_sin",
+        "\\bv_cos",
+        "\\bv_exp",
+        "\\bv_log"
+      ],
+      "require_any": true,
+      "note": "Fast math lowering is instruction- and tolerance-specific."
+    },
+    "compute.inline_asm_builtin": {
+      "isa_patterns": [],
+      "require_any": true,
+      "note": "Case-specific; compare dccobjdump against intended asm or target-compiled low-level code."
+    },
+
+    "memory.coalesced_access": {
+      "isa_patterns": [
+        "\\bglobal_(?:load|store)_[a-z0-9x_]+\\b",
+        "\\bbuffer_(?:load|store)_[a-z0-9x_]+\\b",
+        "\\bflat_(?:load|store)_[a-z0-9x_]+\\b"
+      ],
+      "require_any": true,
+      "note": "Global/buffer/flat memory path should be visible; coalescing quality also needs address mapping and counters."
+    },
+    "memory.vectorized_global_access": {
+      "isa_patterns": [
+        "\\b(?:global|buffer|flat)_(?:load|store)_dwordx[234]\\b",
+        "\\b(?:global|buffer|flat)_(?:load|store)_b(?:64|128)\\b"
+      ],
+      "require_any": true,
+      "note": "Packed global-memory operations should be visible when vectorization survives lowering."
+    },
+    "memory.aligned_layout_transform": {
+      "isa_patterns": [],
+      "require_any": true,
+      "note": "Layout transforms are verified by address/stride logic, coalescing metrics, and end-to-end timing."
+    },
+    "memory.lds_tiling": {
+      "isa_patterns": [
+        "\\bds_read",
+        "\\bds_write",
+        "\\bds_read2",
+        "\\bds_write2",
+        "\\blds\\b"
+      ],
+      "require_any": true,
+      "note": "LDS traffic indicates shared-memory tiling."
+    },
+    "memory.global_to_lds_async": {
+      "isa_patterns": [
+        "\\braw_buffer_load_lds\\b",
+        "\\bbuffer_load_[a-z0-9x_]+\\b.*\\blds\\b",
+        "\\bglobal_load_[a-z0-9x_]+\\b.*\\blds\\b"
+      ],
+      "require_any": true,
+      "note": "Direct global/buffer-to-LDS staging path. raw_buffer_load_lds is an ISA/staging signature; use source-backed builtin wrappers only after target compile."
+    },
+    "memory.matrix_load_mls": {
+      "isa_patterns": [
+        "\\bmatrix_load(?:_[a-z0-9]+)*\\b",
+        "\\bmls\\b"
+      ],
+      "require_any": true,
+      "note": "Verified by target ISA, CK Tile/HCU MLS source diff, correctness, and timing. Source-backed matrix-load builtins must compile before use."
+    },
+    "memory.ds_read_matrix_layout": {
+      "isa_patterns": [
+        "\\bds_read_m32x16_b16(?:_alt)?\\b",
+        "\\bds_read_m32x32_b8\\b",
+        "\\bds_read_m32x64_b4\\b",
+        "\\bds_read_m32x8_b32\\b",
+        "\\bds_read_matrix(?:_trans)?_format_[a-z0-9_]+\\b"
+      ],
+      "require_any": true,
+      "note": "Hygon matrix-read layout contract from LDS. The m32x16/m32x32 forms are source-backed by microbenchmarks; m32x64_b4 and m32x8_b32 are manual-backed and should be source-probed before use."
+    },
+    "memory.lds_bank_conflict": {
+      "isa_patterns": [
+        "\\bds_read",
+        "\\bds_write",
+        "\\bxor\\b",
+        "\\bv_xor",
+        "\\bs_lshr",
+        "\\bv_lshr"
+      ],
+      "require_any": true,
+      "note": "Layout change is primarily verified by PMC bank-conflict counters; swizzle may appear as xor/shift address math."
+    },
+    "memory.cache_policy_glc_slc": {
+      "isa_patterns": [
+        "\\bglc\\b",
+        "\\bslc\\b"
+      ],
+      "require_any": true,
+      "note": "Cache/coherency modifiers must appear on the intended memory ops."
+    },
+    "memory.ck_tile_named_pipeline": {
+      "isa_patterns": [
+        "\\bv_mmac",
+        "\\bds_read",
+        "\\bmatrix_load",
+        "\\bbuffer_load_.*\\blds\\b"
+      ],
+      "require_any": true,
+      "note": "CK Tile HCU fast paths normally lower to MMAC/LDS/MLS or direct LDS loader instructions."
+    },
+    "memory.epilogue_fusion": {
+      "isa_patterns": [],
+      "require_any": true,
+      "note": "Verified by source structure, fewer launches/global passes, and timing."
+    },
+
+    "latency.waitcnt_pipeline": {
+      "isa_patterns": [
+        "\\bs_waitcnt\\b.*\\b(?:vmcnt|lgkmcnt|expcnt)\\("
+      ],
+      "require_any": true,
+      "note": "Wait-count scheduling should be visible in ISA."
+    },
+    "latency.reduce_barrier": {
+      "isa_patterns": [
+        "\\bs_barrier\\b"
+      ],
+      "require_any": true,
+      "note": "Absence/reduction must be checked against the previous dump."
+    },
+    "latency.wavefront_shuffle_ds_bpermute": {
+      "isa_patterns": [
+        "\\bds_bpermute",
+        "\\bds_permute",
+        "\\bshfl",
+        "\\bpermute"
+      ],
+      "require_any": true,
+      "note": "Wavefront exchange through DS routing or HIP shuffle lowering."
+    },
+    "latency.ilp_unroll": {
+      "isa_patterns": [],
+      "require_any": true,
+      "note": "Verified by schedule shape, lower loop overhead, and timing; no universal single mnemonic."
+    },
+    "latency.persistent_scheduler": {
+      "isa_patterns": [],
+      "require_any": true,
+      "note": "Persistent scheduling is verified by grid/work-loop structure and timing."
+    },
+    "latency.split_k_streamk": {
+      "isa_patterns": [
+        "\\bglobal_atomic",
+        "\\bflat_atomic",
+        "\\bbuffer_atomic",
+        "\\bs_waitcnt",
+        "\\bs_barrier"
+      ],
+      "require_any": true,
+      "note": "Split-K/Stream-K may use atomics, partial stores, barriers, or a combine kernel; source and timing evidence are required."
+    },
+    "latency.salu_valu_phase_balance": {
+      "isa_patterns": [
+        "\\bs_add",
+        "\\bs_mul",
+        "\\bs_lshr",
+        "\\bs_and",
+        "\\bv_add",
+        "\\bv_mul"
+      ],
+      "require_any": true,
+      "note": "Balance is verified by schedule/metric movement, not one mnemonic."
+    },
+    "latency.sqtt_stall_triage": {
+      "isa_patterns": [],
+      "require_any": true,
+      "note": "Diagnostic method; verified by hipprof SQTT artifacts."
+    }
+  }
+}
