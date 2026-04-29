@@ -14,6 +14,8 @@ This is a Codex skill package, not a standalone optimizer daemon. Codex reads th
 
 If you do not have an initial HIP/C++ kernel yet, start with `skills/hygon-hip-baseline-generator`. It can inspect a Torch/Triton/TileLang/Python reference plus shape JSON, scaffold a conservative `kernel.hip` and `ref.py`, and validate correctness before this optimizer begins its measured iterations.
 
+When this workflow is installed as a plugin and used from another repository, resolve helper scripts from the loaded skill/plugin directory. Do not assume the target repository contains `skills/hyhon-hip-kernel-optimizer/scripts`.
+
 ## What It Does
 
 For each optimization iteration, the skill:

@@ -56,7 +56,7 @@ hygon_tmp/
 The skill starts by detecting DTK and DCU tools:
 
 ```bash
-python3 skills/hyhon-hip-kernel-optimizer/scripts/check_env.py \
+python3 <optimizer-skill>/scripts/check_env.py \
   --out <scratch-dir>/env.json
 ```
 
@@ -82,7 +82,7 @@ If `ck_tile` is false, CK Tile examples should be treated as source patterns onl
 Preflight validates the kernel entry point and Python reference:
 
 ```bash
-python3 skills/hyhon-hip-kernel-optimizer/scripts/preflight.py \
+python3 <optimizer-skill>/scripts/preflight.py \
   --baseline <case-dir>/kernel.hip \
   --ref <case-dir>/ref.py \
   --dims '{"N":1048576}'
@@ -95,7 +95,7 @@ The kernel must expose `extern "C" void solve(...)`. The reference must expose `
 ```bash
 cd <target-remote-repo>
 
-HIP_VISIBLE_DEVICES=0 python3 skills/hyhon-hip-kernel-optimizer/scripts/orchestrate.py setup \
+HIP_VISIBLE_DEVICES=0 python3 <optimizer-skill>/scripts/orchestrate.py setup \
   --baseline <case-dir>/kernel.hip \
   --ref <case-dir>/ref.py \
   --iterations 1 \
@@ -135,7 +135,7 @@ Interpretation: the agent must pick one compute method and two memory methods.
 When three consecutive iterations fail to produce material additional improvement over the previous best, run SQTT and the analysis tools before choosing more source changes. Material improvement means above the run's noise threshold and supported by profiler/ISA evidence, not just a single timing fluctuation. You may also run this earlier for ambiguous hardware errors or unexplained regressions.
 
 ```bash
-HIP_VISIBLE_DEVICES=0 python3 skills/hyhon-hip-kernel-optimizer/scripts/profile_hipprof.py \
+HIP_VISIBLE_DEVICES=0 python3 <optimizer-skill>/scripts/profile_hipprof.py \
   --state <run-dir>/state.json \
   --iter <plateau_iter> \
   --which kernel \
@@ -150,11 +150,11 @@ HIP_VISIBLE_DEVICES=0 python3 skills/hyhon-hip-kernel-optimizer/scripts/profile_
 Then analyze the artifacts:
 
 ```bash
-python3 skills/hyhon-hip-kernel-optimizer/scripts/analyze_sqtt.py \
+python3 <optimizer-skill>/scripts/analyze_sqtt.py \
   <run-dir>/iterv<plateau_iter> \
   --out <run-dir>/iterv<plateau_iter>/sqtt_analysis.json
 
-python3 skills/hyhon-hip-kernel-optimizer/scripts/analyze_perfetto_trace.py \
+python3 <optimizer-skill>/scripts/analyze_perfetto_trace.py \
   <run-dir>/iterv<plateau_iter> \
   --max-files 4 \
   --out <run-dir>/iterv<plateau_iter>/perfetto_analysis.json
@@ -249,7 +249,7 @@ Every branch must preserve the `extern "C" void solve(...)` contract.
 ## Step 6: Close Iteration
 
 ```bash
-HIP_VISIBLE_DEVICES=0 python3 skills/hyhon-hip-kernel-optimizer/scripts/orchestrate.py close-iter \
+HIP_VISIBLE_DEVICES=0 python3 <optimizer-skill>/scripts/orchestrate.py close-iter \
   --run-dir <run-dir> \
   --iter 1 \
   --warmup 2 \
@@ -353,7 +353,7 @@ run_*/iterv1/ablations/<method_id_with_underscores>/kernel.hip
 run:
 
 ```bash
-HIP_VISIBLE_DEVICES=0 python3 skills/hyhon-hip-kernel-optimizer/scripts/ablate.py \
+HIP_VISIBLE_DEVICES=0 python3 <optimizer-skill>/scripts/ablate.py \
   --state <run-dir>/state.json \
   --iter 1
 ```
@@ -369,7 +369,7 @@ Positive attribution means removing the method slowed the kernel down.
 ## Step 8: Finalize
 
 ```bash
-python3 skills/hyhon-hip-kernel-optimizer/scripts/orchestrate.py finalize \
+python3 <optimizer-skill>/scripts/orchestrate.py finalize \
   --run-dir <run-dir>
 ```
 

@@ -133,6 +133,8 @@ Use the Hygon baseline generator with ref.py and shape {"N":1048576}.
 Validate correctness using this project's remote workflow, then optimize for 3 iterations.
 ```
 
+When the plugin is used from another repository, command examples inside the skills should be resolved from the loaded plugin path, not from `<target-project>\skills\...`. In particular, `inspect_ref.py`, `generate_baseline.py`, `preflight.py`, `benchmark.py`, and `orchestrate.py` live under the plugin's `skills\...` directories.
+
 For an existing HIP kernel:
 
 ```text

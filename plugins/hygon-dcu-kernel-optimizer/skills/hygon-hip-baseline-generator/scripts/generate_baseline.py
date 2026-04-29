@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,16 @@ def _load_json(path: str) -> dict[str, Any]:
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def _cmd(parts: list[str | Path]) -> str:
+    return " ".join(shlex.quote(str(part)) for part in parts)
+
+
+def _optimizer_script(name: str) -> Path:
+    skill_dir = Path(__file__).resolve().parents[1]
+    optimizer_dir = skill_dir.parent / "hyhon-hip-kernel-optimizer"
+    return optimizer_dir / "scripts" / name
 
 
 def _dim_params(dims: dict[str, int]) -> list[str]:
@@ -289,6 +300,10 @@ def generate(analysis_path: str, out_dir: str, op: str, output_name: str) -> dic
         ptr_size_hint = int(dims["N"])
 
     dim_args = " ".join(f"--{k}={v}" for k, v in dims.items())
+    preflight_script = _optimizer_script("preflight.py")
+    benchmark_script = _optimizer_script("benchmark.py")
+    orchestrate_script = _optimizer_script("orchestrate.py")
+    dims_json = json.dumps(dims, separators=(",", ":"))
     manifest = {
         "case_dir": str(out.resolve()),
         "analysis": str((out / "ref_analysis.json").resolve()),
@@ -299,15 +314,51 @@ def generate(analysis_path: str, out_dir: str, op: str, output_name: str) -> dic
         "dims": dims,
         "ptr_size_hint": ptr_size_hint,
         "unsupported_assumptions": sorted(set(unsupported)),
-        "preflight_command": (
-            "python skills/hyhon-hip-kernel-optimizer/scripts/preflight.py "
-            f"--baseline {out / 'kernel.hip'} --ref {out / 'ref.py'} "
-            f"--dims '{json.dumps(dims, separators=(',', ':'))}'"
-        ),
+        "optimizer_scripts": {
+            "preflight": str(preflight_script),
+            "benchmark": str(benchmark_script),
+            "orchestrate": str(orchestrate_script),
+        },
+        "preflight_command": _cmd([
+            "python",
+            preflight_script,
+            "--baseline",
+            out / "kernel.hip",
+            "--ref",
+            out / "ref.py",
+            "--dims",
+            dims_json,
+        ]),
         "benchmark_command": (
-            "HIP_VISIBLE_DEVICES=<device> python skills/hyhon-hip-kernel-optimizer/scripts/benchmark.py "
-            f"{out / 'kernel.hip'} --ref {out / 'ref.py'} --ptr-size {ptr_size_hint} "
-            f"--json-out {out / 'baseline_bench.json'} {dim_args}"
+            "HIP_VISIBLE_DEVICES=<device> "
+            + _cmd([
+                "python",
+                benchmark_script,
+                out / "kernel.hip",
+                "--ref",
+                out / "ref.py",
+                "--ptr-size",
+                str(ptr_size_hint),
+                "--json-out",
+                out / "baseline_bench.json",
+            ])
+            + (f" {dim_args}" if dim_args else "")
+        ),
+        "orchestrate_setup_command": (
+            _cmd([
+                "python",
+                orchestrate_script,
+                "setup",
+                "--baseline",
+                out / "kernel.hip",
+                "--ref",
+                out / "ref.py",
+                "--dims",
+                dims_json,
+                "--ptr-size",
+                str(ptr_size_hint),
+            ])
+            + " --iterations <iterations> --branches <branches>"
         ),
     }
     _write(out / "baseline_manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")

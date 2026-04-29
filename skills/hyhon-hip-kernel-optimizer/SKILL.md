@@ -38,7 +38,7 @@ Have these before starting:
 - Python reference file exposing `reference(**kwargs)`
 - dimension JSON such as `{"N":1048576}` or `{"M":4096,"N":4096,"K":4096}`
 
-If the user only provides a reference file and shape, first use `skills/hygon-hip-baseline-generator` to generate and correctness-validate `kernel.hip` plus the benchmark-compatible `ref.py`. Do not begin optimization iterations until that generated baseline passes preflight and benchmark correctness.
+If the user only provides a reference file and shape, first use the sibling `hygon-hip-baseline-generator` skill to generate and correctness-validate `kernel.hip` plus the benchmark-compatible `ref.py`. Do not begin optimization iterations until that generated baseline passes preflight and benchmark correctness.
 
 Optional:
 
