@@ -1,7 +1,6 @@
 .claude
 .vscode
 example
-.codex
 env.json
 tree.py
 hygon_tmp/
