@@ -1,6 +1,6 @@
-# hyhon-hip-kernel-optimizer
+# hygon-hip-kernel-optimizer
 
-`skills/hyhon-hip-kernel-optimizer` is the Hygon DCU / HIP migration of the CUDA kernel optimizer skill. It keeps the original iterative optimization loop, but replaces the NVIDIA stack with DTK/HIP tooling:
+`skills/hygon-hip-kernel-optimizer` is the Hygon DCU / HIP migration of the CUDA kernel optimizer skill. It keeps the original iterative optimization loop, but replaces the NVIDIA stack with DTK/HIP tooling:
 
 | CUDA skill | Hygon DCU skill |
 | --- | --- |
@@ -14,7 +14,7 @@ This is a Codex skill package, not a standalone optimizer daemon. Codex reads th
 
 If you do not have an initial HIP/C++ kernel yet, start with `skills/hygon-hip-baseline-generator`. It can inspect a Torch/Triton/TileLang/Python reference plus shape JSON, scaffold a conservative `kernel.hip` and `ref.py`, and validate correctness before this optimizer begins its measured iterations.
 
-When this workflow is installed as a plugin and used from another repository, resolve helper scripts from the loaded skill/plugin directory. Do not assume the target repository contains `skills/hyhon-hip-kernel-optimizer/scripts`.
+When this workflow is installed as a plugin and used from another repository, resolve helper scripts from the loaded skill/plugin directory. Do not assume the target repository contains `skills/hygon-hip-kernel-optimizer/scripts`.
 
 ## What It Does
 
@@ -36,7 +36,7 @@ For each optimization iteration, the skill:
 ## Repository Layout
 
 ```text
-skills/hyhon-hip-kernel-optimizer/
+skills/hygon-hip-kernel-optimizer/
   SKILL.md                         # Codex-facing procedure
   scripts/
     benchmark.py                   # HIP/PyTorch correctness and timing driver
@@ -71,7 +71,7 @@ Temporary validation files, scratch probes, generated runs, traces, and pulled l
 From this repository, ask Codex to use the skill explicitly:
 
 ```text
-Use skills/hyhon-hip-kernel-optimizer to optimize <case-dir>/kernel.hip.
+Use skills/hygon-hip-kernel-optimizer to optimize <case-dir>/kernel.hip.
 The reference is <case-dir>/ref.py and dims is {"N":1048576}.
 Validate on the remote DCU compute node, run 1 iteration, and generate 2 branches per iteration.
 ```
@@ -80,15 +80,15 @@ When starting from only a reference:
 
 ```text
 Use skills/hygon-hip-baseline-generator with <case-dir>/ref_source.py and shape {"M":1024,"N":1024,"K":1024}.
-Generate a correctness-first Hygon HIP baseline, validate it on the remote DCU, then use skills/hyhon-hip-kernel-optimizer for the number of iterations I specify.
+Generate a correctness-first Hygon HIP baseline, validate it on the remote DCU, then use skills/hygon-hip-kernel-optimizer for the number of iterations I specify.
 ```
 
 Codex will read:
 
 ```text
-skills/hyhon-hip-kernel-optimizer/SKILL.md
-skills/hyhon-hip-kernel-optimizer/references/
-skills/hyhon-hip-kernel-optimizer/scripts/
+skills/hygon-hip-kernel-optimizer/SKILL.md
+skills/hygon-hip-kernel-optimizer/references/
+skills/hygon-hip-kernel-optimizer/scripts/
 ```
 
 For this project, remote DCU validation must go through the bundled `remote-ssh-docker-workflow` skill, despite the historical name. The current workflow has no Docker layer:
@@ -106,7 +106,7 @@ Do not compile or profile directly on the login node unless you are only checkin
 Manual invocation is useful when debugging the skill itself. In normal use Codex should drive this loop.
 
 ```bash
-python skills/hyhon-hip-kernel-optimizer/scripts/orchestrate.py setup \
+python skills/hygon-hip-kernel-optimizer/scripts/orchestrate.py setup \
   --baseline <case-dir>/kernel.hip \
   --ref <case-dir>/ref.py \
   --iterations 1 \
@@ -129,7 +129,7 @@ run_YYYYMMDD_HHMMSS/iterv1/branches/b2/kernel.hip
 Then close the iteration:
 
 ```bash
-python skills/hyhon-hip-kernel-optimizer/scripts/orchestrate.py close-iter \
+python skills/hygon-hip-kernel-optimizer/scripts/orchestrate.py close-iter \
   --run-dir <run-dir> \
   --iter 1 \
   --warmup 2 \
@@ -139,7 +139,7 @@ python skills/hyhon-hip-kernel-optimizer/scripts/orchestrate.py close-iter \
 Render the final summary:
 
 ```bash
-python skills/hyhon-hip-kernel-optimizer/scripts/orchestrate.py finalize \
+python skills/hygon-hip-kernel-optimizer/scripts/orchestrate.py finalize \
   --run-dir <run-dir>
 ```
 
@@ -242,7 +242,7 @@ hipprof --codeobj-analyze kernel.so
 Use SQTT when PMC evidence is insufficient, when instruction-flow detail is needed, or when three consecutive iterations fail to produce material additional improvement over the previous best. Material means above the configured noise threshold and supported by profiler/ISA evidence.
 
 ```bash
-python skills/hyhon-hip-kernel-optimizer/scripts/profile_hipprof.py \
+python skills/hygon-hip-kernel-optimizer/scripts/profile_hipprof.py \
   --state ./run_YYYYMMDD_HHMMSS/state.json \
   --iter <plateau_iter> \
   --which kernel \
@@ -253,11 +253,11 @@ python skills/hyhon-hip-kernel-optimizer/scripts/profile_hipprof.py \
   --kernel-name <demangled-or-mangled-kernel-filter-if-needed> \
   --no-codeobj-analyze
 
-python skills/hyhon-hip-kernel-optimizer/scripts/analyze_sqtt.py \
+python skills/hygon-hip-kernel-optimizer/scripts/analyze_sqtt.py \
   ./run_YYYYMMDD_HHMMSS/iterv<plateau_iter> \
   --out ./run_YYYYMMDD_HHMMSS/iterv<plateau_iter>/sqtt_analysis.json
 
-python skills/hyhon-hip-kernel-optimizer/scripts/analyze_perfetto_trace.py \
+python skills/hygon-hip-kernel-optimizer/scripts/analyze_perfetto_trace.py \
   ./run_YYYYMMDD_HHMMSS/iterv<plateau_iter> \
   --max-files 4 \
   --out ./run_YYYYMMDD_HHMMSS/iterv<plateau_iter>/perfetto_analysis.json
@@ -358,8 +358,8 @@ vmem_instruction_count: 6
 
 ## See Also
 
-- `skills/hyhon-hip-kernel-optimizer/SKILL.md`
-- `skills/hyhon-hip-kernel-optimizer/examples/walkthrough.md`
-- `skills/hyhon-hip-kernel-optimizer/references/dcu_metrics_guide.md`
-- `skills/hyhon-hip-kernel-optimizer/references/optimization_catalog.md`
-- `skills/hyhon-hip-kernel-optimizer/references/dcu_isa_signatures.json`
+- `skills/hygon-hip-kernel-optimizer/SKILL.md`
+- `skills/hygon-hip-kernel-optimizer/examples/walkthrough.md`
+- `skills/hygon-hip-kernel-optimizer/references/dcu_metrics_guide.md`
+- `skills/hygon-hip-kernel-optimizer/references/optimization_catalog.md`
+- `skills/hygon-hip-kernel-optimizer/references/dcu_isa_signatures.json`

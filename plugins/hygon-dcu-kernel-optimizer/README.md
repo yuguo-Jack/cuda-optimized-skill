@@ -3,7 +3,7 @@
 This Codex plugin packages the Hygon DCU kernel workflow as reusable skills:
 
 - `hygon-hip-baseline-generator`: generate a correctness-first HIP baseline from a Torch, Triton, TileLang, or Python reference plus shape JSON.
-- `hyhon-hip-kernel-optimizer`: iteratively optimize HIP/CK Tile kernels with DTK/HIP tooling, `hipprof`, PMC/SQTT analysis, and `dccobjdump` ISA checks.
+- `hygon-hip-kernel-optimizer`: iteratively optimize HIP/CK Tile kernels with DTK/HIP tooling, `hipprof`, PMC/SQTT analysis, and `dccobjdump` ISA checks.
 
 The plugin does not include a remote execution skill. Each target project must provide its own remote workflow because login nodes, compute nodes, Docker usage, module setup, schedulers, and sync rules vary between projects.
 
@@ -91,7 +91,7 @@ The plugin contributes these skills:
 
 ```text
 hygon-dcu-kernel-optimizer:hygon-hip-baseline-generator
-hygon-dcu-kernel-optimizer:hyhon-hip-kernel-optimizer
+hygon-dcu-kernel-optimizer:hygon-hip-kernel-optimizer
 ```
 
 ## Project-Level Install

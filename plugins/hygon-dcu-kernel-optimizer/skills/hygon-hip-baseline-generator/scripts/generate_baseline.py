@@ -43,7 +43,7 @@ def _cmd(parts: list[str | Path]) -> str:
 
 def _optimizer_script(name: str) -> Path:
     skill_dir = Path(__file__).resolve().parents[1]
-    optimizer_dir = skill_dir.parent / "hyhon-hip-kernel-optimizer"
+    optimizer_dir = skill_dir.parent / "hygon-hip-kernel-optimizer"
     return optimizer_dir / "scripts" / name
 
 

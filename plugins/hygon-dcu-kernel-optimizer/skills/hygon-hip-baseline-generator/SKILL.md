@@ -7,7 +7,7 @@ description: Generate a Hygon DCU HIP/C++ baseline kernel and correctness harnes
 
 ## Purpose
 
-Create the missing baseline stage before `hyhon-hip-kernel-optimizer` runs. This skill turns a reference implementation plus shape into a case directory containing:
+Create the missing baseline stage before `hygon-hip-kernel-optimizer` runs. This skill turns a reference implementation plus shape into a case directory containing:
 
 - `kernel.hip`: conservative HIP/C++ baseline exposing `extern "C" void solve(...)`;
 - `ref.py`: benchmark-compatible reference wrapper exposing `reference(...)`;
@@ -29,7 +29,7 @@ If the helper path is not obvious, create `hygon_tmp/` with normal filesystem to
 Path rule: never assume `skills/...` exists under the target project. Resolve scripts from the loaded skill file:
 
 - `<baseline-skill>` is the directory containing this `SKILL.md`.
-- `<optimizer-skill>` is the sibling directory `<baseline-skill>/../hyhon-hip-kernel-optimizer`.
+- `<optimizer-skill>` is the sibling directory `<baseline-skill>/../hygon-hip-kernel-optimizer`.
 - Before running commands, verify these files exist: `<baseline-skill>/scripts/inspect_ref.py`, `<baseline-skill>/scripts/generate_baseline.py`, `<optimizer-skill>/scripts/preflight.py`, `<optimizer-skill>/scripts/benchmark.py`, and `<optimizer-skill>/scripts/orchestrate.py`.
 
 ## Inputs

@@ -1,5 +1,5 @@
 ---
-name: hyhon-hip-kernel-optimizer
+name: hygon-hip-kernel-optimizer
 description: Iteratively optimize Hygon DCU HIP / CK Tile kernels against a Python reference using hipprof, DTK tools, dccobjdump ISA verification, roofline-style budgeting, branch selection, ablation attribution, and gfx936/gfx938-aware optimization references. Use when the user asks to optimize HIP kernels, Hygon DCU kernels, gfx936/gfx938 kernels, CK Tile kernels, port CUDA kernel tuning workflows to DCU, validate DCU ISA patterns, or reason about DCU-specific inline assembly and source-backed HCU/AMDGPU builtins.
 ---
 

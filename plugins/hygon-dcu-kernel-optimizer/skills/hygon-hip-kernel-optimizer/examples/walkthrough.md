@@ -170,11 +170,11 @@ The agent reads only the files needed for the next decision:
 run_*/state.json
 run_*/iterv1/roofline.json
 run_*/iterv1/dcu_top.json
-skills/hyhon-hip-kernel-optimizer/references/optimization_catalog.md
-skills/hyhon-hip-kernel-optimizer/references/dcu_metrics_guide.md
-skills/hyhon-hip-kernel-optimizer/references/method_registry.json
-skills/hyhon-hip-kernel-optimizer/templates/methods.schema.json
-skills/hyhon-hip-kernel-optimizer/templates/iteration_report.md
+skills/hygon-hip-kernel-optimizer/references/optimization_catalog.md
+skills/hygon-hip-kernel-optimizer/references/dcu_metrics_guide.md
+skills/hygon-hip-kernel-optimizer/references/method_registry.json
+skills/hygon-hip-kernel-optimizer/templates/methods.schema.json
+skills/hygon-hip-kernel-optimizer/templates/iteration_report.md
 ```
 
 For this example, the selected methods are:
