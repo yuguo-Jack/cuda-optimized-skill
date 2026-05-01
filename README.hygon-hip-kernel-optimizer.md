@@ -16,6 +16,8 @@ If you do not have an initial HIP/C++ kernel yet, start with `skills/hygon-hip-b
 
 When this workflow is installed as a plugin and used from another repository, resolve helper scripts from the loaded skill/plugin directory. Do not assume the target repository contains `skills/hygon-hip-kernel-optimizer/scripts`.
 
+![Hygon DCU HIP kernel optimizer architecture](asset/dcu_en_arch.png)
+
 ## What It Does
 
 For each optimization iteration, the skill:

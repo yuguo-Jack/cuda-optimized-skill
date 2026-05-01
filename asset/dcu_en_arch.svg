@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1750" viewBox="0 0 1120 1750">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#111111"/>
+    </marker>
+    <marker id="arrow-gray" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 Z" fill="#777777"/>
+    </marker>
+    <style>
+      .label { font-family: "Segoe UI", Arial, sans-serif; fill: #111111; text-anchor: middle; }
+      .title { font-size: 24px; font-weight: 800; }
+      .body { font-size: 20px; font-weight: 500; }
+      .small { font-size: 17px; font-weight: 500; }
+      .edge { stroke: #111111; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #777777; stroke-width: 2.5; fill: none; stroke-dasharray: 8 8; marker-end: url(#arrow-gray); }
+      .box-neutral { fill: #f5f1ea; stroke: #5b544b; stroke-width: 2.5; }
+      .box-blue { fill: #eef3ff; stroke: #2535c8; stroke-width: 2.5; }
+      .box-green { fill: #dff5ee; stroke: #14785f; stroke-width: 2.5; }
+      .box-purple { fill: #f0efff; stroke: #4430ca; stroke-width: 2.5; }
+      .box-red { fill: #fff1ef; stroke: #cf1515; stroke-width: 2.5; }
+      .box-orange { fill: #fff1df; stroke: #b85a15; stroke-width: 2.5; }
+      .diamond { fill: #f8f8f8; stroke: #666666; stroke-width: 2.5; }
+      .blue { fill: #0c2fb0; }
+      .green { fill: #056046; }
+      .red { fill: #b20e0e; }
+      .orange { fill: #8f3c08; }
+    </style>
+  </defs>
+
+  <rect x="1" y="1" width="1118" height="1748" fill="#ffffff"/>
+
+  <rect class="box-neutral" x="325" y="15" width="470" height="85" rx="8"/>
+  <text class="label title" x="560" y="51">Preflight DCU Environment Check</text>
+  <text class="label body" x="560" y="81">DCU · DTK · hipcc · input files</text>
+
+  <path class="edge" d="M560 100 L560 130"/>
+  <rect class="box-blue" x="310" y="130" width="500" height="90" rx="8"/>
+  <text class="label title blue" x="560" y="168">Correctness Validation + Benchmark</text>
+  <text class="label body blue" x="560" y="198">HIP baseline latency · Python reference</text>
+
+  <path class="edge" d="M560 220 L560 249"/>
+  <polygon class="diamond" points="560,250 625,295 560,340 495,295"/>
+  <text class="label title" x="560" y="303">Pass?</text>
+
+  <path class="edge" d="M625 295 L825 295"/>
+  <text class="label body" x="710" y="282">No</text>
+  <rect class="box-red" x="825" y="250" width="260" height="90" rx="8"/>
+  <text class="label title red" x="955" y="287">Mark Rejected</text>
+  <text class="label body red" x="955" y="318">repair or terminate</text>
+
+  <path class="edge" d="M560 340 L560 374"/>
+  <text class="label body" x="585" y="361">Yes</text>
+  <rect class="box-green" x="325" y="375" width="470" height="90" rx="8"/>
+  <text class="label title green" x="560" y="413">hipprof Profiling (best input)</text>
+  <text class="label body green" x="560" y="443">--pmc/read/write · SQTT optional</text>
+
+  <path class="edge" d="M560 465 L560 504"/>
+  <rect class="box-green" x="325" y="505" width="470" height="90" rx="8"/>
+  <text class="label title green" x="560" y="543">Roofline Gap Calculation</text>
+  <text class="label body green" x="560" y="573">compute · memory · latency budget</text>
+
+  <path class="edge" d="M560 595 L560 634"/>
+  <rect class="box-blue" x="325" y="635" width="470" height="90" rx="8"/>
+  <text class="label title blue" x="560" y="672">Bottleneck Classification</text>
+  <text class="label body blue" x="560" y="702">Wave64 · MMOP · LDS · waitcnt</text>
+
+  <path class="edge" d="M560 725 L560 744"/>
+  <rect class="box-blue" x="325" y="745" width="470" height="90" rx="8"/>
+  <text class="label title blue" x="560" y="781">Method Selection + Optimization Plan</text>
+  <text class="label body blue" x="560" y="812">registry priority → analysis.md</text>
+
+  <path class="edge" d="M560 835 L560 854"/>
+  <rect class="box-purple" x="325" y="855" width="470" height="90" rx="8"/>
+  <text class="label title blue" x="560" y="890">K-Branch HIP / CK Tile Generation</text>
+  <text class="label body blue" x="560" y="920">same methods · varied tiles × K</text>
+
+  <path class="edge" d="M560 945 L560 964"/>
+  <rect class="box-purple" x="325" y="965" width="470" height="90" rx="8"/>
+  <text class="label title blue" x="560" y="1001">Branch Explore: Select Champion</text>
+  <text class="label body blue" x="560" y="1032">hipcc compile · validate · benchmark</text>
+
+  <path class="edge" d="M560 1055 L560 1074"/>
+  <rect class="box-green" x="325" y="1075" width="470" height="90" rx="8"/>
+  <text class="label title green" x="560" y="1111">Champion Evidence Collection</text>
+  <text class="label body green" x="560" y="1142">hipprof · codeobj analyze · dcu_top</text>
+
+  <path class="edge" d="M560 1165 L560 1184"/>
+  <rect class="box-red" x="325" y="1185" width="470" height="90" rx="8"/>
+  <text class="label title red" x="560" y="1221">Ablation + DCU ISA Validation</text>
+  <text class="label body red" x="560" y="1252">attribution · dccobjdump signatures</text>
+
+  <path class="edge" d="M560 1275 L560 1294"/>
+  <rect class="box-red" x="325" y="1295" width="470" height="90" rx="8"/>
+  <text class="label title red" x="560" y="1331">Record Strategy Results</text>
+  <text class="label body red" x="560" y="1362">effective · ineffective · failed</text>
+
+  <path class="edge" d="M560 1385 L560 1401"/>
+  <polygon class="diamond" points="560,1402 650,1445 560,1488 470,1445"/>
+  <text class="label body" x="560" y="1453">Limit reached?</text>
+
+  <path class="edge" d="M560 1488 L560 1524"/>
+  <text class="label body" x="586" y="1510">Yes</text>
+  <rect class="box-green" x="325" y="1525" width="470" height="80" rx="8"/>
+  <text class="label title green" x="560" y="1560">Select Best Version</text>
+  <text class="label body green" x="560" y="1588">summary.md + state.json</text>
+
+  <path class="edge" d="M560 1605 L560 1634"/>
+  <rect class="box-green" x="325" y="1635" width="470" height="80" rx="8"/>
+  <text class="label title green" x="560" y="1670">Structured Outputs</text>
+  <text class="label body green" x="560" y="1698">bench · dcu_top · roofline · isa_check</text>
+
+  <rect class="box-neutral" x="25" y="385" width="290" height="150" rx="8"/>
+  <text class="label title" x="170" y="426">DCU Input Paths</text>
+  <text class="label body" x="170" y="452">HIP/C++ · CK Tile</text>
+  <text class="label body" x="170" y="482">CUDA-to-HIP</text>
+  <text class="label body" x="170" y="512">Torch/Triton reference</text>
+
+  <rect class="box-orange" x="25" y="640" width="290" height="135" rx="8"/>
+  <text class="label title orange" x="170" y="682">Knowledge Base</text>
+  <text class="label body orange" x="170" y="716">DCU KB · optimization catalog</text>
+  <text class="label body orange" x="170" y="748">metrics guide · ISA signatures</text>
+
+  <rect class="box-neutral" x="25" y="970" width="290" height="130" rx="8"/>
+  <text class="label title" x="170" y="1012">Remote DCU Target</text>
+  <text class="label body" x="170" y="1045">sync local edits · load DTK</text>
+  <text class="label body" x="170" y="1077">run on compute node only</text>
+
+  <rect class="box-neutral" x="825" y="400" width="260" height="185" rx="8"/>
+  <text class="label title" x="955" y="442">DTK Toolchain</text>
+  <text class="label body" x="955" y="477">hipcc / dcc</text>
+  <text class="label body" x="955" y="510">hipprof PMC + SQTT</text>
+  <text class="label body" x="955" y="543">dccobjdump</text>
+  <text class="label body" x="955" y="570">rocminfo/smi</text>
+
+  <rect class="box-orange" x="825" y="1245" width="260" height="120" rx="8"/>
+  <text class="label title orange" x="955" y="1287">Strategy Memory</text>
+  <text class="label body orange" x="955" y="1320">current round + global state</text>
+  <text class="label body orange" x="955" y="1352">avoid repeated trial and error</text>
+
+  <path class="dash" d="M315 460 L325 420"/>
+  <path class="dash" d="M315 707 L325 680"/>
+  <path class="dash" d="M315 1035 L325 1010"/>
+  <path class="dash" d="M825 492 L795 420"/>
+  <path class="dash" d="M825 525 L795 1120"/>
+  <path class="dash" d="M825 1305 L795 1340"/>
+  <path class="dash" d="M470 1445 L305 1445 L305 420 L325 420"/>
+  <text class="label small" x="390" y="1428">No (next iteration)</text>
+</svg>
