@@ -1,229 +1,227 @@
 ---
 name: remote-ssh-docker-workflow
-description: Run remote compile, test, profiling, and debug tasks through an SSH login node and compute node while keeping code edits local and synced through .vscode/sftp.json or sft.json-style SFTP configuration. Use when Codex must validate Hygon/ROCm/DTK environment readiness, check GPU status, inspect Python packages, or execute project commands on the remote compute node. Current project workflow has no Docker layer.
+description: Run remote compile, test, profiling, and debug tasks through SSH plus docker exec while keeping code edits local and synced to the remote node. Use when Codex must validate environment readiness, check ROCm/DTK/Hygon GPU card status, inspect Python packages, verify host-to-container workspace mounts, or execute project commands inside a remote container. Defaults for this cuda-optimized-skill workspace are hg@10.17.176.13:22, Docker container megamoe, host /home/hg/yuguo mapped to container /workspace, and repo path /home/hg/yuguo/cuda-optimized-skill mapped to /workspace/cuda-optimized-skill.
 ---
 
-# Remote SSH Workflow
+# Remote SSH Docker Workflow (Simplified)
 
-This skill keeps code edits local, syncs them to the remote shared filesystem, and executes validation on a compute node through a login node. The current project workflow does **not** use Docker. There is no container path mapping.
+## Execution Contract
 
-## Hard Rules
+Follow this rule for all downstream remote skills:
 
 - Edit code only in the local repository.
-- Read connection and remote path settings from the current SFTP config first.
-- Do not edit `.vscode/sftp.json`, `sft.json`, shell rc files, modulefiles, conda env files, or any other environment-related files.
-- Do not install, remove, or modify remote modules, conda environments, drivers, DTK, RCCL, MPI, or system packages unless the user explicitly asks.
-- Sync local changes to `REMOTE_PATH`, then execute on the compute node.
-- Do not compile, profile, or run GPU tests on the login node.
-- Do not use Docker commands for this workflow.
-- Put temporary validation artifacts under the project workspace, preferably `hygon_tmp/`.
+- Sync local changes to remote using `.vscode/sftp.json` (`uploadOnSave: true`) or explicit upload commands.
+- Execute remote work only with `ssh ... "docker exec ... bash -lc 'source /opt/dtk/env.sh && <cmd>'"`.
+- Every `docker exec` command that runs inside the container must source DTK first with `source /opt/dtk/env.sh && ...`.
+- Host-side Docker management commands such as `docker ps`, `docker inspect`, and `docker start` do not run inside the container and do not source `/opt/dtk/env.sh`.
+- Avoid direct remote-host compilation and testing outside Docker unless explicitly requested.
+- For this workspace, the host mount root is `/home/hg/yuguo` and the container mount root is `/workspace`.
+- The local project may not be uploaded yet. Before first upload, remote `/home/hg/yuguo/cuda-optimized-skill` and container `/workspace/cuda-optimized-skill` may be missing; treat that as setup state, not an environment failure.
 
 ## Parameters
 
-Derive these from `.vscode/sftp.json` first. If the project uses a file named `sft.json`, parse the same fields from that file instead. Treat either file as read-only.
+Derive connection details from `.vscode/sftp.json` first instead of hardcoding host/user/key:
 
-- `LOGIN_HOST`: SFTP config `host`
-- `LOGIN_USER`: SFTP config `username`
-- `LOGIN_PORT`: SFTP config `port`
-- `LOGIN_KEY`: SFTP config `privateKeyPath`; copy it to a temporary ACL-restricted file if Windows OpenSSH rejects the original permissions
-- `SSH_KEY_ARG`: `-i <key>` for the current workflow
-- `LOGIN_TARGET`: `$LOGIN_USER@$LOGIN_HOST`
-- `REMOTE_PATH`: SFTP config `remotePath`
-- `COMPUTE_HOST`: `gc02r3n15`
-- `REMOTE_REPO`: same as `REMOTE_PATH`
+- `SSH_HOST`: read from `.vscode/sftp.json` field `host`
+- `SSH_USER`: read from `.vscode/sftp.json` field `username`
+- `SSH_PORT`: read from `.vscode/sftp.json` field `port`
+- `SSH_KEY`: read from `.vscode/sftp.json` field `privateKeyPath`
+- `SSH_TARGET`: `$SSH_USER@$SSH_HOST`
+- `DOCKER_NAME`: default `megamoe` unless the project specifies otherwise
+- `REMOTE_PATH`: read from `.vscode/sftp.json` field `remotePath`
+- `HOST_MOUNT_ROOT`: default `/home/hg/yuguo`
+- `CONTAINER_WORKSPACE`: default `/workspace`
+- `CONTAINER_REPO`: replace the `HOST_MOUNT_ROOT` prefix in `REMOTE_PATH` with `CONTAINER_WORKSPACE`; for this project that yields `/workspace/cuda-optimized-skill`
 
-Current project values from `.vscode/sftp.json`:
+For this project:
 
-- `LOGIN_HOST` = `10.102.13.101`
-- `LOGIN_PORT` = `22`
-- `LOGIN_USER` = `zptest`
-- `LOGIN_KEY` = `C:/Users/Administrator/.ssh/id_rsa` through a temporary ACL-restricted copy when needed
-- `COMPUTE_HOST` = `gc02r3n15`
-- `REMOTE_PATH` = `/share_zhipu/home/zptest/yuguo/cuda-optimized-skill`
-- `REMOTE_REPO` = `/share_zhipu/home/zptest/yuguo/cuda-optimized-skill`
+- `host` = `10.17.176.13`
+- `username` = `hg`
+- `port` = `22`
+- `privateKeyPath` = `C:/Users/Administrator/.ssh/id_rsa`
+- `remotePath` = `/home/hg/yuguo/cuda-optimized-skill`
+- `DOCKER_NAME` = `megamoe`
+- `HOST_MOUNT_ROOT` = `/home/hg/yuguo`
+- `CONTAINER_WORKSPACE` = `/workspace`
+- `CONTAINER_REPO` = `/workspace/cuda-optimized-skill`
 
-## Read Parameters Locally
+## Read Parameters From sftp.json
 
-Use PowerShell:
+Read and derive paths from local PowerShell:
 
 ```powershell
-$SftpPath = if (Test-Path ".vscode/sftp.json") { ".vscode/sftp.json" } elseif (Test-Path "sft.json") { "sft.json" } else { throw "No SFTP config found" }
-$Sftp = Get-Content $SftpPath -Raw | ConvertFrom-Json
-$LOGIN_HOST = $Sftp.host
-$LOGIN_USER = $Sftp.username
-$LOGIN_PORT = $Sftp.port
-$LOGIN_KEY_SRC = $Sftp.privateKeyPath
-$LOGIN_KEY = Join-Path $env:TEMP "cuda_optimized_skill_id_rsa"
-Copy-Item -LiteralPath $LOGIN_KEY_SRC -Destination $LOGIN_KEY -Force
-icacls $LOGIN_KEY /inheritance:r /grant:r "$((whoami)):F"
-$LOGIN_TARGET = "$LOGIN_USER@$LOGIN_HOST"
-$SSH_KEY_ARG = "-i $LOGIN_KEY"
-$COMPUTE_HOST = "gc02r3n15"
+$Sftp = Get-Content .vscode/sftp.json -Raw | ConvertFrom-Json
+$SSH_HOST = $Sftp.host
+$SSH_USER = $Sftp.username
+$SSH_PORT = $Sftp.port
+$SSH_KEY = $Sftp.privateKeyPath
+$SSH_TARGET = "$SSH_USER@$SSH_HOST"
+$DOCKER_NAME = "megamoe"
 $REMOTE_PATH = $Sftp.remotePath
-$REMOTE_REPO = $REMOTE_PATH
-```
-
-Use `ssh -F NUL` and `scp -F NUL` on Windows to ignore local OpenSSH config surprises. Use the temporary ACL-restricted key copy rather than editing the original key file.
-
-## Remote Environment Bootstrap
-
-Every compute-node command that compiles, profiles, tests, or imports project packages must run after this environment setup:
-
-```bash
-module unuse /public/software/modules
-module load compiler/dtk/25.04.4
-module load mpi/hpcx/2.18.0/gcc-8.5.0/shca
-module load app/rccl/shca_rdma_plugins/v8
-module load app/rccl/tests
-module load app/miniconda3/25.11.0
-conda activate megatron_fla042_mhc_tilelang
-```
-
-Use a login shell on the compute node so `module` and `conda` are available. If `conda activate` fails because shell hooks are missing, inspect the existing conda initialization only; do not edit shell startup files. Prefer sourcing the already-installed conda profile script for the command session only.
-
-Do not use `set -u` around the module/conda bootstrap. The observed conda activation scripts can reference unset variables such as `ADDR2LINE`; use `set -eo pipefail` for uploaded validation scripts unless a narrower command has been checked.
-
-## Command Shape
-
-Use this two-hop shape for quick commands:
-
-```powershell
-ssh -F NUL -p $LOGIN_PORT $SSH_KEY_ARG $LOGIN_TARGET "ssh $COMPUTE_HOST 'hostname && whoami && pwd'"
-```
-
-For project commands, execute a compute-node `bash -lc` block:
-
-```powershell
-$RemoteCmd = @'
-set -e
-cd "$REMOTE_REPO"
-module unuse /public/software/modules
-module load compiler/dtk/25.04.4
-module load mpi/hpcx/2.18.0/gcc-8.5.0/shca
-module load app/rccl/shca_rdma_plugins/v8
-module load app/rccl/tests
-module load app/miniconda3/25.11.0
-conda activate megatron_fla042_mhc_tilelang
-hostname
-which hipcc || true
-python --version
-'@
-$Escaped = $RemoteCmd.Replace("'", "'\''")
-ssh -F NUL -p $LOGIN_PORT $SSH_KEY_ARG $LOGIN_TARGET "ssh $COMPUTE_HOST 'REMOTE_REPO=$REMOTE_REPO bash -lc ''$Escaped'''"
-```
-
-If quoting becomes fragile, write the command to a temporary script under `hygon_tmp/`, upload it to `REMOTE_PATH/hygon_tmp/`, then run it on the compute node with `bash`.
-
-Avoid inline multi-hop commands when the remote command contains nested quotes, command substitution such as `$(hostname)`, redirects, here-docs, `printf` format strings, JSON, or shell variables that must expand on the compute node. A direct local PowerShell -> login shell -> compute shell command can lose quote boundaries and fail with messages like `unexpected EOF while looking for matching '"'`. In that case, create a script locally under `hygon_tmp/`, upload it to `REMOTE_PATH/hygon_tmp/`, and execute that script on `gc02r3n15`.
-
-## Quick Verification Workflow
-
-1. Verify login-node SSH and shared path.
-
-```powershell
-ssh -F NUL -p $LOGIN_PORT $SSH_KEY_ARG $LOGIN_TARGET "hostname && whoami && test -d $REMOTE_PATH && echo remote_path_ok=$REMOTE_PATH"
-```
-
-2. Verify compute-node SSH from the login node and shared storage visibility.
-
-```powershell
-ssh -F NUL -p $LOGIN_PORT $SSH_KEY_ARG $LOGIN_TARGET "ssh $COMPUTE_HOST 'hostname && whoami && test -d $REMOTE_PATH && echo shared_remote_path_ok=$REMOTE_PATH'"
-```
-
-3. Verify module and conda environment on the compute node.
-
-```powershell
-ssh -F NUL -p $LOGIN_PORT $SSH_KEY_ARG $LOGIN_TARGET "ssh $COMPUTE_HOST 'bash -lc `"cd $REMOTE_PATH && module unuse /public/software/modules && module load compiler/dtk/25.04.4 && module load mpi/hpcx/2.18.0/gcc-8.5.0/shca && module load app/rccl/shca_rdma_plugins/v8 && module load app/rccl/tests && module load app/miniconda3/25.11.0 && conda activate megatron_fla042_mhc_tilelang && hostname && which hipcc && hipcc --version | head -n 2 && python --version`"'"
-```
-
-4. Check GPU/DTK status on the compute node after loading the environment.
-
-```powershell
-ssh -F NUL -p $LOGIN_PORT $SSH_KEY_ARG $LOGIN_TARGET "ssh $COMPUTE_HOST 'bash -lc `"cd $REMOTE_PATH && module unuse /public/software/modules && module load compiler/dtk/25.04.4 && module load app/miniconda3/25.11.0 && conda activate megatron_fla042_mhc_tilelang && (rocm-smi --showuse --showmemuse || rocm-smi || true) && (rocminfo | grep -m1 -E \"gfx[0-9]+\" || true)`"'"
-```
-
-Choose a device with low memory and compute use, then set `HIP_VISIBLE_DEVICES=<device>` for compile/run/test commands that need an isolated GPU.
-
-## Compile, Test, Profile Templates
-
-Compile check:
-
-```powershell
-ssh -F NUL -p $LOGIN_PORT $SSH_KEY_ARG $LOGIN_TARGET "ssh $COMPUTE_HOST 'bash -lc `"cd $REMOTE_PATH && module unuse /public/software/modules && module load compiler/dtk/25.04.4 && module load app/miniconda3/25.11.0 && conda activate megatron_fla042_mhc_tilelang && python -m compileall .`"'"
-```
-
-Targeted Python test:
-
-```powershell
-ssh -F NUL -p $LOGIN_PORT $SSH_KEY_ARG $LOGIN_TARGET "ssh $COMPUTE_HOST 'bash -lc `"cd $REMOTE_PATH && module unuse /public/software/modules && module load compiler/dtk/25.04.4 && module load app/miniconda3/25.11.0 && conda activate megatron_fla042_mhc_tilelang && HIP_VISIBLE_DEVICES=<device> PYTHONPATH=. pytest -q <path/to/test.py>`"'"
-```
-
-HIP compile and run:
-
-```powershell
-ssh -F NUL -p $LOGIN_PORT $SSH_KEY_ARG $LOGIN_TARGET "ssh $COMPUTE_HOST 'bash -lc `"cd $REMOTE_PATH && module unuse /public/software/modules && module load compiler/dtk/25.04.4 && module load app/miniconda3/25.11.0 && conda activate megatron_fla042_mhc_tilelang && hipcc -O2 hip_vector_add.cpp -o hygon_tmp/hip_vector_add && HIP_VISIBLE_DEVICES=<device> hygon_tmp/hip_vector_add`"'"
-```
-
-Hygon profiler command:
-
-```powershell
-ssh -F NUL -p $LOGIN_PORT $SSH_KEY_ARG $LOGIN_TARGET "ssh $COMPUTE_HOST 'bash -lc `"cd $REMOTE_PATH && module unuse /public/software/modules && module load compiler/dtk/25.04.4 && module load app/miniconda3/25.11.0 && conda activate megatron_fla042_mhc_tilelang && HIP_VISIBLE_DEVICES=<device> python skills/hyhon-hip-kernel-optimizer/scripts/profile_hipprof.py --state <run_dir>/state.json --iter 1 --which kernel --pmc-mode all`"'"
-```
-
-## Sync Guidance
-
-- Keep the SFTP config read-only. Do not edit it to fix workflow issues.
-- Save local files, let `uploadOnSave` sync, then verify the file remotely.
-- If auto-sync is delayed, upload explicit files with `scp` to `REMOTE_PATH`.
-
-```powershell
-scp -F NUL -P $LOGIN_PORT $SSH_KEY_ARG <local_file> "${LOGIN_TARGET}:$REMOTE_PATH/<relative_target>"
-```
-
-Verify on login and compute nodes:
-
-```powershell
-ssh -F NUL -p $LOGIN_PORT $SSH_KEY_ARG $LOGIN_TARGET "ls -l $REMOTE_PATH/<relative_target>"
-ssh -F NUL -p $LOGIN_PORT $SSH_KEY_ARG $LOGIN_TARGET "ssh $COMPUTE_HOST 'ls -l $REMOTE_PATH/<relative_target>'"
-```
-
-For generated remote artifacts that the user needs locally, copy them back with `scp` from the login node path:
-
-```powershell
-scp -F NUL -P $LOGIN_PORT $SSH_KEY_ARG -r "${LOGIN_TARGET}:$REMOTE_PATH/hygon_tmp/<artifact>" "hygon_tmp/"
-```
-
-For remote artifact generation plus pullback, prefer this script-based pattern:
-
-```powershell
-# 1. Write a small local script under hygon_tmp/.
-# 2. Upload it to $REMOTE_PATH/hygon_tmp/.
-# 3. Execute it through the login node on gc02r3n15.
-# 4. Pull the generated $REMOTE_PATH/hygon_tmp/<artifact> directory back to local hygon_tmp/.
-scp -F NUL -P $LOGIN_PORT $SSH_KEY_ARG hygon_tmp/create_artifact.sh "${LOGIN_TARGET}:$REMOTE_PATH/hygon_tmp/create_artifact.sh"
-ssh -F NUL -p $LOGIN_PORT $SSH_KEY_ARG $LOGIN_TARGET "ssh $COMPUTE_HOST 'bash $REMOTE_PATH/hygon_tmp/create_artifact.sh <artifact-name>'"
-scp -F NUL -P $LOGIN_PORT $SSH_KEY_ARG -r "${LOGIN_TARGET}:$REMOTE_PATH/hygon_tmp/<artifact-name>" "hygon_tmp/"
+$HOST_MOUNT_ROOT = "/home/hg/yuguo"
+$CONTAINER_WORKSPACE = "/workspace"
+$RemotePathUnix = $REMOTE_PATH -replace '\\', '/'
+$HostMountRootUnix = $HOST_MOUNT_ROOT.TrimEnd('/')
+if ($RemotePathUnix -eq $HostMountRootUnix -or $RemotePathUnix.StartsWith("$HostMountRootUnix/")) {
+  $CONTAINER_REPO = $RemotePathUnix -replace ('^' + [regex]::Escape($HostMountRootUnix)), $CONTAINER_WORKSPACE.TrimEnd('/')
+} else {
+  $REPO_NAME = Split-Path $REMOTE_PATH -Leaf
+  $CONTAINER_REPO = "$($CONTAINER_WORKSPACE.TrimEnd('/'))/$REPO_NAME"
+}
 ```
 
 ## Windows SSH Reliability Notes
 
-- Prefer `ssh -F NUL ...` and `scp -F NUL ...` to bypass local `~/.ssh/config`.
+On Windows, local OpenSSH config or ACLs can break authentication before the remote host is even reached.
+
+- Prefer `ssh -F NUL ...` and `scp -F NUL ...` when you want to ignore local `~/.ssh/config`.
+- If OpenSSH reports bad permissions on `~/.ssh/config`, either fix the ACLs or bypass the config with `-F NUL`.
 - If OpenSSH reports bad permissions on the private key, create a temporary copy with restricted ACLs and use that copy for this session.
 
+Example temporary-key workflow:
+
 ```powershell
-$LOGIN_KEY_SRC = $Sftp.privateKeyPath
-$LOGIN_KEY = Join-Path $env:TEMP "cuda_optimized_skill_id_rsa"
-Copy-Item -LiteralPath $LOGIN_KEY_SRC -Destination $LOGIN_KEY -Force
-icacls $LOGIN_KEY /inheritance:r /grant:r "$((whoami)):F"
+$SSH_KEY_SRC = $Sftp.privateKeyPath
+$SSH_KEY = Join-Path $env:TEMP "cuda-optimized-skill_id_rsa"
+Copy-Item -LiteralPath $SSH_KEY_SRC -Destination $SSH_KEY -Force
+icacls $SSH_KEY /inheritance:r /grant:r "$((whoami)):F"
 ```
+
+## Quick Verification Workflow
+
+1. Verify SSH login and host identity.
+
+```powershell
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "hostname && whoami && test -d /home/hg/yuguo && echo host_mount_root_ok=/home/hg/yuguo"
+```
+
+2. Verify target container exists and is running.
+
+```powershell
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker ps --format 'table {{.Names}}\t{{.Status}}' | sed -n '1,20p'"
+```
+
+If the expected container is missing from `docker ps`, check all containers before deciding it does not exist:
+
+```powershell
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker ps -a --filter name=$DOCKER_NAME --format 'table {{.Names}}\t{{.Status}}'"
+```
+
+3. Verify host/container mount metadata and workspace mapping in container.
+
+```powershell
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker inspect $DOCKER_NAME --format '{{json .Mounts}}'"
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker exec $DOCKER_NAME bash -lc 'source /opt/dtk/env.sh && pwd && ls -la /workspace && test -d /workspace && echo container_workspace_ok=/workspace && if [ -d $CONTAINER_REPO ]; then echo container_repo_ok=$CONTAINER_REPO; else echo container_repo_missing_not_uploaded_yet=$CONTAINER_REPO; fi && (which hipcc || true)'"
+```
+
+4. Check GPU/DCU/ROCm status, memory usage, and hardware information in container.
+
+```powershell
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker exec $DOCKER_NAME bash -lc 'source /opt/dtk/env.sh && (hy-smi || rocm-smi --showuse --showmemuse || rocm-smi || /opt/dtk/bin/rocm-smi || true)'"
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker exec $DOCKER_NAME bash -lc 'source /opt/dtk/env.sh && (rocninfo || rocminfo || /opt/dtk/bin/rocminfo) 2>/dev/null | egrep `"Name:|Marketing Name:|Vendor Name:|Device Type:|Compute Unit:|SIMDs per CU:|Wavefront Size:|ISA`" || true'"
+```
+Choose a device with low or zero compute and memory use, then use `HIP_VISIBLE_DEVICES=` to pin to that device for best performance and isolation.
+
+If VRAM is unexpectedly high, list owning KFD PIDs and map them to host processes:
+
+```powershell
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker exec $DOCKER_NAME bash -lc 'source /opt/dtk/env.sh && hy-smi --showpids || true'"
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "ps -fp <pid1>,<pid2>,<pid3>"
+```
+
+5. Check Python package inventory in container.
+
+```powershell
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker exec $DOCKER_NAME bash -lc 'source /opt/dtk/env.sh && cd $CONTAINER_REPO && pip3 list'"
+```
+
+## Compile, Test, Debug Templates
+
+Run all project validation through the same remote execution pattern:
+
+```powershell
+# Compile check
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker exec $DOCKER_NAME bash -lc 'source /opt/dtk/env.sh && cd $CONTAINER_REPO && python3 -m compileall .'"
+
+# Targeted tests
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker exec $DOCKER_NAME bash -lc 'source /opt/dtk/env.sh && cd $CONTAINER_REPO && pytest -q <path/to/test.py> -q'"
+
+# Debug command (example)
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker exec $DOCKER_NAME bash -lc 'source /opt/dtk/env.sh && cd $CONTAINER_REPO && python3 <your_script.py>'"
+
+# HIP/DTK sample compile + run (example)
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker exec $DOCKER_NAME bash -lc 'source /opt/dtk/env.sh && cd $CONTAINER_REPO && /opt/dtk/bin/hipcc -O2 hip_vector_add.cpp -o hip_vector_add && HIP_VISIBLE_DEVICES=<the device of HCU memory use 0 and HCU use 0> ./hip_vector_add'"
+```
+
+For GPU pinning, prefix the inner command with environment variables:
+
+```powershell
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker exec $DOCKER_NAME bash -lc 'source /opt/dtk/env.sh && cd $CONTAINER_REPO && HIP_VISIBLE_DEVICES=<the device of HCU memory use 0 and HCU use 0> PYTHONPATH=. pytest -q <gpu_test.py> -q'"
+```
+
+## Sync Guidance
+
+- Keep `.vscode/sftp.json` `uploadOnSave` enabled.
+- Save locally first, then execute remotely.
+- Before the first upload, ensure the remote target directory exists:
+
+```powershell
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "mkdir -p $REMOTE_PATH"
+```
+
+- After the first upload, verify the host path and container path both see the project:
+
+```powershell
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "test -d $REMOTE_PATH && echo remote_repo_ok=$REMOTE_PATH"
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker exec $DOCKER_NAME bash -lc 'source /opt/dtk/env.sh && test -d $CONTAINER_REPO && echo container_repo_ok=$CONTAINER_REPO'"
+```
+
+- If a file does not appear remotely in time, upload it explicitly:
+
+```powershell
+scp -F NUL -P $SSH_PORT -i $SSH_KEY <local_file> "${SSH_TARGET}:$REMOTE_PATH/<relative_target>"
+```
+
+- After explicit upload, verify the file exists on the host before compiling in Docker:
+
+```powershell
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "ls -l $REMOTE_PATH/<relative_target>"
+```
+
+- If host-side verification passes but the file is still missing in Docker, verify the mounted path inside the container:
+
+```powershell
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker exec $DOCKER_NAME bash -lc 'source /opt/dtk/env.sh && cd $CONTAINER_REPO && ls -l <relative_target>'"
+```
+
+## Sync Back Container Outputs
+
+Files generated inside `megamoe` are usually owned by `root` on the host bind mount. Downloading them from the host as `hg` works only when host permissions allow read and directory traversal.
+
+- `root:root` files with mode `0644` and directories with mode `0755` can be pulled by `scp` or SFTP.
+- `root:root` files with mode `0600` or directories with mode `0700` cannot be pulled by `hg`; expect `Permission denied`.
+- Prefer fixing ownership in Docker before syncing outputs back:
+
+```powershell
+$HOST_UID_GID = ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "stat -c '%u:%g' /home/hg/yuguo"
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker exec $DOCKER_NAME bash -lc 'source /opt/dtk/env.sh && chown -R $HOST_UID_GID $CONTAINER_REPO/<output_dir>'"
+scp -F NUL -P $SSH_PORT -i $SSH_KEY -r "${SSH_TARGET}:$REMOTE_PATH/<output_dir>" <local_target_dir>
+```
+
+- If ownership cannot be changed, use `source /opt/dtk/env.sh && chmod -R u+rwX,go+rX <output_dir>` in Docker as a read-only pull fallback. Avoid broad `chmod 777`.
+- In PowerShell, write remote scp paths as `"${SSH_TARGET}:$REMOTE_PATH/<path>"`; `"$SSH_TARGET:$REMOTE_PATH"` is parsed incorrectly.
+- Avoid creating `/workspace/cuda-optimized-skill` as root before the first upload. If the repo path is not uploaded yet, create sync-back tests under `/workspace/.codex_*` or upload the project first.
 
 ## Failure Handling
 
-- If login-node SSH fails, check local SSH key/config/ACL issues first; do not edit remote environment files.
-- If login-node to compute-node SSH fails, verify `ssh gc02r3n15 hostname` from the login node. Do not assume direct local access to `gc02r3n15`.
-- If `REMOTE_PATH` exists on the login node but not on `gc02r3n15`, stop and report a shared-storage issue.
-- If `module` is unavailable, use a compute-node login shell and inspect existing shell initialization. Do not modify shell rc files or module configuration.
-- If `conda activate megatron_fla042_mhc_tilelang` fails, report the error and inspect existing conda/module state. Do not create, update, or remove conda environments.
-- If `hipcc`, `rocminfo`, `rocm-smi`, `hipprof`, or `dccobjdump` is unavailable after the documented module loads, treat it as an environment mismatch and report it instead of changing modules or installing packages.
-- If package or import checks fail, separate environment mismatch from code regression and ask before changing any environment-related file.
-- If a multi-hop inline command fails with quote-related shell errors such as `unexpected EOF`, `syntax error: unexpected end of file`, or missing remote artifact paths after a failed creation command, switch to the `hygon_tmp` script upload pattern. Do not keep adding escaping layers blindly.
+- If `docker exec` fails with "container not running", confirm status with `docker ps -a`, then start it and rerun:
+
+```powershell
+ssh -F NUL $SSH_TARGET -p $SSH_PORT -i $SSH_KEY "docker start $DOCKER_NAME"
+```
+
+- If authentication fails before reaching the remote shell, check for local OpenSSH ACL problems on `~/.ssh/config` or the private key and switch to `-F NUL` plus a temporary key copy.
+- If `.vscode/sftp.json` host differs from the skill default, trust `.vscode/sftp.json`.
+- If the host shell resolves to a different home prefix while `remotePath` is `/home/hg/yuguo/cuda-optimized-skill`, treat the configured `remotePath` as the source of truth and verify the file directly with `ls`.
+- If `rocm-smi` is unavailable in container, run it on host once to confirm driver state, then return to Docker workflow.
+- If package or import checks fail, treat environment mismatch separately from code regressions.

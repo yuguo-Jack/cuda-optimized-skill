@@ -14,8 +14,6 @@ This is a Codex skill package, not a standalone optimizer daemon. Codex reads th
 
 If you do not have an initial HIP/C++ kernel yet, start with `skills/hygon-hip-baseline-generator`. It can inspect a Torch/Triton/TileLang/Python reference plus shape JSON, scaffold a conservative `kernel.hip` and `ref.py`, and validate correctness before this optimizer begins its measured iterations.
 
-When this workflow is installed as a plugin and used from another repository, resolve helper scripts from the loaded skill/plugin directory. Do not assume the target repository contains `skills/hygon-hip-kernel-optimizer/scripts`.
-
 ![Hygon DCU HIP kernel optimizer architecture](asset/dcu_en_arch.png)
 
 ## What It Does
@@ -292,6 +290,8 @@ s_waitcnt vmcnt(0)
 s_waitcnt lgkmcnt(0)
 v_mmac_*
 ```
+
+If `dccobjdump` fails or emits no instruction lines, `sass_check.py` falls back to `hipcc -save-temps=obj` and scans the generated device `.s` files. This covers DTK cases where the final shared object cannot be dumped but the compiler can still preserve the lowered assembly text.
 
 If `dccobjdump` emits ISA files but no vector/global memory instructions for a tiny scalar-tail kernel, memory-method checks are marked `inconclusive` rather than `implementation_failed`. Use a controlled temporary probe under `hygon_tmp/<probe-dir>/` only to validate the pattern matcher, not as a stable project dependency.
 

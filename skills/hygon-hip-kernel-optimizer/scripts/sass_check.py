@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -50,6 +52,22 @@ def _collect_texts(root: Path) -> tuple[list[str], list[str]]:
     return texts, files
 
 
+def _collect_assembly_texts(root: Path) -> tuple[list[str], list[str]]:
+    texts: list[str] = []
+    files: list[str] = []
+    for path in root.rglob("*"):
+        if not path.is_file() or path.stat().st_size >= 20_000_000:
+            continue
+        if path.suffix.lower() not in {".s", ".isa", ".asm"}:
+            continue
+        files.append(str(path.relative_to(root)))
+        try:
+            texts.append(path.read_text(encoding="utf-8", errors="ignore"))
+        except OSError:
+            pass
+    return texts, files
+
+
 def _run_dcc(cmd: list[str], cwd: str, texts: list[str], errors: list[str], timeout: int = 60) -> subprocess.CompletedProcess[str] | None:
     try:
         result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=timeout)
@@ -62,7 +80,83 @@ def _run_dcc(cmd: list[str], cwd: str, texts: list[str], errors: list[str], time
     return result
 
 
-def _dump_isa(binary_path: str, arch: str = "") -> tuple[str, str | None, dict]:
+def _detect_backend(path: str) -> str:
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return "hip"
+    return "ck_tile" if ("ck_tile/" in text or "ck_tile::" in text) else "hip"
+
+
+def _find_ck_tile_include_dir() -> str:
+    candidates: list[str] = []
+    for var in ("CK_TILE_PATH", "CK_TILE_INCLUDE_DIR", "CK_PATH", "COMPOSABLE_KERNEL_PATH"):
+        value = os.environ.get(var, "").strip()
+        if value:
+            candidates.extend([value, os.path.join(value, "include")])
+    candidates.extend(sorted(glob.glob("/opt/dtk*/**/include", recursive=True)))
+    candidates.extend(sorted(glob.glob("/opt/rocm*/**/include", recursive=True)))
+    candidates.extend(["/opt/dtk/include", "/opt/rocm/include", "/usr/local/include"])
+    seen: set[str] = set()
+    for candidate in candidates:
+        resolved = os.path.abspath(candidate)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if os.path.isdir(os.path.join(resolved, "ck_tile")):
+            return resolved
+    return ""
+
+
+def _compile_save_temps_isa(kernel_path: str, arch: str = "") -> tuple[str, dict]:
+    hipcc = os.environ.get("HIPCC", "hipcc")
+    with tempfile.TemporaryDirectory(prefix="dcu_save_temps_") as td:
+        root = Path(td)
+        source_abs = os.path.abspath(kernel_path)
+        output_so = root / "save_temps.so"
+        cmd = [hipcc, "-fPIC", "-shared", "-std=c++17", "-O3"]
+        if arch:
+            cmd.append(f"--offload-arch={arch}")
+        if os.path.splitext(kernel_path)[1].lower() in {".cpp", ".cc", ".cxx"}:
+            cmd.extend(["-x", "hip"])
+        if _detect_backend(kernel_path) == "ck_tile":
+            include_dir = _find_ck_tile_include_dir()
+            if include_dir:
+                cmd.extend(["-I", include_dir])
+        cmd.extend(["-save-temps=obj", "-o", str(output_so), source_abs])
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=os.path.dirname(source_abs) or ".",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=120,
+            )
+            log = (result.stdout or "") + "\n---STDERR---\n" + (result.stderr or "")
+            returncode = result.returncode
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            log = str(exc)
+            returncode = -1
+
+        texts, files = _collect_assembly_texts(root)
+        asm_text = "\n".join(texts)
+        meta = {
+            "attempted": True,
+            "hipcc": shutil.which(hipcc) or hipcc,
+            "command": " ".join(str(part) for part in cmd),
+            "returncode": returncode,
+            "assembly_files": files,
+            "instruction_lines": len(_INSTRUCTION_RE.findall(asm_text)),
+            "vmem_instruction_count": len(_VMEM_RE.findall(asm_text)),
+            "log_excerpt": log.strip()[:2000],
+        }
+        return asm_text, meta
+
+
+def _dump_isa(binary_path: str, arch: str = "", kernel_path: str | None = None) -> tuple[str, str | None, dict]:
     dccobjdump = "dccobjdump"
     with tempfile.TemporaryDirectory(prefix="dcu_isa_") as td:
         root = Path(td)
@@ -120,15 +214,24 @@ def _dump_isa(binary_path: str, arch: str = "") -> tuple[str, str | None, dict]:
 
         file_texts, files = _collect_texts(root)
         texts.extend(file_texts)
+        dcc_text = "\n".join(texts)
+        save_temps_meta: dict = {"attempted": False}
+        if kernel_path and not _INSTRUCTION_RE.search(dcc_text):
+            save_temps_text, save_temps_meta = _compile_save_temps_isa(kernel_path, arch=arch)
+            if save_temps_text:
+                texts.append(save_temps_text)
+
         isa_text = "\n".join(texts)
         meta = {
             "dump_files": files,
             "isa_files": [f for f in files if f.lower().endswith(".isa")],
+            "dccobjdump_instruction_lines": len(_INSTRUCTION_RE.findall(dcc_text)),
             "instruction_lines": len(_INSTRUCTION_RE.findall(isa_text)),
             "vmem_instruction_count": len(_VMEM_RE.findall(isa_text)),
             "dump_errors": errors,
+            "save_temps": save_temps_meta,
         }
-        fatal = "; ".join(errors) if not isa_text.strip() and errors else None
+        fatal = "; ".join(errors) if meta["instruction_lines"] == 0 and errors else None
         return isa_text, fatal, meta
 
 
@@ -178,7 +281,7 @@ def run(state_path: str, iteration: int, signatures_path: str | None = None) -> 
         return result
 
     arch = state.get("env", {}).get("primary_gfx_arch", "")
-    isa_text, err, dump_meta = _dump_isa(binary, arch=arch)
+    isa_text, err, dump_meta = _dump_isa(binary, arch=arch, kernel_path=kernel_path)
     checks = []
     if err and not isa_text:
         checks = [{"method_id": m.get("id", "unknown"), "verified": True, "note": f"dccobjdump_unavailable: {err}"} for m in methods]
