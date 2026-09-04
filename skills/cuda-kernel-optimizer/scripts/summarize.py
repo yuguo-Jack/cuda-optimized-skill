@@ -106,8 +106,12 @@ def render(state_path: str, out_path: str) -> None:
     lines.append(f"- **Baseline**: `{state.get('baseline_file_original', state.get('baseline_file'))}`")
     lines.append(f"- **Reference**: `{state.get('ref_file')}`")
     lines.append(f"- **Dims**: `{json.dumps(state.get('dims', {}))}`")
+    lines.append(f"- **Schema**: v{state.get('schema_version', '?')}")
     lines.append(f"- **Iterations**: {len(state.get('history', []))} / {state.get('iterations_total')}")
     lines.append(f"- **Branches per iter**: {state.get('branches', 4)}")
+    lines.append(f"- **Archetype**: {state.get('archetype', 'generic')}")
+    lines.append(f"- **Numerics mode**: {state.get('numerics_mode', 'reference')}")
+    lines.append(f"- **Workload target/hard**: {state.get('max_working_set_mb', 384)} / {state.get('hard_working_set_mb', 512)} MiB")
     lines.append("")
 
     lines.append("## Environment")
@@ -151,6 +155,11 @@ def render(state_path: str, out_path: str) -> None:
     lines.append("## Implementation-Failed Methods (SASS verification failed)")
     lines.append("")
     lines.append(_method_bullets(state.get("implementation_failed_methods", [])))
+    lines.append("")
+
+    lines.append("## Unverified Methods")
+    lines.append("")
+    lines.append(_method_bullets(state.get("unverified_methods", [])))
     lines.append("")
 
     lines.append("## All Methods Tried")

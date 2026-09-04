@@ -28,6 +28,11 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Iterable
+try:
+    from gpu_lock import gpu_lock
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from gpu_lock import gpu_lock
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +121,15 @@ EXPLICIT_METRICS = [
 
 
 _BUNDLED_BENCHMARK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark.py")
+_METRIC_REGISTRY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "references", "metric_registry.json")
+
+# Full NCU collection is disproportionately expensive for long-running
+# kernels. Keep the threshold explicit and overridable so baseline and
+# champion profiling use exactly the same policy.
+DEFAULT_FULL_DURATION_MS = 10.0
+DEFAULT_NCU_TIMEOUT_SEC = 120.0
+NCU_TIMEOUT_RC = 124
+_NCU_SET_ALIASES = {"light": "basic"}
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +316,55 @@ def _aggregate_across_kernels(rows: list[dict]) -> dict[str, dict]:
     return out
 
 
+def _profile_duration_ms(state: dict, iter_dir: str, which: str) -> float | None:
+    """Return the best available benchmark duration for adaptive profiling."""
+    candidates: list[object] = []
+    if which == "best_input":
+        candidates.append(state.get("best_metric_ms"))
+        bench_path = os.path.join(state.get("run_dir", ""), "baseline", "bench.json")
+    else:
+        bench_path = os.path.join(iter_dir, "bench.json")
+    try:
+        if os.path.isfile(bench_path):
+            with open(bench_path, "r", encoding="utf-8") as f:
+                bench = json.load(f)
+            candidates.append((bench.get("kernel") or {}).get("average_ms"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    for value in candidates:
+        try:
+            duration = float(value)
+        except (TypeError, ValueError):
+            continue
+        if duration >= 0:
+            return duration
+    return None
+
+
+def _choose_profile_set(duration_ms: float | None,
+                        full_duration_ms: float = DEFAULT_FULL_DURATION_MS) -> tuple[str, str]:
+    """Choose ``full`` or the inexpensive ``basic`` set and explain why."""
+    if duration_ms is None:
+        return "full", "duration_unknown"
+    if duration_ms < full_duration_ms:
+        return "full", f"duration_{duration_ms:g}ms_lt_{full_duration_ms:g}ms"
+    if duration_ms <= 50.0:
+        return "light", f"duration_{duration_ms:g}ms_between_{full_duration_ms:g}_and_50ms"
+    return "light", f"duration_{duration_ms:g}ms_gt_50ms"
+
+
+def _is_retryable_profile_failure(rc: int, log: str) -> tuple[bool, str]:
+    """Identify failures for which a full -> light retry is useful."""
+    lowered = (log or "").lower()
+    if rc == NCU_TIMEOUT_RC or "timeout" in lowered or "timed out" in lowered:
+        return True, "timeout"
+    if abs(rc) == 11:
+        return True, "exit_11"
+    if rc == -1 or "tool_error" in lowered or "tool error" in lowered:
+        return True, "tool_error"
+    return False, ""
+
+
 def _run_ncu_profile(
     *,
     ncu_bin: str,
@@ -316,10 +379,15 @@ def _run_ncu_profile(
     repeat: int,
     launch_count: int,
     no_kernel_filter: bool,
+    artifact_manifest: str = "",
+    gpu: int = 0,
+    numerics_mode: str = "reference",
+    profile_set: str = "full",
+    timeout_sec: float | None = None,
 ) -> tuple[int, str]:
     cmd = [
         ncu_bin,
-        "--set", "full",
+        "--set", _NCU_SET_ALIASES.get(profile_set, profile_set),
         "-o", rep_path,
         "-f",
         "--target-processes", "all",
@@ -335,13 +403,24 @@ def _run_ncu_profile(
         sys.executable, benchmark_py, solution,
         "--warmup", str(warmup),
         "--repeat", str(repeat),
+        "--gpu", str(gpu),
+        "--numerics-mode", numerics_mode,
     ] + _ptr_size_argv(ptr_size) + _dims_argv(dims)
+    if artifact_manifest:
+        cmd += ["--artifact-manifest", artifact_manifest]
 
     print(f"[ncu profile] {' '.join(cmd)}", file=sys.stderr)
     try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore",
-        )
+        run_kwargs = {
+            "capture_output": True, "text": True, "encoding": "utf-8", "errors": "ignore",
+        }
+        if timeout_sec is not None and timeout_sec > 0:
+            run_kwargs["timeout"] = timeout_sec
+        r = subprocess.run(cmd, **run_kwargs)
+    except subprocess.TimeoutExpired as e:
+        output = (e.stdout or "") if isinstance(e.stdout, str) else ""
+        output += "\n---STDERR---\n" + ((e.stderr or "") if isinstance(e.stderr, str) else "")
+        return NCU_TIMEOUT_RC, f"ncu profile timed out after {timeout_sec}s\n{output}"
     except OSError as e:
         return -1, f"failed to invoke ncu: {e}"
     log = (r.stdout or "") + "\n---STDERR---\n" + (r.stderr or "")
@@ -492,6 +571,10 @@ def main() -> None:
     p.add_argument("--repeat", type=int, default=3)
     p.add_argument("--no-kernel-filter", action="store_true")
     p.add_argument("--ncu-bin", type=str, default="")
+    p.add_argument("--full-duration-ms", type=float, default=None,
+                   help="Use the full NCU set only at or below this benchmark duration.")
+    p.add_argument("--timeout-sec", type=float, default=None,
+                   help="Per-attempt NCU timeout; a timed-out full attempt falls back to light.")
     p.add_argument("--promote-if-best", action="store_true",
                    help="When --which=kernel, if this kernel is the current best, "
                         "also update state.best_ncu_rep to this report.")
@@ -518,12 +601,51 @@ def main() -> None:
         rep_name = "kernel.ncu-rep"
 
     rep_path = os.path.join(iter_dir, rep_name)
+    artifact_manifest = os.path.join(iter_dir, "kernel.build.json") if args.which == "kernel" else ""
+    if args.which == "best_input":
+        artifact_manifest = state.get("best_build_manifest", "")
 
     env_ncu = state.get("env", {}).get("ncu")
     env_ncu_path = env_ncu.get("path", "") if isinstance(env_ncu, dict) else ""
     ncu_bin = args.ncu_bin or env_ncu_path or shutil.which("ncu") or "ncu"
 
     backend = _detect_backend(solution)
+    def _state_float(*keys: str, default: float) -> float:
+        for key in keys:
+            value = state.get(key)
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return default
+
+    full_duration_ms = (
+        args.full_duration_ms if args.full_duration_ms is not None
+        else _state_float("ncu_full_duration_ms", "ncu_duration_threshold_ms",
+                          default=DEFAULT_FULL_DURATION_MS)
+    )
+    timeout_sec = (
+        args.timeout_sec if args.timeout_sec is not None
+        else _state_float("ncu_timeout_sec", "ncu_profile_timeout_sec",
+                          default=DEFAULT_NCU_TIMEOUT_SEC)
+    )
+    duration_ms = _profile_duration_ms(state, iter_dir, args.which)
+    requested_set, profile_reason = _choose_profile_set(duration_ms, full_duration_ms)
+    # Baseline/champion deltas are meaningful only when collected with the
+    # same metric bundle. The first profile chooses adaptively; later profiles
+    # in this run reuse that decision unless the caller explicitly overrides it.
+    policy = state.get("profiling_policy", {}) if isinstance(state.get("profiling_policy", {}), dict) else {}
+    fixed_set = policy.get("bundle") or state.get("profile_bundle")
+    if fixed_set in {"full", "light"}:
+        requested_set = fixed_set
+        profile_reason = "fixed_bundle_for_comparable_delta"
+    elif requested_set in {"full", "light"}:
+        state["profile_bundle"] = requested_set
+        state["profiling_policy"] = dict(policy, bundle=requested_set)
+        with open(args.state, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
 
     # If state says ncu is unavailable, emit a degraded top-K straight away.
     ncu_info = state.get("env", {}).get("ncu", {}) or {}
@@ -537,6 +659,12 @@ def main() -> None:
         top = {
             "degraded": True,
             "reason": "ncu not available on this system",
+            "profile_status": "inconclusive",
+            "profile_outcome": "tool_unavailable",
+            "profile_reason": "ncu_not_available",
+            "profile_set": requested_set,
+            "profile_duration_ms": duration_ms,
+            "profile_attempts": [],
             "profiled_file": solution,
             "backend": backend,
             "compute": [], "memory": [], "latency": [],
@@ -545,21 +673,46 @@ def main() -> None:
         print(json.dumps({"degraded": True, "reason": top["reason"]}, indent=2))
         return
 
-    # 1) collect
-    rc, log = _run_ncu_profile(
-        ncu_bin=ncu_bin,
-        rep_path=rep_path,
-        benchmark_py=os.path.abspath(args.benchmark),
-        solution=solution,
-        ref_file=state["ref_file"],
-        dims=state.get("dims", {}),
-        backend=backend,
-        ptr_size=state.get("ptr_size", 0),
-        warmup=args.warmup,
-        repeat=args.repeat,
-        launch_count=args.launch_count,
-        no_kernel_filter=args.no_kernel_filter,
-    )
+    # 1) collect. A full collection may be retried with the light/basic set
+    # when the driver cannot support its replay overhead.
+    attempts: list[dict[str, object]] = []
+
+    def _collect(profile_set: str) -> tuple[int, str]:
+        with gpu_lock(int(state.get("gpu", 0)), str(state.get("gpu_uuid", ""))):
+            return _run_ncu_profile(
+                ncu_bin=ncu_bin,
+                rep_path=rep_path,
+                benchmark_py=os.path.abspath(args.benchmark),
+                solution=solution,
+                ref_file=state["ref_file"],
+                dims=state.get("dims", {}),
+                backend=backend,
+                ptr_size=state.get("ptr_size", 0),
+                warmup=args.warmup,
+                repeat=args.repeat,
+                launch_count=args.launch_count,
+                no_kernel_filter=args.no_kernel_filter,
+                artifact_manifest=artifact_manifest,
+                gpu=int(state.get("gpu", 0)),
+                numerics_mode=state.get("numerics_mode", "reference"),
+                profile_set=profile_set,
+                timeout_sec=timeout_sec,
+            )
+
+    rc, log = _collect(requested_set)
+    attempts.append({"set": requested_set, "rc": rc})
+    profile_set = requested_set
+    retryable, failure_reason = _is_retryable_profile_failure(rc, log)
+    if requested_set == "full" and retryable:
+        profile_set = "light"
+        rc, light_log = _collect(profile_set)
+        log += "\n\n--- LIGHT FALLBACK ---\n" + light_log
+        attempts.append({"set": profile_set, "rc": rc, "trigger": failure_reason})
+        profile_reason = f"fallback_after_{failure_reason}"
+        state["profile_bundle"] = "light"
+        state["profiling_policy"] = dict(policy, bundle="light")
+        with open(args.state, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
     log_path = os.path.join(iter_dir, f"{os.path.splitext(rep_name)[0]}.ncu.log")
     with open(log_path, "w", encoding="utf-8") as f:
         f.write(log)
@@ -567,6 +720,12 @@ def main() -> None:
         top = {
             "degraded": True,
             "reason": f"ncu exited {rc}; see {log_path}",
+            "profile_status": "inconclusive",
+            "profile_outcome": "failed",
+            "profile_reason": profile_reason if profile_set == "light" else (failure_reason or "ncu_failed"),
+            "profile_set": profile_set,
+            "profile_duration_ms": duration_ms,
+            "profile_attempts": attempts,
             "profiled_file": solution,
             "backend": backend,
             "compute": [], "memory": [], "latency": [],
@@ -581,6 +740,12 @@ def main() -> None:
         top = {
             "degraded": True,
             "reason": f"ncu --import failed rc={rc2}: {err2[:400]}",
+            "profile_status": "inconclusive",
+            "profile_outcome": "import_failed",
+            "profile_reason": "ncu_import_failed",
+            "profile_set": profile_set,
+            "profile_duration_ms": duration_ms,
+            "profile_attempts": attempts,
             "profiled_file": solution,
             "backend": backend,
             "ncu_rep": rep_path,
@@ -604,12 +769,31 @@ def main() -> None:
 
     top = {
         "degraded": False,
+        "profile_status": profile_set,
+        "profile_reason": profile_reason,
+        "profile_set": profile_set,
+        "profile_duration_ms": duration_ms,
+        "profile_attempts": attempts,
         "profiled_file": solution,
         "backend": backend,
         "ncu_rep": rep_path,
         "metric_count_collected": len(agg),
         **by_axis,
     }
+    try:
+        metric_specs = json.loads(Path(_METRIC_REGISTRY).read_text(encoding="utf-8")).get("metrics", {})
+        collected_names = set(agg)
+        raw_names = {row.get("Metric Name") for row in rows if row.get("Metric Name")}
+        top["metric_status"] = {
+            name: ({"status": "present", "alias": next((a for a in spec.get("aliases", []) if a in collected_names), None)}
+                   if any(a in collected_names for a in spec.get("aliases", []))
+                   else {"status": "parse_error", "aliases": spec.get("aliases", [])}
+                   if any(a in raw_names for a in spec.get("aliases", []))
+                   else {"status": "missing", "aliases": spec.get("aliases", [])})
+            for name, spec in metric_specs.items()
+        }
+    except (OSError, json.JSONDecodeError):
+        top["metric_status"] = {}
     _write_json(os.path.join(iter_dir, "ncu_top.json"), top)
 
     # Optionally promote this as best_ncu_rep

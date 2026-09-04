@@ -1,6 +1,6 @@
-# NCU Metrics Guide (v4 — 匹配重排后优先级)
+# NCU Metrics Guide (v5 — versioned metric semantics)
 
-> **Rule of thumb**: a kernel rarely fits neatly into one bucket. Expect two of the three axes to light up simultaneously.
+> **Rule of thumb**: a kernel rarely fits neatly into one bucket. Expect two of the three axes to light up simultaneously. Missing or unsupported metrics are unknown, not zero.
 >
 > **v4 变更（2026-04-21）**: 本指南内所有"推荐方法"都指向 v4 重排后的优先级编号。新增 12 条方法触发指引。
 
@@ -41,8 +41,9 @@
 | Metric | What it means | Good | Bad → try |
 |---|---|---|---|
 | `dram__throughput...pct_of_peak` | HBM bandwidth used | > 70% if unavoidable | >90% + should-be-compute → improve reuse |
-| `lts__t_sector_hit_rate.pct` (L2 hit) | L2 cache effectiveness | > 70% | < 30% → blocking/swizzle → `latency.tile_scheduler_swizzle` (P4) |
-| `l1tex__t_sector_hit_rate.pct` | L1 hit rate | > 70% | < 30% → uncoalesced → `memory.coalesced_access` (P2) |
+| `lts__t_sector_hit_rate.pct` (L2 hit) | L2 reuse/locality | > 70% | < 30% plus reuse model → blocking/swizzle → `latency.tile_scheduler_swizzle` (P4) |
+| requested/transferred bytes + `sectors/request` | Coalescing and transaction amplification | sectors/request near 1 | `memory.coalesced_access` (P2); L1 hit alone is not evidence |
+| `l1tex__t_sector_hit_rate.pct` | L1 reuse/locality, not coalescing | workload-dependent | cache/reuse analysis only |
 | `l1tex__data_bank_conflicts_*` | Smem bank conflicts | 0 | > 0 → `memory.bank_conflict` (P8) or `memory.tma_descriptor_tuning` (P12) |
 | `dram__bytes.sum` vs theoretical min | Redundant DRAM | near min | 2× → staging/pipeline; N× with cross-CTA sharing → `memory.tma_multicast` (P11) |
 | `dram__bytes_write.sum` | Write-back traffic | ≈ output size | ≫ output → intermediate matrices → `memory.epilogue_visitor_tree_fusion` (P13) or `memory.epilogue_fusion` (P7) |
@@ -52,14 +53,14 @@
 
 ### Diagnostic fast path
 - **High DRAM % + low L2 hit** → `memory.tiling_smem` (P3) + `latency.tile_scheduler_swizzle` (P4)
-- **Low DRAM % + low L1 hit + high stalls** → `memory.coalesced_access` (P2) + `memory.vectorized_access` (P4)
+- **Low DRAM % + low L1 hit + high stalls** → inspect reuse, grid size and requested/transferred bytes before coalescing/vectorization
 - **dram__bytes.sum ≫ min + cross-CTA sharing** → `memory.tma_multicast` (P11, sm_90+)
 - **Write-back includes intermediate matrices + simple chain** → `memory.epilogue_fusion` (P7)
 - **Write-back includes complex DAG (scale+bias+act+reduce)** → `memory.epilogue_visitor_tree_fusion` (P13, sm_90+)
 - **bank_conflict > 0 + TMA in use** → `memory.tma_descriptor_tuning` (P12, sm_90+)
 - **bank_conflict > 0 + no TMA** → `memory.bank_conflict` (P8)
 - **mio_throttle high + TC kernel** → `memory.ldmatrix_stmatrix` (P9, sm_75+)
-- **mio_throttle high + non-TC** → `memory.vectorized_access` (P4)
+- **mio_throttle high + non-TC** → split shared/MUFU/global evidence; only global transaction evidence selects `memory.vectorized_access` (P4)
 - **Data > 228KB per CTA but < Cluster total** → `memory.distributed_smem` (P21, sm_90+)
 - **Small hot data (KV cache) + low L2 hit** → `memory.l2_persistence_window` (P16, sm_80+)
 - **Streaming read polluting L1** → `memory.ldg_cache_modifier_hint` (P15)
@@ -80,7 +81,7 @@
 | `lg_throttle` | L/S scheduler busy | Vectorize; batch smem ops |
 | `wait` | Short fixed-latency deps | Unroll + interleave, or `latency.intra_wg_gemm_softmax_pipeline` (P12) |
 | `membar` | Memory fence | Reduce atomics → `latency.warp_aggregated_atomics` (P8) or `latency.atomic_optimize` (P19) |
-| `no_instruction` | Scheduler starved | Unroll; reduce branches |
+| `no_instruction` | Scheduler has no eligible instruction | first distinguish small grid, fetch/I-cache, dependency, or control-flow starvation; do not select unroll from this counter alone |
 
 ### Diagnostic fast path
 - **`long_scoreboard` dominant** → `latency.async_pipeline` (P1) or TMA + multi-stage (sm_90+)
@@ -97,6 +98,15 @@
 - **Short kernel in tight loop + variable shape + launch overhead** → `latency.static_launch_grid_graph` (P15)
 - **sm_100+ + persistent kernel + atomic contention on work stealing** → `latency.cluster_launch_control_scheduler` (P17)
 - **WS kernel + consumer register spill** → `latency.producer_regdealloc_setmaxnreg` (P11)
+
+### Evidence gates
+
+- A missing or unsupported metric is `unknown`, never zero. A method requires all
+  metrics listed in `metric_registry.json` or an explicitly declared fallback.
+- `mio_throttle` indicates LSU/shared-memory pressure; `lg_throttle` indicates
+  load/store issue scheduling. They are separate signals and must not be merged.
+- Pipeline methods may claim hidden latency only. They must not claim reduced
+  DRAM bytes unless a separate reuse/fusion measurement proves it.
 
 ---
 

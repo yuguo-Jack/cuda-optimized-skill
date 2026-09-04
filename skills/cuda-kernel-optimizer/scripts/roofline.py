@@ -15,6 +15,7 @@ import json
 import math
 import os
 import sys
+import importlib.util
 from pathlib import Path
 
 
@@ -58,7 +59,7 @@ def _get_gpu_spec(env: dict) -> dict:
 # Δ computation from ncu metrics
 # ---------------------------------------------------------------------------
 
-def _safe_float(v, default=0.0) -> float:
+def _safe_float(v, default=None) -> float | None:
     if v is None:
         return default
     try:
@@ -67,7 +68,7 @@ def _safe_float(v, default=0.0) -> float:
         return default
 
 
-def _find_metric(ncu_top: dict, patterns: list[str], axis: str = None) -> float:
+def _find_metric(ncu_top: dict, patterns: list[str], axis: str = None) -> float | None:
     """Find the first matching metric value from ncu_top.json axes."""
     axes_to_search = [axis] if axis else ["compute", "memory", "latency"]
     for ax in axes_to_search:
@@ -76,8 +77,8 @@ def _find_metric(ncu_top: dict, patterns: list[str], axis: str = None) -> float:
             name = m.get("metric", m.get("name", ""))
             for pat in patterns:
                 if pat in name:
-                    return _safe_float(m.get("value", 0.0))
-    return 0.0
+                    return _safe_float(m.get("value"))
+    return None
 
 
 def compute_deltas(ncu_top: dict, env: dict) -> dict:
@@ -88,11 +89,11 @@ def compute_deltas(ncu_top: dict, env: dict) -> dict:
     degraded = ncu_top.get("degraded", False)
 
     if degraded:
-        # No real ncu data — use uniform gaps
+        # No real ncu data: do not fabricate bottleneck evidence.
         return {
-            "delta_compute": 0.50,
-            "delta_memory": 0.50,
-            "delta_latency": 0.50,
+            "delta_compute": None,
+            "delta_memory": None,
+            "delta_latency": None,
             "degraded": True,
         }
 
@@ -110,15 +111,17 @@ def compute_deltas(ncu_top: dict, env: dict) -> dict:
     ], "compute")
 
     # Use the best available compute utilization metric
-    compute_util = max(tensor_pct, fp32_pct, sm_throughput) / 100.0
-    delta_c = max(0.0, 1.0 - compute_util)
+    compute_values = [x for x in (tensor_pct, fp32_pct, sm_throughput) if x is not None]
+    compute_util = max(compute_values) / 100.0 if compute_values else None
+    delta_c = max(0.0, 1.0 - compute_util) if compute_util is not None else None
 
     # --- Memory gap ---
-    dram_throughput_pct = _find_metric(ncu_top, [
+    dram_value = _find_metric(ncu_top, [
         "dram__throughput",
         "gpu__compute_memory_throughput",
-    ], "memory") / 100.0
-    delta_m = max(0.0, 1.0 - dram_throughput_pct)
+    ], "memory")
+    dram_throughput_pct = dram_value / 100.0 if dram_value is not None else None
+    delta_m = max(0.0, 1.0 - dram_throughput_pct) if dram_throughput_pct is not None else None
 
     # --- Latency gap ---
     # Take the maximum stall percentage across all stall types
@@ -132,27 +135,28 @@ def compute_deltas(ncu_top: dict, env: dict) -> dict:
         if "pct" not in name_l:
             continue
         if "stalled" in name_l or "warp_latency" in name_l:
-            v = _safe_float(m.get("value", 0.0))
-            stall_metrics.append(min(max(v, 0.0), 100.0))
+            v = _safe_float(m.get("value"))
+            if v is not None:
+                stall_metrics.append(min(max(v, 0.0), 100.0))
 
     if stall_metrics:
-        max_stall_pct = max(stall_metrics) / 100.0
+        max_stall_pct = max(stall_metrics)
     else:
-        max_stall_pct = 0.5  # Default if no stall data
+        max_stall_pct = None
 
-    delta_l = min(1.0, max(0.0, max_stall_pct))
+    delta_l = min(1.0, max(0.0, max_stall_pct / 100.0)) if max_stall_pct is not None else None
 
     # --- Determine bound ---
     spec = _get_gpu_spec(env)
     ai_ridge = (spec["peak_flops_tflops"] * 1e12) / (spec["peak_bw_gbs"] * 1e9)
 
     return {
-        "delta_compute": round(delta_c, 4),
-        "delta_memory": round(delta_m, 4),
-        "delta_latency": round(delta_l, 4),
-        "compute_util_pct": round(compute_util * 100, 2),
-        "memory_util_pct": round(dram_throughput_pct * 100, 2),
-        "max_stall_pct": round(max_stall_pct * 100, 2),
+        "delta_compute": round(delta_c, 4) if delta_c is not None else None,
+        "delta_memory": round(delta_m, 4) if delta_m is not None else None,
+        "delta_latency": round(delta_l, 4) if delta_l is not None else None,
+        "compute_util_pct": round(compute_util * 100, 2) if compute_util is not None else None,
+        "memory_util_pct": round(dram_throughput_pct * 100, 2) if dram_throughput_pct is not None else None,
+        "max_stall_pct": round(max_stall_pct, 2) if max_stall_pct is not None else None,
         "ai_ridge": round(ai_ridge, 2),
         "degraded": False,
     }
@@ -180,7 +184,11 @@ def allocate_budget(delta_c: float, delta_m: float, delta_l: float) -> dict:
       - At least 2 axes covered (consequence of cap=2 with total=3)
       - Axes with Δ < 0.10 get 0 (negligible gap)
     """
+    if delta_c is None and delta_m is None and delta_l is None:
+        return {"compute": 0, "memory": 0, "latency": 0}
     deltas = {"compute": delta_c, "memory": delta_m, "latency": delta_l}
+    # Unknown metrics are not evidence of a gap; leave the axis unfilled.
+    deltas = {axis: (float(value) if value is not None else 0.0) for axis, value in deltas.items()}
 
     # Zero out negligible axes
     for axis in deltas:
@@ -278,31 +286,60 @@ def run(state_path: str, iteration: int) -> dict:
     dm = deltas["delta_memory"]
     dl = deltas["delta_latency"]
 
-    # Check near-peak
-    near_peak = (dc < NEAR_PEAK_THRESHOLD and
-                 dm < NEAR_PEAK_THRESHOLD and
-                 dl < NEAR_PEAK_THRESHOLD)
+    # The inverse-utilization gaps are only a heuristic without an explicit
+    # workload model. Do not present that heuristic as a roofline or early-stop
+    # on it.
+    ref_file = state.get("ref_file", "")
+    has_workload_model = False
+    workload = None
+    if ref_file and os.path.isfile(ref_file):
+        try:
+            spec = importlib.util.spec_from_file_location("cko_ref", ref_file)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            model = getattr(mod, "workload_model", None)
+            if callable(model):
+                candidate = model(**(state.get("dims") or {}))
+                if isinstance(candidate, dict) and float(candidate.get("flops", 0)) > 0 and float(candidate.get("bytes_min", 0)) > 0:
+                    workload = {"flops": float(candidate["flops"]), "bytes_min": float(candidate["bytes_min"])}
+                    has_workload_model = True
+        except Exception:
+            has_workload_model = False
+    known_deltas = [x for x in (dc, dm, dl) if x is not None]
+    near_peak = has_workload_model and len(known_deltas) == 3 and all(x < NEAR_PEAK_THRESHOLD for x in known_deltas)
 
     # Determine primary bound
-    max_delta = max(dc, dm, dl)
-    if near_peak:
+    max_delta = max((x for x in (dc, dm, dl) if x is not None), default=1.0)
+    if not known_deltas:
+        bound = "unknown"
+    elif near_peak:
         bound = "near_peak"
-    elif max_delta == dc:
+    elif dc is not None and max_delta == dc:
         bound = "compute"
-    elif max_delta == dm:
+    elif dm is not None and max_delta == dm:
         bound = "bandwidth"
     else:
         bound = "latency"
 
     # Allocate budgets
     axis_budget = allocate_budget(dc, dm, dl)
+    spec = _get_gpu_spec(env)
 
     result = {
         **deltas,
         "bound": bound,
         "near_peak": near_peak,
         "axis_budget": axis_budget,
+        "roofline_mode": "workload_model" if has_workload_model else "bottleneck_gap_heuristic",
     }
+    if workload:
+        result.update({
+            "flops": workload["flops"],
+            "bytes_min": workload["bytes_min"],
+            "arithmetic_intensity": workload["flops"] / workload["bytes_min"],
+            "roofline_bound_flops": min(spec["peak_flops_tflops"] * 1e12,
+                                         spec["peak_bw_gbs"] * 1e9 * workload["flops"] / workload["bytes_min"]),
+        })
 
     # Write roofline.json
     out_path = os.path.join(iter_dir, "roofline.json")

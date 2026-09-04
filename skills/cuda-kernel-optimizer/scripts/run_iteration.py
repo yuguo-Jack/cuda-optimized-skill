@@ -18,6 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from build import BuildSpec, build
+
 
 _BUNDLED_BENCHMARK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark.py")
 
@@ -46,14 +48,22 @@ def _run_bench(
     stderr_out: str,
     warmup: int,
     repeat: int,
+    artifact_manifest: str = "",
+    timing_batches: int = 1,
 ) -> int:
+    attempt_json = f"{json_out}.attempt-{os.getpid()}"
+    Path(attempt_json).unlink(missing_ok=True)
+    Path(json_out).unlink(missing_ok=True)
     cmd = [
         sys.executable, benchmark_py, solution,
         "--ref", ref,
         "--warmup", str(warmup),
         "--repeat", str(repeat),
-        "--json-out", json_out,
+        "--timing-batches", str(timing_batches),
+        "--json-out", attempt_json,
     ] + _ptr_size_argv(ptr_size) + _dims_argv(dims)
+    if artifact_manifest:
+        cmd += ["--artifact-manifest", artifact_manifest]
     print(f"[bench] {' '.join(cmd)}", file=sys.stderr)
 
     Path(json_out).parent.mkdir(parents=True, exist_ok=True)
@@ -72,6 +82,8 @@ def _run_bench(
 
     # benchmark.py exits 1 on validation failure but still writes json-out
     # (we rely on the correctness.passed field)
+    if os.path.isfile(attempt_json):
+        os.replace(attempt_json, json_out)
     if not os.path.isfile(json_out):
         # Catastrophic — write a minimal JSON for downstream consumers
         with open(json_out, "w", encoding="utf-8") as f:
@@ -96,6 +108,13 @@ def cmd_seed_baseline(args: argparse.Namespace) -> None:
     json_out = os.path.join(out_dir, "bench.json")
     stderr_out = os.path.join(out_dir, "bench.stderr.txt")
 
+    manifest = ""
+    if os.path.abspath(args.benchmark) == os.path.abspath(_BUNDLED_BENCHMARK) and state["baseline_file"].endswith(".cu"):
+        arch = (state.get("env", {}).get("primary_sm_arch") or "sm_80")
+        nvcc = (state.get("env", {}).get("nvcc") or {}).get("path") or "nvcc"
+        kind = "cutlass" if "cutlass/" in Path(state["baseline_file"]).read_text(encoding="utf-8", errors="ignore") else "cuda"
+        built = build(BuildSpec(state["baseline_file"], kind, arch, nvcc), state.get("build_cache_dir", os.path.join(run_dir, ".build-cache")))
+        manifest = built.get("manifest", "") if built.get("ok") else ""
     _run_bench(
         benchmark_py=os.path.abspath(args.benchmark),
         solution=state["baseline_file"],
@@ -106,6 +125,8 @@ def cmd_seed_baseline(args: argparse.Namespace) -> None:
         stderr_out=stderr_out,
         warmup=args.warmup,
         repeat=args.repeat,
+        timing_batches=int(state.get("timing_batches", 1)),
+        artifact_manifest=manifest,
     )
 
     # Push baseline ms into state via state.py CLI (keep one place that writes state)
@@ -139,6 +160,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         stderr_out=stderr_out,
         warmup=args.warmup,
         repeat=args.repeat,
+        timing_batches=int(state.get("timing_batches", 1)),
     )
     # Return the result summary on stdout for the orchestrator to consume
     res = _read(json_out)

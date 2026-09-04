@@ -20,6 +20,7 @@
 - [Latency Axis (P1-P19)](#latency-axis-按优先级)
 - [NCU Verification Checklist](#ncu-verification-checklist)
 - [Combining Rules](#combining-rules)
+- [Conditional Archetype Packs](#conditional-archetype-packs)
 
 ---
 
@@ -290,7 +291,7 @@
 - **CUDA**: N 组 smem buffer ping-pong；`cp.async.commit_group` + `wait_group<N-1>`。推荐 4-6 stages (sm_90+ TMA)
 - **CUTLASS**: `Stages`（2→4）；`StageCountAutoCarveout`
 - **Triton**: `num_stages=3~5`（超过 5 通常退化）
-- **验证**: `Stall Long Scoreboard` 下降
+- **验证**: `Stall Long Scoreboard` 下降；不要把流水化本身解释为 DRAM bytes 减少
 
 ### P7: `memory.epilogue_fusion` — Epilogue Fusion (bias+activation+cast)
 - **典型收益**: 1.3-2× on GEMM+activation chains
@@ -592,6 +593,26 @@
 - **验证**: `Stall Membar` 下降
 
 ---
+
+## Conditional Archetype Packs
+
+The following methods are disabled for `generic` kernels and become candidates
+only after archetype and evidence gates pass:
+
+| Archetype | Methods | Required evidence |
+|---|---|---|
+| sparse GEMM | `compute.structured_sparsity_2to4`, `compute.block_sparse_tensorcore` | valid metadata, sparse opcode, sparsity fraction |
+| reduction / normalization | `compute.welford_or_rmsnorm` | reduction fraction, shape/stride contract, racecheck |
+| attention decode/prefill | `memory.kv_cache_layout`, `latency.attention_decode_persistent_schedule` | KV strides, decode shape, wave tail |
+| quantized inference | `compute.int8_tensorcore_calibrated`, `memory.dequant_matmul_fusion` | calibration scales, dtype/scale contract |
+| convolution/layout transform | `memory.layout_transform_fusion` | transform fraction and layout contract |
+| batched/ragged GEMM | `latency.grouped_gemm_scheduler` | launch count and shape variance |
+| MoE | `latency.moe_grouped_gemm` | routing overhead and expert imbalance |
+| multi-kernel pipeline | `latency.independent_kernel_overlap` | dependency graph and Nsight Systems idle gap |
+| streaming/stencil | `memory.explicit_l2_prefetch` | reuse distance and long-scoreboard evidence |
+
+Experimental methods require a successful public-API compile probe before code
+generation; otherwise they are recorded as `feature_unavailable`.
 
 ## NCU Verification Checklist
 

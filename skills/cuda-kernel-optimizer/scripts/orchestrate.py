@@ -66,6 +66,17 @@ def cmd_setup(args):
         "--env", env_json,
         "--noise-threshold-pct", str(args.noise_threshold_pct),
         "--ptr-size", str(args.ptr_size),
+        "--compile-jobs", str(args.compile_jobs),
+        "--numerics-mode", args.numerics_mode,
+        "--archetype", args.archetype,
+        "--validation-seeds", args.validation_seeds,
+        "--workload-matrix", args.workload_matrix,
+        "--max-working-set-mb", str(args.max_working_set_mb),
+        "--hard-working-set-mb", str(args.hard_working_set_mb),
+        "--adaptive-downscale" if args.adaptive_downscale else "--no-adaptive-downscale",
+        "--oom-retries", str(args.oom_retries),
+        "--timing-batches", str(args.timing_batches),
+        "--timing-repeats", str(args.timing_repeats),
     ], capture_output=True)
     if init.returncode != 0:
         sys.stderr.write(init.stderr or "")
@@ -221,6 +232,7 @@ def cmd_close_iter(args):
         "--benchmark", os.path.abspath(args.benchmark),
         "--warmup", str(args.warmup),
         "--repeat", str(args.repeat),
+        "--compile-jobs", str(args.compile_jobs),
     ], capture_output=True)
     sys.stderr.write(branch_result.stderr or "")
 
@@ -272,6 +284,7 @@ def cmd_close_iter(args):
     ]).returncode
     if rc != 0:
         print("[warn] ncu profiling of champion failed", file=sys.stderr)
+    kernel_ncu_rep = os.path.join(iter_dir, "kernel.ncu-rep")
 
     # Step 3h: Ablation attribution (optional — runs if ablation kernels exist)
     attribution_path = os.path.join(iter_dir, "attribution.json")
@@ -282,6 +295,7 @@ def cmd_close_iter(args):
             "--state", state_path,
             "--iter", str(args.iter),
             "--benchmark", os.path.abspath(args.benchmark),
+            "--compile-jobs", str(state.get("compile_jobs", "auto")),
         ])
 
     # Step 3i: SASS verification
@@ -301,6 +315,7 @@ def cmd_close_iter(args):
         "--bench", bench_json,
         "--methods-json", methods_json,
         "--retries", str(args.retries),
+        "--kernel-ncu-rep", kernel_ncu_rep,
     ]
     if os.path.isfile(attribution_path):
         update_cmd.extend(["--attribution", attribution_path])
@@ -385,6 +400,19 @@ def main():
     ps.add_argument("--dims", required=True, help="JSON dict of name->int")
     ps.add_argument("--noise-threshold-pct", type=float, default=2.0)
     ps.add_argument("--ptr-size", type=int, default=0)
+    ps.add_argument("--compile-jobs", default="auto")
+    ps.add_argument("--numerics-mode", choices=["reference", "strict", "approximate"], default="reference")
+    ps.add_argument("--archetype", default="generic",
+                    help="Workload archetype, e.g. attention, gemm, reduction")
+    ps.add_argument("--validation-seeds", default="7,19,41,73,101",
+                    help="Comma-separated validation seeds")
+    ps.add_argument("--workload-matrix", default="")
+    ps.add_argument("--max-working-set-mb", type=int, default=384)
+    ps.add_argument("--hard-working-set-mb", type=int, default=512)
+    ps.add_argument("--adaptive-downscale", action=argparse.BooleanOptionalAction, default=True)
+    ps.add_argument("--oom-retries", type=int, default=3)
+    ps.add_argument("--timing-batches", type=int, default=5)
+    ps.add_argument("--timing-repeats", type=int, default=30)
     ps.add_argument("--env-out", type=str, default="")
     ps.add_argument("--warmup", type=int, default=10)
     ps.add_argument("--repeat", type=int, default=20)
@@ -394,6 +422,7 @@ def main():
     po.add_argument("--run-dir", required=True)
     po.add_argument("--iter", type=int, required=True)
     po.add_argument("--benchmark", default=_default_bench)
+    po.add_argument("--compile-jobs", default="")
     po.set_defaults(func=cmd_open_iter)
 
     pc = sub.add_parser("close-iter")
@@ -403,6 +432,7 @@ def main():
     pc.add_argument("--warmup", type=int, default=10)
     pc.add_argument("--repeat", type=int, default=20)
     pc.add_argument("--retries", type=int, default=0)
+    pc.add_argument("--compile-jobs", default="")
     pc.set_defaults(func=cmd_close_iter)
 
     pf = sub.add_parser("finalize")

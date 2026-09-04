@@ -1,6 +1,22 @@
 {
-  "$schema_note": "Machine-readable mirror of optimization_catalog.md (v4). Methods globally re-ranked by actual importance = typical speedup × applicability probability × non-substitutability. 63 methods total: compute P1-P22, memory P1-P22, latency P1-P19.",
-  "$version": "4.0",
+  "$schema_note": "Machine-readable mirror of optimization_catalog.md (v5). Generic methods are always eligible; archetype-pack methods are gated by workload evidence and compile probes. 75 methods total.",
+  "$version": "6.0",
+  "$canonical_source": true,
+  "$metadata_defaults": {
+    "backend_support": {"cuda": "supported", "cutlass": "supported", "triton": "supported"},
+    "min_cuda": "11.0", "min_cutlass": "3.0", "min_triton": "2.0",
+    "semantic_effect": "bitwise_preserving",
+    "verification": ["runtime_verifier", "benchmark"],
+    "workload_archetypes": ["generic"],
+    "tested_matrix": [], "confidence": "medium", "experimental": false,
+    "evidence_requirements": {"missing_policy": "inconclusive"}
+  },
+  "$semantic_effects": {
+    "tolerance_changing": ["compute.mixed_precision", "compute.two_level_accumulation_promotion", "compute.fp8_fast_accumulation_mode", "compute.block_scaled_precision", "compute.tf32_emulation_3xtf32_bf16x6", "compute.mufu_ex2_softmax_replacement", "compute.fma_and_fast_math", "memory.split_k_parallel_reduce"],
+    "reordered_equivalent": ["compute.welford_or_rmsnorm"],
+    "preconditioned": ["memory.kernel_fusion", "latency.online_recomputation", "compute.structured_sparsity_2to4", "compute.int8_tensorcore_calibrated", "compute.block_sparse_tensorcore", "memory.kv_cache_layout", "memory.layout_transform_fusion", "memory.dequant_matmul_fusion", "latency.independent_kernel_overlap", "latency.attention_decode_persistent_schedule", "latency.moe_grouped_gemm"],
+    "default": "bitwise_preserving"
+  },
   "$changelog": "v4 (2026-04-21): Added 12 high-value methods (FA3 pingpong, DeepGEMM two-level accum, warp-aggregated atomics, stream-K, EVT fusion, etc.). Major re-ranking: vectorized_access P7→P4; launch_config P6→P4; bank_conflict P10→P8; ldmatrix P11→P9; persistent_kernel P6→P5; online_recomputation P5→P7. Added required_features[] for per-arch gating and complements[] for FA3-style compound methods.",
   "methods": {
     "compute.tensor_core": {
@@ -17,7 +33,8 @@
       "name": "混合精度 / 低位宽计算",
       "trigger_metric": "sm__pipe_fp32_cycles_active.pct_of_peak",
       "trigger_good": 30, "trigger_bad": 50, "trigger_direction": "high_is_bad",
-      "required_features": [],
+      "required_features": [], "semantic_effect": "tolerance_changing",
+      "evidence_requirements": {"required": ["numeric_contract", "fp32_pipe_utilization"], "missing_policy": "skip"},
       "reference_impl": "PyTorch amp / CUTLASS half_t+float accumulator",
       "typical_speedup": "2-4x"
     },
@@ -83,7 +100,6 @@
       "trigger_good": 0.003, "trigger_bad": 0.02, "trigger_direction": "high_is_bad",
       "required_features": ["fp8_e4m3", "wgmma"],
       "reference_impl": "DeepGEMM csrc/jit_kernels/gemm_fp8.cuh",
-      "conflict_with": ["compute.fp8_fast_accumulation_mode"],
       "typical_speedup": "0.85x (trade speed for accuracy) — required for FP8 training"
     },
     "compute.fp8_fast_accumulation_mode": {
@@ -93,7 +109,6 @@
       "trigger_good": 70, "trigger_bad": 40, "trigger_direction": "low_is_bad",
       "required_features": ["fp8_e4m3", "wgmma"],
       "reference_impl": "CUTLASS examples/54_hopper_fp8_warp_specialized_gemm",
-      "conflict_with": ["compute.two_level_accumulation_promotion"],
       "typical_speedup": "2x vs two-level accum, at cost of 14-bit accum precision"
     },
     "compute.block_scaled_precision": {
@@ -198,6 +213,56 @@
       "reference_impl": "DeepGEMM post-compilation SASS opts (pre-NVCC 12.9)",
       "typical_speedup": "1.05-1.15x; last resort"
     },
+    "compute.structured_sparsity_2to4": {
+      "axis": "compute", "priority": 23, "min_sm": 80,
+      "name": "2:4 Structured Sparsity Tensor Core",
+      "trigger_metric": "sparse_tensor_op_utilization", "trigger_good": 60, "trigger_bad": 20, "trigger_direction": "low_is_bad",
+      "required_features": ["tensor_core", "structured_sparsity"], "semantic_effect": "preconditioned",
+      "backend_support": {"cuda": "supported", "cutlass": "supported", "triton": "experimental"},
+      "min_cuda": "11.0", "min_cutlass": "3.0", "min_triton": "3.0",
+      "verification": ["source", "sass", "runtime_verifier", "benchmark"],
+      "workload_archetypes": ["sparse_gemm", "quantized_inference"], "tested_matrix": ["sm_80", "sm_90"],
+      "confidence": "medium", "experimental": false,
+      "evidence_requirements": {"required": ["valid_2to4_metadata", "sparse_mma_opcode"], "missing_policy": "inconclusive"},
+      "reference_impl": "CUTLASS sparse tensor op examples", "typical_speedup": "1.3-2x"
+    },
+    "compute.welford_or_rmsnorm": {
+      "axis": "compute", "priority": 24, "min_sm": 0,
+      "name": "Welford/RMSNorm 分层归约",
+      "trigger_metric": "reduction_runtime_fraction", "trigger_good": 20, "trigger_bad": 40, "trigger_direction": "high_is_bad",
+      "required_features": [], "semantic_effect": "reordered_equivalent",
+      "backend_support": {"cuda": "supported", "cutlass": "experimental", "triton": "supported"},
+      "verification": ["source", "runtime_verifier", "benchmark"],
+      "workload_archetypes": ["reduction", "layernorm", "rmsnorm"], "tested_matrix": ["sm_80", "sm_90"],
+      "confidence": "medium", "experimental": false,
+      "evidence_requirements": {"required": ["reduction_runtime_fraction", "racecheck"], "missing_policy": "inconclusive"},
+      "reference_impl": "CUB BlockReduce / Welford online variance", "typical_speedup": "1.2-2x"
+    },
+    "compute.int8_tensorcore_calibrated": {
+      "axis": "compute", "priority": 25, "min_sm": 75,
+      "name": "校准 INT8 Tensor Core",
+      "trigger_metric": "sm__pipe_tensor_op_imma_cycles_active.pct_of_peak", "trigger_good": 60, "trigger_bad": 20, "trigger_direction": "low_is_bad",
+      "required_features": ["tensor_core", "int8_tensor_core"], "semantic_effect": "preconditioned",
+      "backend_support": {"cuda": "supported", "cutlass": "supported", "triton": "supported"},
+      "min_cuda": "10.0", "min_cutlass": "2.0", "min_triton": "2.1",
+      "verification": ["source", "runtime_verifier", "benchmark"],
+      "workload_archetypes": ["quantized_inference"], "tested_matrix": ["sm_75", "sm_80", "sm_90"],
+      "confidence": "medium", "experimental": false,
+      "evidence_requirements": {"required": ["calibration_scales", "quantization_contract"], "missing_policy": "skip"},
+      "reference_impl": "CUTLASS int8 tensor op GEMM", "typical_speedup": "1.5-3x"
+    },
+    "compute.block_sparse_tensorcore": {
+      "axis": "compute", "priority": 26, "min_sm": 80,
+      "name": "Block Sparse Tensor Core",
+      "trigger_metric": "sparsity_fraction", "trigger_good": 50, "trigger_bad": 0, "trigger_direction": "low_is_bad",
+      "required_features": ["tensor_core", "block_sparse"], "semantic_effect": "preconditioned",
+      "backend_support": {"cuda": "supported", "cutlass": "supported", "triton": "experimental"},
+      "verification": ["source", "runtime_verifier", "benchmark"],
+      "workload_archetypes": ["sparse_gemm", "sparse_attention"], "tested_matrix": ["sm_80", "sm_90"],
+      "confidence": "low", "experimental": true,
+      "evidence_requirements": {"required": ["block_sparse_metadata", "sparsity_fraction"], "missing_policy": "skip"},
+      "reference_impl": "CUTLASS block-sparse GEMM research path", "typical_speedup": "1.2-3x"
+    },
 
     "memory.kernel_fusion": {
       "axis": "memory", "priority": 1, "min_sm": 0,
@@ -211,7 +276,7 @@
     "memory.coalesced_access": {
       "axis": "memory", "priority": 2, "min_sm": 0,
       "name": "合并访问",
-      "trigger_metric": "l1tex__t_sector_hit_rate.pct",
+      "trigger_metric": "global_sectors_per_request",
       "trigger_good": 80, "trigger_bad": 30, "trigger_direction": "low_is_bad",
       "required_features": [],
       "reference_impl": "CUDA C Best Practices — Coalesced Global Memory Access",
@@ -349,7 +414,6 @@
       "trigger_good": 80, "trigger_bad": 50, "trigger_direction": "low_is_bad",
       "required_features": [],
       "reference_impl": "CUTLASS Split-K / cuBLASlt kSplitK",
-      "conflict_with": ["latency.stream_k_load_balancing"],
       "typical_speedup": "1.5-3x on tall-skinny M×N small K large"
     },
     "memory.cache_and_readonly": {
@@ -393,6 +457,55 @@
       "required_features": ["tma"],
       "reference_impl": "cuTensorMapReplaceAddress()",
       "typical_speedup": "1.02-1.05x launch overhead reduction"
+    },
+    "memory.explicit_l2_prefetch": {
+      "axis": "memory", "priority": 23, "min_sm": 70,
+      "name": "显式 L2 Prefetch",
+      "trigger_metric": "stall_long_scoreboard", "trigger_good": 10, "trigger_bad": 30, "trigger_direction": "high_is_bad",
+      "required_features": ["l2_prefetch"], "semantic_effect": "bitwise_preserving",
+      "backend_support": {"cuda": "supported", "cutlass": "supported", "triton": "experimental"},
+      "min_cuda": "11.0", "min_cutlass": "3.0", "min_triton": "2.0",
+      "verification": ["source", "ncu", "benchmark"],
+      "workload_archetypes": ["streaming", "stencil", "memory_bound"], "tested_matrix": ["sm_80", "sm_90"],
+      "confidence": "low", "experimental": true,
+      "evidence_requirements": {"required": ["reuse_distance", "stall_long_scoreboard"], "missing_policy": "skip"},
+      "reference_impl": "prefetch.global.L2 / __prefetch_global_l2", "typical_speedup": "1.05-1.2x"
+    },
+    "memory.kv_cache_layout": {
+      "axis": "memory", "priority": 24, "min_sm": 70,
+      "name": "KV Cache Layout (paged/GQA/MQA)",
+      "trigger_metric": "global_sectors_per_request", "trigger_good": 1, "trigger_bad": 2, "trigger_direction": "high_is_bad",
+      "required_features": [], "semantic_effect": "preconditioned",
+      "backend_support": {"cuda": "supported", "cutlass": "experimental", "triton": "supported"},
+      "verification": ["source", "runtime_verifier", "benchmark"],
+      "workload_archetypes": ["attention_decode", "attention_prefill"], "tested_matrix": ["sm_80", "sm_90"],
+      "confidence": "medium", "experimental": false,
+      "evidence_requirements": {"required": ["decode_or_prefill", "kv_stride", "head_grouping"], "missing_policy": "skip"},
+      "reference_impl": "PagedAttention / FlashInfer KV layouts", "typical_speedup": "1.2-2x"
+    },
+    "memory.layout_transform_fusion": {
+      "axis": "memory", "priority": 25, "min_sm": 0,
+      "name": "Layout Transform / Transpose Fusion",
+      "trigger_metric": "layout_transform_runtime_fraction", "trigger_good": 10, "trigger_bad": 25, "trigger_direction": "high_is_bad",
+      "required_features": [], "semantic_effect": "preconditioned",
+      "backend_support": {"cuda": "supported", "cutlass": "supported", "triton": "supported"},
+      "verification": ["source", "runtime_verifier", "benchmark"],
+      "workload_archetypes": ["convolution", "attention", "normalization"], "tested_matrix": ["sm_80", "sm_90"],
+      "confidence": "medium", "experimental": false,
+      "evidence_requirements": {"required": ["layout_transform_runtime_fraction", "stride_contract"], "missing_policy": "skip"},
+      "reference_impl": "CUTLASS layout algebra / Triton make_block_ptr", "typical_speedup": "1.1-1.8x"
+    },
+    "memory.dequant_matmul_fusion": {
+      "axis": "memory", "priority": 26, "min_sm": 70,
+      "name": "Dequant + Matmul Fusion",
+      "trigger_metric": "dequant_runtime_fraction", "trigger_good": 10, "trigger_bad": 25, "trigger_direction": "high_is_bad",
+      "required_features": [], "semantic_effect": "preconditioned",
+      "backend_support": {"cuda": "supported", "cutlass": "supported", "triton": "supported"},
+      "verification": ["source", "runtime_verifier", "benchmark"],
+      "workload_archetypes": ["quantized_inference"], "tested_matrix": ["sm_80", "sm_90"],
+      "confidence": "medium", "experimental": false,
+      "evidence_requirements": {"required": ["quantization_contract", "scale_metadata"], "missing_policy": "skip"},
+      "reference_impl": "Marlin/Machete fused dequant GEMM", "typical_speedup": "1.2-2x"
     },
 
     "latency.async_pipeline": {
@@ -457,7 +570,6 @@
       "trigger_good": null, "trigger_bad": null, "trigger_direction": "high_is_bad",
       "required_features": [],
       "reference_impl": "FlashAttention-2/3",
-      "complements": ["compute.gemm_softmax_interleave"],
       "typical_speedup": "5-10x on attention (eliminates O(N²) materialization)"
     },
     "latency.warp_aggregated_atomics": {
@@ -485,7 +597,6 @@
       "trigger_good": 5, "trigger_bad": 20, "trigger_direction": "high_is_bad",
       "required_features": ["wgmma", "warp_specialization"],
       "reference_impl": "FA3 flash_fwd_kernel_sm90 (WG1 GEMM || WG2 softmax)",
-      "complements": ["latency.intra_wg_gemm_softmax_pipeline"],
       "typical_speedup": "1.3-1.5x on attention forward"
     },
     "latency.producer_regdealloc_setmaxnreg": {
@@ -504,7 +615,6 @@
       "trigger_good": 5, "trigger_bad": 20, "trigger_direction": "high_is_bad",
       "required_features": ["wgmma"],
       "reference_impl": "FA3 csrc/flash-attention/flash_fwd_kernel_sm90 intra-WG pipeline",
-      "complements": ["latency.pingpong_warpgroup_schedule"],
       "typical_speedup": "1.15-1.3x additional on top of pingpong"
     },
     "latency.pdl_overlap": {
@@ -516,10 +626,10 @@
       "typical_speedup": "1.05-1.15x on multi-kernel pipeline"
     },
     "latency.cooperative_cluster": {
-      "axis": "latency", "priority": 14, "min_sm": 0,
+      "axis": "latency", "priority": 14, "min_sm": 90,
       "name": "Cooperative Groups / Cluster 同步",
       "trigger_metric": null, "trigger_good": null, "trigger_bad": null, "trigger_direction": null,
-      "required_features": [],
+      "required_features": ["cluster"],
       "reference_impl": "cooperative_groups::tiled_partition<8>",
       "typical_speedup": "varies"
     },
@@ -565,9 +675,69 @@
       "required_features": [],
       "reference_impl": "Triton tl.atomic_add sem='relaxed'",
       "typical_speedup": "1.2-2x on low-contention atomics"
+    },
+    "latency.grouped_gemm_scheduler": {
+      "axis": "latency", "priority": 20, "min_sm": 70,
+      "name": "Grouped/Ragged GEMM 调度",
+      "trigger_metric": "launch_count", "trigger_good": 1, "trigger_bad": 16, "trigger_direction": "high_is_bad",
+      "required_features": [], "semantic_effect": "bitwise_preserving",
+      "backend_support": {"cuda": "supported", "cutlass": "supported", "triton": "supported"},
+      "verification": ["source", "runtime_verifier", "benchmark"],
+      "workload_archetypes": ["batched_small_gemm", "ragged_gemm", "moe"], "tested_matrix": ["sm_80", "sm_90"],
+      "confidence": "medium", "experimental": false,
+      "evidence_requirements": {"required": ["launch_count", "batch_shape_variance"], "missing_policy": "skip"},
+      "reference_impl": "CUTLASS grouped GEMM / Triton grouped matmul", "typical_speedup": "1.2-3x"
+    },
+    "latency.independent_kernel_overlap": {
+      "axis": "latency", "priority": 21, "min_sm": 70,
+      "name": "独立 Kernel 并发重叠",
+      "trigger_metric": "inter_kernel_idle_us", "trigger_good": 0, "trigger_bad": 10, "trigger_direction": "high_is_bad",
+      "required_features": [], "semantic_effect": "preconditioned",
+      "backend_support": {"cuda": "supported", "cutlass": "supported", "triton": "supported"},
+      "verification": ["source", "nsys", "runtime_verifier", "benchmark"],
+      "workload_archetypes": ["multi_kernel_pipeline", "iterative_app"], "tested_matrix": ["sm_80", "sm_90"],
+      "confidence": "medium", "experimental": false,
+      "evidence_requirements": {"required": ["dependency_graph", "inter_kernel_idle_us"], "missing_policy": "skip"},
+      "reference_impl": "CUDA streams/events with dependency graph", "typical_speedup": "1.05-1.5x"
+    },
+    "latency.attention_decode_persistent_schedule": {
+      "axis": "latency", "priority": 22, "min_sm": 80,
+      "name": "Attention Decode Persistent Scheduler",
+      "trigger_metric": "wave_quantization_tail_pct", "trigger_good": 5, "trigger_bad": 20, "trigger_direction": "high_is_bad",
+      "required_features": ["persistent_scheduler"], "semantic_effect": "preconditioned",
+      "backend_support": {"cuda": "supported", "cutlass": "experimental", "triton": "supported"},
+      "verification": ["source", "runtime_verifier", "benchmark"],
+      "workload_archetypes": ["attention_decode"], "tested_matrix": ["sm_80", "sm_90"],
+      "confidence": "low", "experimental": true,
+      "evidence_requirements": {"required": ["decode_batch", "sequence_length", "wave_quantization_tail_pct"], "missing_policy": "skip"},
+      "reference_impl": "FlashInfer persistent decode scheduler", "typical_speedup": "1.1-1.8x"
+    },
+    "latency.moe_grouped_gemm": {
+      "axis": "latency", "priority": 23, "min_sm": 70,
+      "name": "MoE Token Routing + Grouped GEMM",
+      "trigger_metric": "expert_load_imbalance", "trigger_good": 0, "trigger_bad": 0.2, "trigger_direction": "high_is_bad",
+      "required_features": [], "semantic_effect": "preconditioned",
+      "backend_support": {"cuda": "supported", "cutlass": "supported", "triton": "supported"},
+      "verification": ["source", "runtime_verifier", "benchmark"],
+      "workload_archetypes": ["moe"], "tested_matrix": ["sm_80", "sm_90"],
+      "confidence": "medium", "experimental": false,
+      "evidence_requirements": {"required": ["expert_load_imbalance", "routing_overhead"], "missing_policy": "skip"},
+      "reference_impl": "DeepSpeed/Tutel grouped expert GEMM", "typical_speedup": "1.2-2.5x"
     }
   },
 
+  "relationships": [
+    {"ids": ["memory.multi_stage_pipeline", "latency.async_pipeline"], "kind": "same_budget_group"},
+    {"ids": ["memory.async_copy", "latency.async_pipeline"], "kind": "same_budget_group"},
+    {"ids": ["memory.tma_multicast", "memory.distributed_smem"], "kind": "complements"},
+    {"ids": ["compute.gemm_softmax_interleave", "latency.online_recomputation"], "kind": "complements"},
+    {"ids": ["compute.two_level_accumulation_promotion", "compute.fp8_fast_accumulation_mode"], "kind": "conflicts"},
+    {"ids": ["memory.split_k_parallel_reduce", "latency.stream_k_load_balancing"], "kind": "conflicts"},
+    {"ids": ["latency.pingpong_warpgroup_schedule", "latency.intra_wg_gemm_softmax_pipeline"], "kind": "complements"},
+    {"ids": ["memory.epilogue_fusion", "memory.epilogue_visitor_tree_fusion"], "kind": "subsumes"},
+    {"ids": ["latency.atomic_optimize", "latency.warp_aggregated_atomics"], "kind": "subsumes"},
+    {"ids": ["latency.cuda_graphs", "latency.static_launch_grid_graph"], "kind": "conflicts", "condition": "same_launch_path"}
+  ],
   "coupled_methods": [
     { "ids": ["memory.multi_stage_pipeline", "latency.async_pipeline"],
       "note": "These two are different names for essentially the same optimization. Selecting both counts as one; the second axis must pick a different method." },
@@ -595,6 +765,8 @@
     "already_selected",
     "arch_incompatible",
     "feature_unavailable",
+    "toolchain_incompatible",
+    "insufficient_evidence",
     "skip_condition",
     "no_trigger"
   ],
@@ -605,8 +777,24 @@
     "sm_80": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence"],
     "sm_86": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence"],
     "sm_89": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence", "fp8_e4m3"],
-    "sm_90": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence", "fp8_e4m3", "tma", "wgmma", "mbarrier", "cluster", "dsmem", "pdl", "warp_specialization"],
-    "sm_100": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence", "fp8_e4m3", "tma", "wgmma", "mbarrier", "cluster", "dsmem", "pdl", "warp_specialization", "tcgen05", "tmem", "block_scaling", "clc"],
-    "sm_120": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence", "fp8_e4m3"]
+    "sm_90": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence", "fp8_e4m3", "tma", "wgmma", "mbarrier", "cluster", "dsmem", "pdl", "warp_specialization", "l2_prefetch", "persistent_scheduler", "int8_tensor_core"],
+    "sm_90a": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence", "fp8_e4m3", "tma", "wgmma", "mbarrier", "cluster", "dsmem", "pdl", "warp_specialization", "l2_prefetch", "persistent_scheduler", "int8_tensor_core"],
+    "sm_100": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence", "fp8_e4m3", "tma", "wgmma", "mbarrier", "cluster", "dsmem", "pdl", "warp_specialization", "tcgen05", "tmem", "block_scaling", "clc", "l2_prefetch", "persistent_scheduler", "int8_tensor_core", "structured_sparsity", "block_sparse"],
+    "sm_120": ["tensor_core", "ldmatrix", "cp_async", "l2_persistence", "fp8_e4m3", "l2_prefetch", "int8_tensor_core"]
+  },
+  "capability_probes": {
+    "tensor_core": "compile_probe:mma.sync",
+    "cp_async": "compile_probe:cp.async",
+    "tma": "compile_probe:cp.async.bulk.tensor",
+    "wgmma": "compile_probe:wgmma.mma_async",
+    "mbarrier": "compile_probe:mbarrier.try_wait",
+    "cluster": "runtime_probe:cudaLaunchCooperativeKernelMultiDevice",
+    "tmem": "compile_probe:tcgen05.mma",
+    "clc": "compile_probe:clusterlaunchcontrol.try_cancel",
+    "structured_sparsity": "compile_probe:mma.sp.sync",
+    "block_sparse": "metadata_probe:block_sparse_layout",
+    "l2_prefetch": "compile_probe:prefetch.global.L2",
+    "persistent_scheduler": "source_probe:persistent_loop",
+    "int8_tensor_core": "compile_probe:mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32"
   }
 }

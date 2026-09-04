@@ -17,11 +17,14 @@ Writes iterv{i}/attribution.json.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+from build import BuildSpec, build
 
 
 _BUNDLED_BENCHMARK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark.py")
@@ -49,6 +52,11 @@ def _bench_kernel(
     json_out: str,
     warmup: int = 5,
     repeat: int = 15,
+    artifact_manifest: str = "",
+    arch: str = "",
+    gpu: int = 0,
+    numerics_mode: str = "reference",
+    backend: str = "auto",
 ) -> dict | None:
     """Run benchmark.py on a single kernel and return the parsed JSON result."""
     cmd = [
@@ -57,7 +65,14 @@ def _bench_kernel(
         "--warmup", str(warmup),
         "--repeat", str(repeat),
         "--json-out", json_out,
+        "--gpu", str(gpu),
+        "--numerics-mode", numerics_mode,
+        "--backend", backend,
     ] + _ptr_size_argv(ptr_size) + _dims_argv(dims)
+    if arch:
+        cmd += ["--arch", arch]
+    if artifact_manifest:
+        cmd += ["--artifact-manifest", artifact_manifest]
 
     Path(json_out).parent.mkdir(parents=True, exist_ok=True)
 
@@ -75,7 +90,7 @@ def _bench_kernel(
     return None
 
 
-def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
+def run(state_path: str, iteration: int, benchmark_py: str = None, compile_jobs: str = "") -> dict:
     state = _load_json(state_path)
     run_dir = state["run_dir"]
     iter_dir = os.path.join(run_dir, f"iterv{iteration}")
@@ -101,10 +116,18 @@ def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
     dims = state.get("dims", {})
     ptr_size = state.get("ptr_size", 0)
     noise_threshold = state.get("noise_threshold_pct", 2.0)
+    gpu = int(state.get("gpu", 0))
+    arch = (state.get("env", {}).get("primary_sm_arch")
+            or ((state.get("env", {}).get("gpus") or [{}])[0].get("sm_arch"))
+            or "sm_80")
+    nvcc = (state.get("env", {}).get("nvcc") or {}).get("path") or "nvcc"
+    numerics_mode = state.get("numerics_mode", "reference")
+    cache_dir = os.path.join(run_dir, ".build-cache")
 
     attributions = []
     ablation_dir = os.path.join(iter_dir, "ablations")
 
+    candidates = []
     for m in methods_list:
         mid = m.get("id", "unknown")
         method_dir = os.path.join(ablation_dir, mid.replace(".", "_"))
@@ -118,27 +141,61 @@ def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
                 break
 
         if ablated_kernel is None:
-            # No ablated kernel provided — skip, assume neutral
+            # Missing ablation is not evidence that the method was neutral.
             attributions.append({
                 "method_id": mid,
                 "ablated_kernel": None,
                 "ablated_ms": None,
                 "champion_ms": champion_ms,
-                "attribution_ms": 0.0,
-                "attribution_pct": 0.0,
-                "contributed": False,
+                "attribution_ms": None,
+                "attribution_pct": None,
+                "contributed": None,
+                "status": "inconclusive",
                 "note": "no_ablated_kernel_provided",
             })
             continue
 
+        candidates.append((m, ablated_kernel, method_dir))
+
+    bundled = os.path.realpath(bench_py) == os.path.realpath(_BUNDLED_BENCHMARK)
+    kind = "cuda"
+    if bundled and candidates and any("cutlass/" in Path(k).read_text(encoding="utf-8", errors="ignore") or "cute/" in Path(k).read_text(encoding="utf-8", errors="ignore") for _, k, _ in candidates):
+        kind = "cutlass"
+    build_results = {}
+    if bundled and candidates and all(k.endswith(".cu") for _, k, _ in candidates):
+        kind = "cutlass" if any("cutlass/" in Path(k).read_text(encoding="utf-8", errors="ignore")
+                                 or "cute/" in Path(k).read_text(encoding="utf-8", errors="ignore")
+                                 for _, k, _ in candidates) else "cuda"
+        from branch_explore import _compile_jobs
+        jobs = _compile_jobs(compile_jobs or state.get("compile_jobs", "auto"), len(candidates), kind)
+        def do_build(item):
+            method, kernel, _ = item
+            return method.get("id", "unknown"), build(
+                BuildSpec(os.path.abspath(kernel), kind, arch, nvcc), cache_dir)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+            for future in [pool.submit(do_build, item) for item in candidates]:
+                mid, result = future.result()
+                build_results[mid] = result
+
+    # Benchmark ablations in methods.json order on the single ranking GPU.
+    for m, ablated_kernel, method_dir in candidates:
+        mid = m.get("id", "unknown")
+
         # Benchmark ablated kernel
         ablated_json_out = os.path.join(method_dir, "bench.json")
-        result = _bench_kernel(
-            bench_py, ablated_kernel, ref_file, dims, ptr_size, ablated_json_out,
-        )
+        Path(ablated_json_out).unlink(missing_ok=True)
+        build_result = build_results.get(mid, {})
+        if bundled and ablated_kernel.endswith(".cu") and not build_result.get("ok"):
+            result = None
+        else:
+            result = _bench_kernel(
+                bench_py, ablated_kernel, ref_file, dims, ptr_size, ablated_json_out,
+                artifact_manifest=build_result.get("manifest", ""), arch=arch, gpu=gpu,
+                numerics_mode=numerics_mode, backend=kind,
+            )
 
         if result is None or not result.get("correctness", {}).get("passed", False):
-            # Ablated kernel failed validation — method is likely essential
+            # A failed ablation cannot establish causality.
             attributions.append({
                 "method_id": mid,
                 "ablated_kernel": ablated_kernel,
@@ -146,8 +203,9 @@ def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
                 "champion_ms": champion_ms,
                 "attribution_ms": None,
                 "attribution_pct": None,
-                "contributed": True,
-                "note": "ablated_kernel_failed_validation_method_essential",
+                "contributed": None,
+                "status": "inconclusive",
+                "note": "ablated_kernel_failed_validation",
             })
             continue
 
@@ -160,7 +218,8 @@ def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
                 "champion_ms": champion_ms,
                 "attribution_ms": 0.0,
                 "attribution_pct": 0.0,
-                "contributed": False,
+                "contributed": None,
+                "status": "inconclusive",
                 "note": "no_timing_in_ablated_bench",
             })
             continue
@@ -178,6 +237,7 @@ def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
             "attribution_ms": round(attr_ms, 4),
             "attribution_pct": round(attr_pct, 2),
             "contributed": contributed,
+            "build": build_result,
         })
 
     output = {
@@ -200,8 +260,9 @@ def main():
     p.add_argument("--state", required=True)
     p.add_argument("--iter", type=int, required=True)
     p.add_argument("--benchmark", default=None)
+    p.add_argument("--compile-jobs", default="")
     args = p.parse_args()
-    run(args.state, args.iter, args.benchmark)
+    run(args.state, args.iter, args.benchmark, args.compile_jobs)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,81 @@
+{
+  "$version": "1.0",
+  "$source": "Nsight Compute 2024.3+; aliases are tried in order",
+  "metrics": {
+    "global_requested_bytes": {
+      "aliases": ["dram__bytes_read.sum", "gpu__dram_read_bytes.sum"],
+      "unit": "bytes", "direction": "lower_is_better", "axes": ["memory"],
+      "missing": "unknown", "confidence": "high"
+    },
+    "global_transferred_bytes": {
+      "aliases": ["dram__sectors_read.sum", "dram__bytes.sum"],
+      "unit": "bytes_or_sectors", "direction": "lower_is_better", "axes": ["memory"],
+      "missing": "unknown", "confidence": "medium"
+    },
+    "global_sectors_per_request": {
+      "aliases": ["l1tex__t_sectors_per_request.pct", "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum.per_inst_executed"],
+      "unit": "sectors/request", "direction": "lower_is_better", "axes": ["memory"],
+      "missing": "unknown", "confidence": "medium"
+    },
+    "l1_sector_hit_rate": {
+      "aliases": ["l1tex__t_sector_hit_rate.pct"],
+      "unit": "percent", "direction": "higher_is_better", "axes": ["memory"],
+      "missing": "unknown", "confidence": "medium"
+    },
+    "l2_sector_hit_rate": {
+      "aliases": ["lts__t_sector_hit_rate.pct"],
+      "unit": "percent", "direction": "higher_is_better", "axes": ["memory"],
+      "missing": "unknown", "confidence": "high"
+    },
+    "l1_shared_bank_conflicts": {
+      "aliases": ["l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum", "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum"],
+      "unit": "count", "direction": "lower_is_better", "axes": ["memory"],
+      "missing": "unknown", "confidence": "high"
+    },
+    "dram_throughput": {
+      "aliases": ["dram__throughput.avg.pct_of_peak_sustained_elapsed", "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed"],
+      "unit": "percent_of_peak", "direction": "contextual", "axes": ["memory"],
+      "missing": "unknown", "confidence": "medium"
+    },
+    "tensor_core_utilization": {
+      "aliases": ["sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_active", "sm__pipe_tensor_op_wgmma_cycles_active.avg.pct_of_peak_sustained_active"],
+      "unit": "percent_of_peak", "direction": "higher_is_better", "axes": ["compute"],
+      "missing": "unknown", "confidence": "high"
+    },
+    "eligible_warps": {
+      "aliases": ["smsp__warps_eligible.avg.per_cycle_active", "sm__warps_active.avg.pct_of_peak_sustained_active"],
+      "unit": "warps_or_percent", "direction": "higher_is_better", "axes": ["compute", "latency"],
+      "missing": "unknown", "confidence": "medium"
+    },
+    "stall_long_scoreboard": {
+      "aliases": ["smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct"],
+      "unit": "percent", "direction": "lower_is_better", "axes": ["latency", "memory"],
+      "missing": "unknown", "confidence": "high"
+    },
+    "stall_lg_mio": {
+      "aliases": ["smsp__warp_issue_stalled_lg_throttle_per_warp_active.pct", "smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct"],
+      "unit": "percent", "direction": "lower_is_better", "axes": ["memory", "latency"],
+      "missing": "unknown", "confidence": "high"
+    },
+    "stall_barrier": {
+      "aliases": ["smsp__warp_issue_stalled_barrier_per_warp_active.pct"],
+      "unit": "percent", "direction": "lower_is_better", "axes": ["latency"],
+      "missing": "unknown", "confidence": "high"
+    },
+    "stall_membar": {
+      "aliases": ["smsp__warp_issue_stalled_membar_per_warp_active.pct"],
+      "unit": "percent", "direction": "lower_is_better", "axes": ["latency"],
+      "missing": "unknown", "confidence": "medium"
+    },
+    "register_spill": {
+      "aliases": ["sass__inst_executed_local_load.sum", "sass__inst_executed_local_store.sum", "ptxas_spill_bytes"],
+      "unit": "count_or_bytes", "direction": "lower_is_better", "axes": ["compute", "memory"],
+      "missing": "unknown", "confidence": "high"
+    },
+    "wave_quantization": {
+      "aliases": ["derived:ceil(grid_blocks/active_sms)*active_sms-grid_blocks"],
+      "unit": "percent", "direction": "lower_is_better", "axes": ["latency"],
+      "missing": "unknown", "confidence": "medium"
+    }
+  }
+}

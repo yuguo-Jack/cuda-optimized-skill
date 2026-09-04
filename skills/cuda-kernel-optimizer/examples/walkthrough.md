@@ -64,8 +64,8 @@ Interpretation: HMMA utilization at 8% → massive compute gap (Δ_c=0.92). Long
 | Axis | Budget | Method id | Priority |
 |------|--------|-----------|----------|
 | compute | 2 | `compute.tensor_core` | P1 |
-| compute | — | `compute.overlap_compute_memory` | P2 |
-| latency | 1 | `latency.async_pipeline` | P3 |
+| compute | — | `compute.overlap_compute_memory` | P7 |
+| latency | 1 | `latency.async_pipeline` | P1 |
 
 Note: memory budget = 0, so no memory methods this round (Δ_m = 0.57 > 0.10 but gets rounded out by proportional allocation dominated by compute+latency).
 
