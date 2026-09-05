@@ -32,11 +32,13 @@ try:
     from build import BuildSpec, build
     from workload_matrix import generate_workload_matrix, shrink_workload
     from contract_check import check_contract
+    from strict_validation import benchmark_gate, write_stop
 except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from build import BuildSpec, build
     from workload_matrix import generate_workload_matrix, shrink_workload
     from contract_check import check_contract
+    from strict_validation import benchmark_gate, write_stop
 
 
 _BUNDLED_BENCHMARK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark.py")
@@ -279,7 +281,9 @@ def run(state_path: str, iteration: int, benchmark_py: str = None,
                 arch=arch, gpu=gpu, numerics_mode=numerics_mode, backend=kind,
                 timing_batches=timing_batches, validation_seeds=validation_seeds)
             bms = (baseline_result.get("kernel") or {}).get("average_ms")
-            if bms is not None and baseline_result.get("correctness", {}).get("passed", False):
+            baseline_valid, _ = benchmark_gate(baseline_result, max_cv=max_cv,
+                                                require_reference_timing=True)
+            if bms is not None and baseline_valid:
                 baseline_scales[scale] = bms
         build_results["__baseline__"] = baseline_build
     results = []
@@ -338,7 +342,8 @@ def run(state_path: str, iteration: int, benchmark_py: str = None,
                 if not oom or attempt >= 3:
                     break
                 active_case = shrink_workload(active_case, 0.8)
-            passed_scale = bool(bench_result.get("correctness", {}).get("passed", False))
+            passed_scale, gate_error = benchmark_gate(
+                bench_result, max_cv=max_cv, require_reference_timing=True)
             scale_ms = (bench_result.get("end_to_end_ms") if use_e2e else
                         (bench_result.get("kernel") or {}).get("average_ms"))
             per_scale.append({"scale": scale, "workload": case,
@@ -348,6 +353,7 @@ def run(state_path: str, iteration: int, benchmark_py: str = None,
                               "kernel_only_ms": (bench_result.get("kernel") or {}).get("average_ms"),
                               "end_to_end_ms": bench_result.get("end_to_end_ms"),
                               "result": bench_result, "attempts": attempts,
+                              "gate_error": gate_error,
                               "executed_workload": active_case})
         passed = all(x["passed"] and x["ms"] is not None for x in per_scale)
         weighted = {x["scale"]: x["ms"] for x in per_scale if x["ms"] is not None}
@@ -384,7 +390,7 @@ def run(state_path: str, iteration: int, benchmark_py: str = None,
                 "contract_pass": contract_results[idx].get("contract_pass", "inconclusive"),
                 "correctness_pass": "pass" if passed else "fail",
                 "race_safe": "inconclusive",
-                "timing_valid": "pass" if passed and all(s.get("stability") != "unstable" for s in per_scale) else "fail",
+                "timing_valid": "pass" if passed else "fail",
             },
             "scales": per_scale,
             "requested_dims": {x["scale"]: x["workload"].get("requested_dims", {}) for x in per_scale},
@@ -419,6 +425,10 @@ def run(state_path: str, iteration: int, benchmark_py: str = None,
             "champion": None,
         }
         _write_json(os.path.join(iter_dir, "branch_results.json"), output)
+        if int(state.get("schema_version", 0)) >= 5:
+            write_stop(state_path, reason="iteration_no_valid_branch", stage="branch_explore",
+                       iteration=iteration, last_error="all branches failed strict validation",
+                       exit_code=2)
         print(json.dumps(output, indent=2))
         sys.exit(2)
 

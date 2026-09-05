@@ -5,3 +5,4 @@ example/
 env.json
 tree.py
 runs/
+tests/

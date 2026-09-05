@@ -64,6 +64,21 @@ def _timeline_table(state: dict) -> str:
     return "\n".join(rows)
 
 
+def _verification_table(state: dict) -> str:
+    rows = ["| Iter | Verification status |", "|------|---------------------|"]
+    verified = int(state.get("verified_iterations", len(state.get("history", []))))
+    stopped_at = state.get("stop_iteration")
+    for iteration in range(1, int(state.get("iterations_total", 0)) + 1):
+        if iteration <= verified:
+            status = "verified"
+        elif stopped_at == iteration:
+            status = state.get("terminal_iteration_status", "stopped")
+        else:
+            status = "not_started"
+        rows.append(f"| {iteration} | {status} |")
+    return "\n".join(rows)
+
+
 def _roofline_table(state: dict) -> str:
     rows = [
         "| Iter | Bound | Δ_compute | Δ_memory | Δ_latency | Budget (c,m,l) |",
@@ -107,12 +122,23 @@ def render(state_path: str, out_path: str) -> None:
     lines.append(f"- **Reference**: `{state.get('ref_file')}`")
     lines.append(f"- **Dims**: `{json.dumps(state.get('dims', {}))}`")
     lines.append(f"- **Schema**: v{state.get('schema_version', '?')}")
-    lines.append(f"- **Iterations**: {len(state.get('history', []))} / {state.get('iterations_total')}")
+    lines.append(f"- **Run status**: {state.get('run_status', 'legacy')}")
+    lines.append(f"- **Verified iterations**: {state.get('verified_iterations', len(state.get('history', [])))} / {state.get('iterations_total')}")
     lines.append(f"- **Branches per iter**: {state.get('branches', 4)}")
     lines.append(f"- **Archetype**: {state.get('archetype', 'generic')}")
     lines.append(f"- **Numerics mode**: {state.get('numerics_mode', 'reference')}")
     lines.append(f"- **Workload target/hard**: {state.get('max_working_set_mb', 384)} / {state.get('hard_working_set_mb', 512)} MiB")
     lines.append("")
+
+    if state.get("run_status") == "stopped":
+        lines.append("## Stop Status")
+        lines.append("")
+        lines.append(f"- **Status**: stopped")
+        lines.append(f"- **Iteration status**: {state.get('terminal_iteration_status', 'stopped')}")
+        lines.append(f"- **Stage**: `{state.get('stop_stage', 'unknown')}`")
+        lines.append(f"- **Reason**: `{state.get('stop_reason', 'unknown')}`")
+        lines.append(f"- **Not started iterations**: {max(0, int(state.get('iterations_total', 0)) - int(state.get('verified_iterations', 0)))}")
+        lines.append("")
 
     lines.append("## Environment")
     lines.append("")
@@ -138,6 +164,8 @@ def render(state_path: str, out_path: str) -> None:
     lines.append("")
 
     lines.append("## Iteration Timeline")
+    lines.append("")
+    lines.append(_verification_table(state))
     lines.append("")
     lines.append(_timeline_table(state))
     lines.append("")

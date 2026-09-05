@@ -319,7 +319,7 @@ def _aggregate_across_kernels(rows: list[dict]) -> dict[str, dict]:
 def _profile_duration_ms(state: dict, iter_dir: str, which: str) -> float | None:
     """Return the best available benchmark duration for adaptive profiling."""
     candidates: list[object] = []
-    if which == "best_input":
+    if which in {"best_input", "baseline"}:
         candidates.append(state.get("best_metric_ms"))
         bench_path = os.path.join(state.get("run_dir", ""), "baseline", "bench.json")
     else:
@@ -563,7 +563,11 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--state", required=True)
     p.add_argument("--iter", required=True, type=int)
-    p.add_argument("--which", required=True, choices=["best_input", "kernel"])
+    p.add_argument("--which", required=True, choices=["baseline", "best_input", "kernel"])
+    p.add_argument("--output-dir", default="",
+                   help="Override artifact directory, used for pre-publication strict gates.")
+    p.add_argument("--strict", action="store_true",
+                   help="Return exit 3 instead of accepting degraded or empty profiling evidence.")
     p.add_argument("--benchmark", default=_BUNDLED_BENCHMARK,
                    help="Path to benchmark.py (default: bundled)")
     p.add_argument("--launch-count", type=int, default=3)
@@ -582,13 +586,13 @@ def main() -> None:
 
     state = _read_state(args.state)
     run_dir = state["run_dir"]
-    iter_dir = os.path.join(run_dir, f"iterv{args.iter}")
+    iter_dir = os.path.abspath(args.output_dir) if args.output_dir else os.path.join(run_dir, f"iterv{args.iter}")
     os.makedirs(iter_dir, exist_ok=True)
 
     # Pick the solution file to profile
-    if args.which == "best_input":
+    if args.which in {"best_input", "baseline"}:
         solution = state["best_file"]
-        rep_name = "best_input.ncu-rep"
+        rep_name = "baseline.ncu-rep" if args.which == "baseline" else "best_input.ncu-rep"
     else:
         # iterv{i}/kernel.*  — find whichever extension is present
         candidates = [
@@ -602,7 +606,7 @@ def main() -> None:
 
     rep_path = os.path.join(iter_dir, rep_name)
     artifact_manifest = os.path.join(iter_dir, "kernel.build.json") if args.which == "kernel" else ""
-    if args.which == "best_input":
+    if args.which in {"best_input", "baseline"}:
         artifact_manifest = state.get("best_build_manifest", "")
 
     env_ncu = state.get("env", {}).get("ncu")
@@ -671,6 +675,8 @@ def main() -> None:
         }
         _write_json(os.path.join(iter_dir, "ncu_top.json"), top)
         print(json.dumps({"degraded": True, "reason": top["reason"]}, indent=2))
+        if args.strict:
+            raise SystemExit(3)
         return
 
     # 1) collect. A full collection may be retried with the light/basic set
@@ -732,6 +738,8 @@ def main() -> None:
         }
         _write_json(os.path.join(iter_dir, "ncu_top.json"), top)
         print(json.dumps({"degraded": True, "rc": rc, "log": log_path}, indent=2))
+        if args.strict:
+            raise SystemExit(3)
         return
 
     # 2) import → csv
@@ -753,6 +761,8 @@ def main() -> None:
         }
         _write_json(os.path.join(iter_dir, "ncu_top.json"), top)
         print(json.dumps({"degraded": True, "rc": rc2}, indent=2))
+        if args.strict:
+            raise SystemExit(3)
         return
 
     # 3) parse → aggregate → rank
@@ -795,6 +805,11 @@ def main() -> None:
     except (OSError, json.JSONDecodeError):
         top["metric_status"] = {}
     _write_json(os.path.join(iter_dir, "ncu_top.json"), top)
+    if args.strict and len(agg) == 0:
+        top["degraded"] = True
+        top["reason"] = "ncu import produced no parseable metrics"
+        _write_json(os.path.join(iter_dir, "ncu_top.json"), top)
+        raise SystemExit(3)
 
     # Optionally promote this as best_ncu_rep
     if args.which == "kernel" and args.promote_if_best:

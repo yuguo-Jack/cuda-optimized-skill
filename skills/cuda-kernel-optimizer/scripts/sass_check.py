@@ -36,9 +36,8 @@ def _find_so_file(kernel_path: str) -> str | None:
     return None
 
 
-def _dump_sass(so_path: str) -> str:
+def _dump_sass(so_path: str, cuobjdump: str = "cuobjdump") -> str:
     """Run cuobjdump --dump-sass and return output."""
-    cuobjdump = "cuobjdump"
     try:
         r = subprocess.run(
             [cuobjdump, "--dump-sass", so_path],
@@ -165,7 +164,9 @@ def run(state_path: str, iteration: int, signatures_path: str = None) -> dict:
         _write_result(iter_dir, result)
         return result
 
-    sass_text = _dump_sass(so_path)
+    env_tool = state.get("env", {}).get("cuobjdump", {})
+    cuobjdump = env_tool.get("path") if isinstance(env_tool, dict) else None
+    sass_text = _dump_sass(so_path, cuobjdump or "cuobjdump")
 
     if sass_text.startswith("ERROR:"):
         checks = []

@@ -1,6 +1,6 @@
 ---
 name: cuda-kernel-optimizer
-description: Iteratively optimize a CUDA/CUTLASS/Triton kernel against a Python reference with NCU evidence, correctness gates, deterministic single-GPU measurement, and bounded parallel CPU compilation.
+description: Iteratively optimize a CUDA/CUTLASS/Triton kernel only when strict on-device compilation, correctness, timing, and NCU evidence gates pass.
 ---
 
 # CUDA Kernel Iterative Optimizer (v3)
@@ -24,6 +24,7 @@ the skill runs a **roofline-guided, branch-and-select iterative optimization loo
 3. **Ablation attribution**: after selecting champion, each method is individually ablated to determine its actual contribution.
 4. **SASS verification**: `cuobjdump --dump-sass` confirms claimed optimizations actually appear in generated code.
 5. **Every iteration produces an adaptive ncu report** on the champion kernel; only CPU compilation is parallel.
+6. **No evidence, no generation**: the requested iteration count is a maximum. Never write candidates until the hardware, correctness, timing, and NCU gates pass.
 
 ## Inputs the skill expects from the user
 
@@ -43,7 +44,7 @@ If any of these are missing, ask the user once — briefly — then proceed.
 ## The loop at a glance
 
 ```
-0. check_env          → env.json (GPU, nvcc, CUTLASS, ncu)
+0. hardware_gate      → env.json (GPU runtime + tools, at most 3 attempts)
 1. init run folder    → run_YYYYMMDD_HHMMSS/
 2. copy baseline      → baseline/ + bench once to seed `best`
 3. for i in 1..N:
@@ -53,7 +54,7 @@ If any of these are missing, ask the user once — briefly — then proceed.
      d. Claude picks methods (b_axis per axis, cap=2) → analysis.md (CoT)
      e. Claude writes K branch kernels (same methods, diff hyperparams)
      f. contract gate, then branch_explore.py: parallel CPU compile, serial GPU bench all K → select champion
-     g. if champion FAIL: regenerate (max 3 retries)
+     g. if all branches FAIL any strict gate: stop the run
      h. ncu profile champion (adaptive, same bundle) → iterv{i}/kernel.ncu-rep
      i. ablate.py: single-method rollback bench    → attribution.json
      j. sass_check.py: verify SASS signatures      → sass_check.json
@@ -66,15 +67,15 @@ Steps (d) and (e) are **where Claude thinks** — follow the reasoning rules in 
 
 ---
 
-## Step 0 — Check local environment
+## Step 0 — Strict hardware gate
 
-Run the env probe **before** doing anything else:
+Run the strict gate **before creating a run or generating any kernel**:
 
 ```bash
-python <skill>/scripts/check_env.py --out ./env.json
+python <skill>/scripts/hardware_gate.py --out ./env.json --backend cuda --attempts 3
 ```
 
-It records: GPU name + compute capability (SM arch), nvcc path + version, ncu path + version, CUTLASS include dir (if detectable), CUDA driver, torch + triton versions, GPU peak FLOPS and bandwidth (for roofline). If **ncu is not available** or the user is not running as root / lacks `--access=all` perf counters, warn the user explicitly — the skill can degrade to benchmark-only mode, but ncu-guided reasoning is significantly weaker without it.
+It searches `PATH`, CUDA environment roots, `/usr/local/cuda*`, `/opt/cuda*`, and common Nsight Compute locations. It must create a CUDA context and resolve backend dependencies, `ncu`, and (for CUDA/CUTLASS) `nvcc` plus `cuobjdump`. The bundled benchmark requires PyTorch. Retry discovery at most three times. If `generation_allowed` is false, stop immediately; benchmark-only degradation is forbidden. `--diagnostic` reports the environment but never authorizes generation.
 
 ## Step 0b — Preflight the baseline + ref contract
 
@@ -100,7 +101,7 @@ python <skill>/scripts/state.py init \
   --env ./env.json
 ```
 
-Creates `./run_YYYYMMDD_HHMMSS/` next to the baseline file and writes `state.json`:
+Creates `./run_YYYYMMDD_HHMMSS/` next to the baseline file and writes `state.json`. Only `baseline/` is created initially; iteration directories are created lazily after their pre-generation gates pass:
 
 ```jsonc
 {
@@ -125,6 +126,11 @@ Creates `./run_YYYYMMDD_HHMMSS/` next to the baseline file and writes `state.jso
 }
 ```
 
+Schema v5 also records `run_status`, `generation_allowed`, `stop_reason`,
+`stop_stage`, `hardware_attempts`, `verified_iterations`, and
+`last_verified_iter`. A stopped run always includes `stop.json`; an unverified
+iteration never increments `verified_iterations`.
+
 ## Step 2 — Seed `best` with a baseline benchmark
 
 ```bash
@@ -132,7 +138,11 @@ python <skill>/scripts/run_iteration.py seed-baseline \
   --state ./run_*/state.json
 ```
 
-## Step 3 — Iteration loop (repeat for i = 1..N)
+The baseline must pass compilation, contract, multi-seed correctness, stable positive kernel/reference timing, and NCU collection/import before iteration 1 may open. Store baseline NCU evidence under `baseline/`. On failure write `stop.json`, render a stopped summary, and do not create `iterv1`.
+
+## Step 3 — Iteration loop (up to N iterations)
+
+Treat N as a maximum. Before writing any branch, run `open-iter`; it rechecks hardware and profiles the current best into staging. Only a successful, non-degraded NCU report with at least one parsed metric may publish `iterv{i}` and its branch directories.
 
 ### 3a. Profile the current `best` with ncu (adaptive report)
 
@@ -228,9 +238,9 @@ python <skill>/scripts/branch_explore.py \
 
 For the bundled benchmark, compiles CUDA/CUTLASS branches in a bounded CPU pool, waits for all builds, then benchmarks them serially on the ranking GPU in `b1..bK` order. Triton and unsupported custom benchmarks use the original serial path. Selects champion by `(average_ms, branch_index)`; non-champions are saved to `state.frontier`.
 
-### 3f. Repair on validation failure (up to 3 retries per iteration)
+### 3f. Stop on validation failure
 
-If champion fails correctness, Claude rewrites and re-runs 3e.
+If all branches fail compilation, contract, correctness, or stable timing, stop the run and do not generate later iterations. Environment discovery alone retries up to three times; kernel validation failures are terminal for this run.
 
 Before GPU work, CUDA branches pass `contract_check.py`. Its independent
 `compile_pass`, `contract_pass`, `correctness_pass`, `race_safe`, and
@@ -249,6 +259,8 @@ python <skill>/scripts/profile_ncu.py \
 
 Writes `iterv{i}/kernel.ncu-rep`. The selected metric bundle is kept identical
 to the first profile in the run so baseline/champion deltas remain comparable.
+Failure, timeout after full-to-light fallback, degraded output, empty report,
+CSV import failure, or zero parsed metrics stops the run before promotion.
 
 ### 3h. Ablation attribution
 
@@ -335,13 +347,19 @@ Unknown NCU metrics and SASS/tool errors are inconclusive, never zero or pass.
 ## Failure modes to watch for
 
 - **Benchmark crashes** → check `bench.json` `"error"` field.
-- **ncu reports all-zero metrics** → permissions issue or launch filter miss.
-- **`can_read_counters: false` in env.json** → warn user; degrade gracefully.
+- **ncu reports no parseable metrics** → stop; permissions or launch selection must be fixed first.
+- **`can_read_counters: false` in env.json** → retry discovery up to three times, then stop.
 - **Triton + `@triton.autotune`** → hard-code config before profiling.
 - **Champion chosen but all methods have near-zero attribution** → the speedup came from hyperparameter change, not methods. Record in analysis.md.
 - **SASS signature missing but kernel is faster** → nvcc took a different path. Mark the method `unverified` unless a strong, method-specific failure is proven; keep the kernel if it's faster.
 - **Branch explore: all K branches fail validation** → Claude must rewrite with different approach.
 - **Early stop triggered** → all Δ < 0.15, kernel is near roofline. Report to user.
+
+Strict CLI exit codes are `0` for verified success, `2` for kernel validation/no
+valid branch, `3` for hardware/tool/NCU failure, and `4` for baseline/reference
+configuration or static-contract failure. Every failure after state creation
+must write `stop.json`, set `run_status=stopped`, render `summary.md`, and leave
+all later iterations uncreated.
 
 ---
 

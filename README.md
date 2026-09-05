@@ -32,13 +32,14 @@ These together change method classification from two buckets (effective / ineffe
 On the host where Claude runs:
 
 - A CUDA GPU with working drivers (`nvidia-smi` works)
-- `nvcc` in `$PATH` (for CUDA / CUTLASS backends)
-- `ncu` in `$PATH` with permission to read perf counters — without it, the skill degrades to code-static reasoning only, which is significantly weaker
-- `cuobjdump` in `$PATH` (ships with the CUDA toolkit) — needed for V2's SASS verification step
+- `nvcc` for CUDA / CUTLASS backends
+- `ncu` with permission to read perf counters
+- `cuobjdump` (ships with the CUDA toolkit) for SASS verification
 - Python 3.10+ with `torch` (CUDA build), `triton` if you want the Triton backend
 - For CUTLASS kernels: `$CUTLASS_PATH` or `$CUTLASS_INCLUDE_DIR` pointing at a tree with both `cutlass/` and `cute/` headers
 
 `benchmark.py` (the generic operator benchmark driver) is bundled at `scripts/benchmark.py` — no separate installation needed.
+The strict hardware gate searches `PATH`, CUDA roots, and common Nsight locations. If GPU runtime or any required tool remains unavailable after three probes, optimization stops before candidate generation.
 
 ### `ncu` permission gotcha
 
@@ -134,6 +135,8 @@ cuda-kernel-optimizer/
 ├── scripts/
 │   ├── benchmark.py                 # bundled benchmark driver (from project)
 │   ├── check_env.py                 # detect GPU / nvcc / ncu / cuobjdump / CUTLASS / libs
+│   ├── hardware_gate.py              # strict tool discovery + CUDA runtime gate (3 attempts)
+│   ├── strict_validation.py          # benchmark/NCU predicates + durable stop state
 │   ├── preflight.py                 # validate baseline + ref contract
 │   ├── state.py                     # the ONLY writer of state.json
 │   ├── validate_methods.py          # priority-compliance gate (called by state.py)
@@ -174,7 +177,7 @@ When a user says "optimize `gemm.cu`", Claude:
    - runs `sass_check.py` → `iterv1/sass_check.json`
    - runs `ablate.py` → `iterv1/attribution.json`
    - updates state: each method lands in one of `effective_methods` / `ineffective_methods` / `implementation_failed_methods` based on SASS ✓/✗ × attribution > noise
-9. on correctness failure (all K branches fail): inspects `bench.json.correctness` + `bench.stderr.txt`, rewrites the kernel, retries (up to 3×)
+9. if all K branches fail compilation, correctness, or stable timing: records `stop.json` and stops without generating later iterations
 10. on success: `best_file` advances if faster; `roofline_history` is appended
 11. loops back to step 3 for the next iteration
 12. calls `orchestrate.py finalize` and writes a retrospective into `summary.md` — including the bottleneck drift table sourced from `roofline_history`
@@ -189,7 +192,7 @@ See `examples/walkthrough.md` for a full example and `SKILL.md` for the formal p
 - **ncu CSV column names**: older `ncu` (< 2022.1) emits `"Metric Value"` with different capitalization/units; `profile_ncu.py` is tolerant but if you see all zeros check the `.ncu.log` file in the iteration directory.
 - **Branch cost**: with K=4 and ablation, each iteration compiles up to K + (num_methods) kernels. On a fresh build this can be slow; lower `--branches` if wall-clock matters more than exploration.
 - **SASS signatures are heuristic**: `sass_signatures.json` greps for instruction patterns, not full semantic equivalence. A method can pass the grep but still be implemented suboptimally — attribution is what catches that.
-- **Retries are bounded**: after 3 correctness failures on one iteration, the skill moves on and records the attempt as failed rather than looping forever. A kernel that can't be made correct after 3 tries usually has a conceptual issue that needs human review.
+- **Retries are bounded**: hardware/tool discovery is attempted at most three times. Correctness, stable-timing, or NCU failure stops the run; later iterations are not generated.
 
 ## Example result
 
@@ -213,4 +216,3 @@ This skill is independent of and does not redistribute CUTLASS, Triton, or Nsigh
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=KernelFlow-ops/cuda-optimized-skill&type=date&legend=top-left" />
  </picture>
 </a>
-
