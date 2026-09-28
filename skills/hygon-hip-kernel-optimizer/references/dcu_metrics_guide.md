@@ -4,7 +4,7 @@
 
 This guide maps profiler evidence to method IDs from `method_registry.json`. AMD ROCm performance guidance is useful for general GPU behavior: profile first, maximize coalescing, use LDS for reuse, balance registers/LDS/occupancy, and minimize divergence. Hygon-specific HCU/MMAC decisions must still be verified with Hygon ISA and target-compiled code, not AMD MFMA naming alone.
 
-Builtin evidence note: a generic `__has_builtin` probe may not recognize HCU names even when DCU KB source projects contain real call sites. Treat source-backed builtins as implementation candidates only when copied with their exact signature and target guard, then confirm by target compilation and `dccobjdump`.
+Builtin evidence note: use [hcu-knowledge-search](../../hcu-knowledge-search/SKILL.md) to find and read original declarations or fixed-commit source call sites. A generic `__has_builtin` probe may not recognize HCU names even when those sources contain real calls. Treat source-backed builtins as implementation candidates only when copied with their exact signature and target guard, then confirm by target compilation and `dccobjdump`.
 
 ## First Read: Bound Type
 

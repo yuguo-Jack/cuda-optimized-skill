@@ -22,13 +22,24 @@ Use deterministic scripts for environment checks, profiling, benchmarking, ablat
 
 ## Key points
 
-1. **Roofline-style axis budget**: allocate compute, memory, and latency method slots from measured DCU counters and timing.
-2. **Branch-and-select**: generate several variants for the same method set, benchmark all valid branches, and keep the fastest champion.
-3. **Ablation attribution**: keep a method only when removing it measurably hurts the champion.
-4. **DCU ISA verification**: use `dccobjdump` patterns from `references/dcu_isa_signatures.json`; final proof is generated ISA, not source intent.
-5. **Source-backed builtin discipline**: HCU or AMD-named builtins are candidates only when the exact call shape is backed by DCU KB source, a compile probe, or existing project code. `__has_builtin` failure alone is not enough to reject a source-backed builtin.
-6. **CK Tile first**: prefer CK Tile for GEMM/conv/norm/MoE template work; do not port CUTLASS assumptions directly.
-7. **Deep search on ambiguity**: for unclear hardware errors, unexplained performance regressions, or compiler/tool behavior that does not match expectation, search the local DCU knowledge base and source-backed reference projects before guessing. Web search is allowed when local references are insufficient.
+1. **`hipprof` is the optimization compass**: profile the baseline, current best, and candidate champion instead of choosing or crediting optimizations from source inspection and timing alone. Use regular/read/write PMC data to locate the limiting axis, code-object analysis to expose VGPR/SGPR/LDS pressure, and SQTT when aggregate counters cannot explain stalls or instruction flow. Re-profile after meaningful changes to confirm that the intended bottleneck moved and that no new regression replaced it. If `hipprof` evidence is unavailable or degraded, disclose that limitation and use timing plus ISA/resource evidence; do not present a guessed bottleneck as measured fact.
+2. **Roofline-style axis budget**: allocate compute, memory, and latency method slots from measured DCU counters and timing.
+3. **Branch-and-select**: generate several variants for the same method set, benchmark all valid branches, and keep the fastest champion.
+4. **Ablation attribution**: keep a method only when removing it measurably hurts the champion.
+5. **DCU ISA verification**: use `dccobjdump` patterns from `references/dcu_isa_signatures.json`; final proof is generated ISA, not source intent.
+6. **Source-backed builtin discipline**: HCU or AMD-named builtins are candidates only when the exact call shape is backed by source retrieved with `hcu-knowledge-search`, a compile probe, or existing project code. `__has_builtin` failure alone is not enough to reject a source-backed builtin.
+7. **CK Tile first**: prefer CK Tile for GEMM/conv/norm/MoE template work; do not port CUTLASS assumptions directly.
+8. **Deep search on ambiguity**: for unclear hardware errors, unexplained performance regressions, or compiler/tool behavior that does not match expectation, invoke `hcu-knowledge-search` and inspect the retrieved original documents and source-backed reference projects before guessing. Web search is allowed when retrieved evidence is insufficient.
+
+## Knowledge retrieval
+
+For knowledge lookup in this workflow, first read and invoke [hcu-knowledge-search](../hcu-knowledge-search/SKILL.md). Resolve `<KB_ROOT>` from that skill's `workspace.json`; use the system Python entry point:
+
+```bash
+python -X utf8 "<KB_ROOT>/kb.py" --root "<KB_ROOT>" search "<gfx target and exact builtin, instruction or performance symptom>"
+```
+
+Follow that skill's configured search mode, including Feishu when configured for hybrid search. Read the matched original sections or fixed-commit source before using a result; preserve the gfx target, DTK version, and source revision with implementation evidence. Follow its project guides and source navigation for deeper investigation. If retrieval is incomplete, report the gap and continue with target probes or authoritative references as directed by that skill.
 
 ## Inputs
 
@@ -287,11 +298,11 @@ State rules:
 - Use `dccobjdump --inputs=<binary> --show-sass --show-instruction-encoding --separate-functions` plus resource/symbol dumps when instruction, register, LDS, or occupancy evidence is needed.
 - If `dccobjdump` fails or produces no instruction lines, `scripts/sass_check.py` falls back to compiling the kernel source with `hipcc -save-temps=obj` and reads the generated device `.s` files. Treat this as a recovery path for compiler-lowered ISA text, not as a replacement for a successful final code-object dump.
 - Treat dump files with no relevant vector/global/matrix instructions as inconclusive, not immediate implementation failure.
-- When a hardware-related error message, profiler symptom, compiler lowering choice, waitcnt hazard, or performance degradation is unclear, use deep DCU KB search to find matching reference projects and inspect how their kernels implement the same pattern. If the local KB is insufficient, search the web for ROCm/AMD/CK Tile/HIP material and treat it as analogy until Hygon compilation and ISA verification confirm it.
+- When a hardware-related error message, profiler symptom, compiler lowering choice, waitcnt hazard, or performance degradation is unclear, invoke `hcu-knowledge-search` to find matching reference projects and read their fixed-commit kernels implementing the same pattern. If retrieved HCU evidence is insufficient, follow the skill's vendor-reference navigation and search the web for ROCm/AMD/CK Tile/HIP material; treat it as analogy until Hygon compilation and ISA verification confirm it.
 - For memory methods, look for DCU global/buffer/flat load/store families, vector widths, LDS paths, coalescing symptoms, and `buffer_load_*_lds` or `raw_buffer_load_lds` when staging through LDS.
 - For matrix or tensor paths, remember Hygon tensorcore-related instructions diverge from AMD naming. Use AMD/ROCm/MFMA material only as analogy unless `dccobjdump` proves the final Hygon `v_mmac` or matrix instruction.
 - Do not introduce FP4 strategies; current Hygon DCU target does not expose an FP4 hardware path for this workflow.
-- For gfx938, source-backed `__builtin_hcu_*` conversion, MMAC, matrix-load, and DS-read helpers may be used only with exact signatures from DCU KB or existing source examples. Compile-probe before relying on them.
+- For gfx938, source-backed `__builtin_hcu_*` conversion, MMAC, matrix-load, and DS-read helpers may be used only with exact signatures from original sources retrieved with `hcu-knowledge-search` or existing source examples. Compile-probe before relying on them.
 - For gfx936, AMD-named `__builtin_amdgcn_*` MMAC forms and inline asm patterns may be candidates only when source-backed or probe-backed, then verified by final ISA.
 - Do not invent builtin names from AMD documents, spreadsheet rows, or mnemonic guesses.
 - If compiler scheduling or lowering blocks an optimization, use inline asm as a last resort and add the required `s_waitcnt`, `s_barrier`, and hazard handling.
@@ -302,7 +313,7 @@ State rules:
 
 When a method needs a builtin or inline asm:
 
-1. Search DCU KB first for the exact gfx target, builtin name, call signature, and source example.
+1. Invoke `hcu-knowledge-search` first for the exact gfx target, builtin name, call signature, and source example; read the original declaration or fixed-commit call site.
 2. If uncertain, create or update a minimal probe under a task-specific scratch directory such as `hygon_tmp/<probe-name>/`.
 3. Run the probe remotely with the target `--offload-arch`, using the actual probe path you just created, for example:
 
@@ -324,9 +335,9 @@ Use this hierarchy for evidence:
 
 When the optimizer hits unclear DCU behavior, do not stop at generic GPU advice. Continue investigation in this order:
 
-1. Search the local DCU KB for the exact gfx target, tool output, mnemonic, builtin, compiler diagnostic, profiler counter, or CK Tile path.
-2. Inspect source-backed reference projects found by the KB and copy only patterns whose call signatures, target guards, layout contracts, and wait rules are visible in source.
-3. If local evidence is insufficient, search the web for ROCm, AMD GPU, HIP, LLVM AMDGPU, or CK Tile references. Mark those findings as analogies until Hygon `hipcc` and `dccobjdump` confirm them.
+1. Invoke `hcu-knowledge-search` for the exact gfx target, tool output, mnemonic, builtin, compiler diagnostic, profiler counter, or CK Tile path.
+2. Follow its project guides and fixed-commit source retrieval to inspect matched reference projects. Copy only patterns whose call signatures, target guards, layout contracts, and wait rules are visible in source.
+3. If retrieved HCU evidence is insufficient, follow the skill's vendor-reference navigation and search the web for ROCm, AMD GPU, HIP, LLVM AMDGPU, or CK Tile references. Mark those findings as analogies until Hygon `hipcc` and `dccobjdump` confirm them.
 4. Build a minimal compile or runtime probe under a task-specific scratch directory in repository-root `hygon_tmp/`. Keep probe inputs, source, logs, PMC read/write outputs, SQTT JSON/HTML/stat files, code-object analysis logs, dumps, and summaries there, but do not reference those scratch filenames as stable workflow entry points.
 5. Feed confirmed findings back into the branch implementation, method notes, or reference files. Remove or quarantine unsupported assumptions.
 
@@ -335,7 +346,7 @@ Use this path for unclear errors, unexpected slowdowns, profiler/tool contradict
 ## Failure modes
 
 - `hipprof` writes degraded or empty metrics: continue with timing and ISA evidence, but disclose degraded profiling.
-- Hardware-specific errors or unclear performance regressions: search DCU KB and reference projects deeply, optionally use web sources as analogies, then create a minimal probe in `hygon_tmp/` before changing the main kernel.
+- Hardware-specific errors or unclear performance regressions: invoke `hcu-knowledge-search`, read the matched original documents and fixed-commit reference projects, optionally use web sources as analogies, then create a minimal probe in `hygon_tmp/` before changing the main kernel.
 - `dccobjdump` cannot find a binary or relevant function: inspect compile artifacts and symbol names before declaring a method failed.
 - Expected ISA pattern is absent from a relevant dump: mark the method implementation-failed, even if the branch is fast.
 - All branches fail correctness or compilation: repair source and retry; do not update method attribution from failed branches.

@@ -24,6 +24,16 @@ Path rule: never assume `skills/...` exists under the target project. Resolve sc
 - `<optimizer-skill>` is the sibling directory `<baseline-skill>/../hygon-hip-kernel-optimizer`.
 - Before running commands, verify these files exist: `<baseline-skill>/scripts/inspect_ref.py`, `<baseline-skill>/scripts/generate_baseline.py`, `<optimizer-skill>/scripts/preflight.py`, `<optimizer-skill>/scripts/benchmark.py`, and `<optimizer-skill>/scripts/orchestrate.py`.
 
+## Knowledge retrieval
+
+For knowledge lookup in this workflow, first read and invoke [hcu-knowledge-search](../hcu-knowledge-search/SKILL.md). Resolve `<KB_ROOT>` from that skill's `workspace.json`; use the system Python entry point:
+
+```bash
+python -X utf8 "<KB_ROOT>/kb.py" --root "<KB_ROOT>" search "<target and exact CUDA/HIP API or symptom>"
+```
+
+Follow that skill's configured search mode, including Feishu when configured for hybrid search. Read the matched original sections or fixed-commit source before using a result; preserve the gfx target, DTK version, and source revision with mapping evidence. If retrieval is incomplete, report the gap and verify against the installed DTK or authoritative upstream references as directed by that skill.
+
 ## Inputs
 
 Required:
@@ -70,12 +80,7 @@ Operation-family hints are intentionally conservative:
 
 When the source is CUDA/C++ rather than a direct Python/Torch/Triton/TileLang oracle, create a HIP/DCU baseline before normal scaffold/validation. Use this evidence order:
 
-1. Search the local DCU RAG KB first. Start with the AMD/NVIDIA comparison entries and CUDA-to-HIP mapping tables, especially:
-   - `comparisons/hip-cuda-programming-comparison.md`
-   - `comparisons/rocm-vs-cuda.md`
-   - `amd-knowledge-base/layer-2-compute-stack/hip/cuda-to-hip-porting.md`
-   - `amd-knowledge-base/layer-6-extended/optimize-guides/L2-optional/cuda-runtime-api-hip.md`
-   - library-specific tables such as `cublas-api-hip.md`, `cusparse-api-hip.md`, `curand`, `cufft`, `cusolver`, and `cub` mappings when those APIs appear.
+1. Invoke `hcu-knowledge-search` first for HCU/DTK migration evidence, querying the exact CUDA symbols, library names, gfx target, and toolchain version. For AMD/NVIDIA comparisons and CUDA-to-HIP mappings, start at `<KB_ROOT>/knowledge/foundation/reference/vendor-gpu/README.md` and follow its HIPIFY and API-mapping references. Include cuBLAS, cuSPARSE, cuRAND, cuFFT, cuSOLVER, or CUB mappings when those APIs appear; verify upstream mappings against the target DTK rather than assuming HCU compatibility.
 2. Use ROCm HIPIFY documentation as the upstream rule source. Prefer `hipify-clang` for production or complex C++ because it parses CUDA with Clang and reports conversion failures; use `hipify-perl` only for quick/simple code. For PyTorch CUDA extensions, CMake-based PyTorch submodules, or projects with custom include rewriting, consult and follow the official `ROCm/hipify_torch` repository patterns and custom mapping support.
 3. Run an automatic hipify pass when tools are available in the target environment, keeping logs:
    - `hipify-clang <file.cu> --cuda-path=<cuda-path> --print-stats -- <includes-and-defines>`
@@ -83,7 +88,7 @@ When the source is CUDA/C++ rather than a direct Python/Torch/Triton/TileLang or
    If `compile_commands.json` exists, prefer it so include paths and macros match the real build.
 4. Review every unconverted symbol, warning, include, macro, launch wrapper, library call, and device intrinsic manually. HIPIFY is a starting point, not proof of correctness.
 
-For missing or uncertain mappings, search the remote DTK/ROCm installation before deciding the API is unsupported. Some CUDA-like functions are not present in the KB or public docs but do exist in the installed DTK headers or libraries.
+For missing or uncertain mappings, search the remote DTK/ROCm installation before deciding the API is unsupported. Some CUDA-like functions are not found by `hcu-knowledge-search` or public docs but do exist in the installed DTK headers or libraries.
 
 Use the target project's remote workflow to inspect the actual DCU environment. Search likely roots such as `/opt/dtk`, `/opt/rocm`, `/usr/include`, project-provided CK/hip headers, and active conda or module paths. Prefer `rg` when available:
 
@@ -105,7 +110,7 @@ If the exact CUDA name is absent, try systematic substitutions and library-famil
 
 Do not invent mappings from naming symmetry alone. A mapping is trusted only after at least one of these is true:
 
-- the KB or ROCm/HIPIFY table documents it;
+- an original source retrieved with `hcu-knowledge-search` or a ROCm/HIPIFY table documents it;
 - `hipify-clang` or `hipify_torch` converts it and no later review contradicts it;
 - the DTK/ROCm install contains a matching declaration, wrapper, sample, or library symbol;
 - a minimal compile probe with `hipcc` succeeds on the target DCU toolchain.
@@ -191,7 +196,7 @@ The iteration count is not chosen by this skill. Ask the user if it was not supp
 - If the original reference returns a tensor, generated `ref.py` must copy it into an output tensor so the existing benchmark can compare outputs.
 - If the original reference mutates output tensors, preserve those names in `solve(...)`.
 - For Triton/TileLang files, do not assume the decorated kernel is the oracle. Prefer a plain Torch `reference`, `torch_ref`, `ref`, `forward`, or `golden` function when present.
-- For CUDA inputs, use HIPIFY/KB/DTK evidence to create a conservative HIP baseline before performance work. Keep original CUDA files, record mapping evidence, and compile-probe uncertain conversions.
+- For CUDA inputs, use `hcu-knowledge-search`, HIPIFY, and installed DTK evidence to create a conservative HIP baseline before performance work. Keep original CUDA files, record mapping evidence, and compile-probe uncertain conversions.
 - Record unsupported assumptions in `baseline_manifest.json`; do not silently invent dtype, layout, broadcasting, or reduction semantics.
 - Do not use `hygon_tmp/` as a committed interface. It is scratch only.
 

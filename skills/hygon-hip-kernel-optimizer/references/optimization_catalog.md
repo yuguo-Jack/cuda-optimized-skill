@@ -7,7 +7,7 @@ Important boundary: AMD ROCm and CK Tile guidance is useful because Hygon DCU is
 Evidence levels:
 
 - Final proof is target ISA from `dccobjdump`: `v_mmac_*`, `MMOP`, `ds_read_m32x*`, `matrix_load*`, `buffer/global ... lds`, wait counters, and resource usage.
-- Source-backed builtins from the DCU KB are valid implementation candidates only when copied with their exact source-level signature and target guard. A generic `__has_builtin` probe is not enough to reject them unless it compiles the exact source-backed call shape for the target architecture.
+- Use [hcu-knowledge-search](../../hcu-knowledge-search/SKILL.md) to retrieve original builtin declarations and fixed-commit source examples. These are valid implementation candidates only when copied with their exact source-level signature and target guard. A generic `__has_builtin` probe is not enough to reject them unless it compiles the exact source-backed call shape for the target architecture.
 - Do not invent builtin names from AMD or spreadsheet rows. Start from the cited Hygon example, compile the minimal kernel, then inspect the emitted ISA.
 
 Also: do not add FP4 strategies for Hygon DCU unless future hardware/toolchain evidence appears. Existing Hygon material covers FP8/BF8/TF32/FP16/BF16/INT8/INT4-style paths, not FP4 hardware acceleration.
