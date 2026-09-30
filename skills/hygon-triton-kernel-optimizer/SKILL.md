@@ -60,6 +60,8 @@ python <skill>/scripts/scan_amdgcn.py repro/artifacts --kernel KERNEL --json-out
 
 低层路径按 [HCU 指令指南](../hygon-hip-kernel-optimizer/references/hcu-isa-guide.md) 核对精确 gfx 的指令形式、布局和同步。`scan_amdgcn.py --kernel` 指实际汇编符号；匹配缺失或歧义会记录 unresolved，不能用文件名代替。
 
+反汇编失败或目标汇编不完整时，按该指南的“实际工程反汇编失败时”保存本次实际 JIT 特化的汇编与代码对象，核对符号、编译选项及加载关系；若为导出重新编译，测试新产物并记录哈希，不把其他缓存或旧计时作为本次证据。
+
 元数据扫描是启发式，只解析部分格式；返回空项不证明编译器没做优化。ISA 扫描不把 LLVM IR 当最终指令，不把静态次数当动态热点。
 
 按 [策略](references/optimization_patterns.md) 检查：布局/合并、对齐、向量化、tile/warps/stages、dot 精度与转换、LDS/寄存器/occupancy、tail mask、同步、原子/归约、pipeline 和融合。需要参考时，可按 attention、稀疏 attention、MoE 的阶段和输入分布查找已有 HCU 案例。

@@ -73,7 +73,7 @@ DCU 与 HCU 同义，保留原有字段和文件名。baseline、HIP/CK Tile、T
 记录链条：问题与环境 → 热点与瓶颈证据 → 为什么这样改 → 文件/符号与调用链 → 最小差异 → 正确性矩阵 → 未采集性能 → 同口径 profile/ISA → 失败条件/回退。
 
 - 耦合方法可按 `coupling_reviews` 记录可分开的代码差异和验证计划后同轮实验；不可分割的同一差异只计一次。诊断工具的使用本身不算代码优化收益。
-- ISA grep 只是模式出现提示。定位实际符号/目标代码对象/dispatch，并检查源码与加载二进制一致；通用 benchmark 为每次编译保留独立 `.hcu-build/<id>/kernel.so` 与 SHA，ISA 检查只读取所测 build 记录。编译器 `-save-temps` 是重新编译的辅助证据，不自动等于执行过的二进制。
+- ISA grep 只是模式出现提示。定位实际符号/目标代码对象/dispatch，并检查源码与加载二进制一致；通用 benchmark 为每次编译保留独立 `.hcu-build/<id>/kernel.so` 与 SHA，ISA 检查只读取所测 build 记录。脚本通用 `-save-temps` 重编译仅作辅助；实际工程反汇编失败或不完整时，按 [指令指南](hcu-isa-guide.md) 保留真实构建的设备汇编、确认加载产物并重测，注明编译阶段与最终机器码不可读的限制。
 - 不存在一条普遍适用的 ISA 就能证明 fusion、coalescing、occupancy、流水重叠或消除竞争。按方法选择源码、资源、timeline 和计数器等证据。
 - 有效消融必须保持语义、通过正确性和稳定计时；消融失败不能证明某方法“性能必需”。没有消融或机制证据进入 `unverified_methods`，可保留更快且正确的 kernel，但不能给每个方法分配收益。
 - `isa_check.json` 保留自动扫描；复核后另写 `mechanism-review.json`，不要篡改原件。包含候选 `source_sha256` 和每个方法的 `id/status/explanation/artifact/artifact_sha256`；status=verified 必须有可读、哈希一致的证据。`state.py` 结合正确消融判断有效性。

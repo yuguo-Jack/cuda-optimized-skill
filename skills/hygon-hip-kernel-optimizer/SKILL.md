@@ -53,7 +53,7 @@ python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py -
 2. `methods.json` 按 [schema](templates/methods.schema.json)：方法 ID、改什么、为何可能有效、预期证据、精确目标证据、跳过理由。重试先前方法给 `retry_reason`。
 3. 在 `itervN/branches/b1..bK/kernel.<ext>` 写变体，同组方法一致、超参数不同；只修改用户任务范围的源码。
 4. 运行 `branch_explore.py --state RUN/state.json --iter N`，先检查正确性/稳定计时/多用例回退；失败的分支修复后再测，保留失败原因。OOM 不缩小原场景冒充成功。
-5. 低层路径变化按 [指令指南](references/hcu-isa-guide.md) 读实际目标 ISA、资源与同步语义；`sass_check.py` 的名字为兼容保留，输出是 HCU ISA 提示。自动 grep 不算语义验证。
+5. 低层路径变化按 [指令指南](references/hcu-isa-guide.md) 读实际目标 ISA、资源与同步语义；`sass_check.py` 的名字为兼容保留，输出是 HCU ISA 提示。反汇编失败、缺指令或目标符号不完整时，按指南的“实际工程反汇编失败时”沿用工程真实构建配置保留汇编，测试对应的新构建并记录产物关系；通用重编译回退仅作辅助。自动 grep 不算语义验证。
 6. 有必要做消融时，将只去掉单项方法且仍语义正确的文件放 `ablations/<id中点换成下划线>/kernel.<ext>`。多个方法相互依赖时写清归因限制。
 7. 在 close 前可单独运行 profiler/ISA/ablation 做调查，并填写 `mechanism-review.json`。close 会重测，若重新产生的 artifact 哈希改变，复核文件失配则方法保持未验证；可以下一轮再补证据，不能伪造已验证。
 

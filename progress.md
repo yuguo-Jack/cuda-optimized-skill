@@ -78,3 +78,9 @@
 完成三个 HCU Skill 的说明、策略表、ISA 线索及环境/hipprof脚本更新。92 项 CPU 回归通过（5.74 s）；33 个脚本解析、三个 quick_validate、相对链接与 diff whitespace 检查通过。等待最终安装哈希同步及 origin 推送核验。
 
 安装完成：5/36/15 文件逐个 SHA256 匹配，旧版备份位于 hygon_tmp/skill-backups/20260930_204857_127891。主体 f5daf22952a2037c8d259537a2e4dbd84bf63f8c 已正常推送 origin/main，远端核验一致；GitHub 账户 yuguo-Jack。全局代理未改，仅推送命令禁用失效本机代理。
+
+## 实际工程汇编回退规则
+
+- 在共享 ISA 指南补充真实工程构建下保留汇编、设备链接/LTO 阶段识别、符号与产物哈希、实际加载检查和重新测试；HIP/Triton 入口及共同契约已关联。
+- 仅修改流程文档，沿用现有编排和状态协议。三个 Skill 格式校验、41 处本地 Markdown 链接及 diff whitespace 检查通过；未改脚本，没有执行 HCU 硬件编译。
+- 已备份并同步 Codex 安装副本，5/36/15 个文件逐个 SHA256 匹配，无额外遗留文件；备份位于 hygon_tmp/skill-backups/20260930_223643_386437。推送前核对 origin/main 仍为 974d663，与本地起点一致；发布后在完成回复报告提交及远端核验结果。
