@@ -93,3 +93,4 @@
 - HCU 110 项 CPU 回归、CUDA 10 项回归通过。后续进行最终文档/脚本/入口检查、安装同步与正常推送；无 HCU 设备编译/采集结论。
 - 最终静态检查通过：3 Skill、34 Python AST、4 JSON、3 YAML、50 处 Skill 本地链接、README 链接、25 CLI 帮助、示例 JSON schema 和真实方法校验器。Triton benchmark 模板因本机无 HCU Triton 运行时仅做 AST，不以普通后端代替目标执行。
 - 安装副本已备份至 hygon_tmp/skill-backups/20260930_225824_049418；baseline 5 / HIP 38 / Triton 15 共 58 文件逐个 SHA256 一致，没有额外遗留文件。准备提交并正常推送，远端起点核对为 8f5ed2c。
+- 主体提交 74f7b36204d144c0d0ec312efc3cc926c8330cf3 已正常推送 yuguo-Jack/cuda-optimized-skill 的 main，并通过 ls-remote 核对一致；安装目录 profile_hcu --help 成功加载新增共享模块。此后仅提交本完成记录。
