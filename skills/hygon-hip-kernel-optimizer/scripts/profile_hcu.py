@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 from experiment import resolve_benchmark, require_open_iteration, iteration_kernel
+from profile_records import save_profile
 
 
 def main():
@@ -40,10 +41,12 @@ def main():
     out = folder / (args.which + "." + tool) / datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     out.mkdir(parents=True)
     result = {"tool": tool, "requested_tool": which, "profiled_file": source, "raw_directory": str(out),
+              "collection_status": "unavailable",
               "degraded": True, "compute": [], "memory": [], "latency": [],
               "reason": "Raw .perf needs dispatch-specific XCompute review and metric definitions; no automatic utilization conversion"}
     try:
         if which == "none":
+            result["collection_status"] = "disabled"
             result["reason"] = "Profiling explicitly disabled; hypothesis remains unverified"
         elif not xprof:
             result["reason"] = "Requested xprof is unavailable"
@@ -63,11 +66,17 @@ def main():
                 (out / "collection.log").write_text((proc.stdout or "") + "\n" + (proc.stderr or ""), encoding="utf-8")
                 result.update(command=cmd, returncode=proc.returncode,
                               artifacts=[str(f) for f in out.rglob("*") if f.is_file()])
+                captures = [str(f) for f in out.rglob("*.perf") if f.is_file() and f.stat().st_size > 0]
+                result["capture_artifacts"] = captures
+                result["collection_status"] = "collected" if proc.returncode == 0 and captures else "failed"
                 if proc.returncode:
                     result["reason"] = "xprof collection failed; inspect collection.log"
+                elif not captures:
+                    result["reason"] = "xprof exited successfully but no nonempty .perf artifact was found"
     except (OSError, subprocess.TimeoutExpired) as exc:
+        result["collection_status"] = "failed"
         result["reason"] = str(exc)
-    (folder / "dcu_top.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    save_profile(folder, args.which, result, state, args.benchmark)
     print(json.dumps(result, indent=2))
 
 

@@ -12,6 +12,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import subprocess
@@ -26,7 +27,23 @@ KERNEL_EXTS = (".hip", ".cu", ".cpp", ".cc", ".cxx", ".py")
 
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     print(f"[run] {' '.join(cmd)}", file=sys.stderr)
-    return subprocess.run(cmd, text=True, encoding="utf-8", errors="replace", **kw)
+    try:
+        result = subprocess.run(cmd, text=True, encoding="utf-8", errors="replace", **kw)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        result = subprocess.CompletedProcess(cmd, 1, "", str(exc))
+        print(str(exc), file=sys.stderr)
+    if "--state" in cmd:
+        state_path = Path(cmd[cmd.index("--state") + 1])
+        if state_path.is_file():
+            run_dir = Path(_read(str(state_path))["run_dir"])
+            record = {"at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                      "script": Path(cmd[1]).name, "command": cmd,
+                      "iter": int(cmd[cmd.index("--iter") + 1]) if "--iter" in cmd else None,
+                      "returncode": result.returncode,
+                      "scope": "command exit only; inspect validation and profiling records"}
+            with (run_dir / "stage-results.jsonl").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return result
 
 
 def _read(path: str) -> dict:
@@ -57,6 +74,7 @@ def cmd_setup(args):
         "--baseline", os.path.abspath(args.baseline),
         "--ref", os.path.abspath(args.ref),
         "--dims", args.dims,
+        "--benchmark", os.path.abspath(args.benchmark),
     ]).returncode
     if rc != 0:
         sys.exit("preflight failed — fix baseline/ref/dims above, then retry")

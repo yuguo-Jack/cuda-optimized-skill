@@ -84,3 +84,12 @@
 - 在共享 ISA 指南补充真实工程构建下保留汇编、设备链接/LTO 阶段识别、符号与产物哈希、实际加载检查和重新测试；HIP/Triton 入口及共同契约已关联。
 - 仅修改流程文档，沿用现有编排和状态协议。三个 Skill 格式校验、41 处本地 Markdown 链接及 diff whitespace 检查通过；未改脚本，没有执行 HCU 硬件编译。
 - 已备份并同步 Codex 安装副本，5/36/15 个文件逐个 SHA256 匹配，无额外遗留文件；备份位于 hygon_tmp/skill-backups/20260930_223643_386437。推送前核对 origin/main 仍为 974d663，与本地起点一致；发布后在完成回复报告提交及远端核验结果。
+
+## CUDA/HCU 全流程对照 review
+
+- 完成入口、策略、实验与状态、采集/ISA/归因、失败及交付对照；详见 findings.md 的逐阶段表。
+- 新增每次采集记录和 before/after 角色快照、编排命令尝试日志与收尾缺口汇总；补 XProf 无原件失败判定、明确失败门禁与配对数值/计时政策一致性。
+- 修复自定义 benchmark 被通用 flat ABI 预检误拒绝；补算子路线/数值/构建/恢复/工程验收操作指南、可校验的方法计划示例及当前 Mermaid 流程图，移除未引用的旧 HCU PNG/SVG。
+- HCU 110 项 CPU 回归、CUDA 10 项回归通过。后续进行最终文档/脚本/入口检查、安装同步与正常推送；无 HCU 设备编译/采集结论。
+- 最终静态检查通过：3 Skill、34 Python AST、4 JSON、3 YAML、50 处 Skill 本地链接、README 链接、25 CLI 帮助、示例 JSON schema 和真实方法校验器。Triton benchmark 模板因本机无 HCU Triton 运行时仅做 AST，不以普通后端代替目标执行。
+- 安装副本已备份至 hygon_tmp/skill-backups/20260930_225824_049418；baseline 5 / HIP 38 / Triton 15 共 58 文件逐个 SHA256 一致，没有额外遗留文件。准备提交并正常推送，远端起点核对为 8f5ed2c。

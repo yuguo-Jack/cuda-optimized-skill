@@ -64,6 +64,8 @@ python <skill>/scripts/scan_amdgcn.py repro/artifacts --kernel KERNEL --json-out
 
 元数据扫描是启发式，只解析部分格式；返回空项不证明编译器没做优化。ISA 扫描不把 LLVM IR 当最终指令，不把静态次数当动态热点。
 
+按 [实验操作指南](../hygon-hip-kernel-optimizer/references/optimization-playbook.md) 核对算子特有边界、数值变换前提、JIT/autotune 与计时范围及工程验收。此 Skill 使用捕获/重放/扫描流程，不自动执行 HIP 编排的四轮晋级；实际报告须说明已运行的对照协议。
+
 按 [策略](references/optimization_patterns.md) 检查：布局/合并、对齐、向量化、tile/warps/stages、dot 精度与转换、LDS/寄存器/occupancy、tail mask、同步、原子/归约、pipeline 和融合。需要参考时，可按 attention、稀疏 attention、MoE 的阶段和输入分布查找已有 HCU 案例。
 
 - `tl.assume` / `multiple_of` 只能陈述所有受支持输入都成立的事实；给出数学/调用契约依据，再编译探针与负面边界测试。不要从指针“看起来为正”推导合法转换。

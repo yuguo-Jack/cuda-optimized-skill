@@ -45,7 +45,7 @@ python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py -
 
 工具、目标机器或采集权限暂不可用时，记录具体阻塞和待采命令，标记瓶颈诊断未完成；可继续独立的代码/正确性准备，不把静态猜测当作已完成诊断。`--profiler none` 只适用于无需瓶颈诊断的准备阶段，不能绕过此步骤。
 
-读 state、原始 bench、dcu_top、roofline 和实际使用的参考证据。`roofline.json` 的 null 是未知；预算是建议，不能据此宣布 compute/memory bound 或 near-peak。
+读 state、原始 bench、best_input/kernel 各自的 profile 记录、dcu_top、roofline 和实际使用的参考证据。`dcu_top.json` 是兼容的最近一次摘要，不能代替前后原件。`roofline.json` 的 null 是未知；预算是建议，不能据此宣布 compute/memory bound 或 near-peak。制定候选、处理数值变换/编译资源/失败恢复时按需读 [实验操作指南](references/optimization-playbook.md)。
 
 从 [性能分析入口](references/dcu_metrics_guide.md) 选择对应指南：[XProf/XCompute](references/xprof-xcompute-guide.md) 使用 sections/metrics 与 `.perf` 分析；[hipprof](references/hipprof-guide.md) 使用自己的 trace/PMC/SQTT 参数和产物。命令、格式、指标公式与查看器不能互换。自动采集只提供原件与发现信息，命令成功不代表分析完成；必须把观察到的指标/时间线连接到瓶颈假设与下一项实验，并对修改前后做同口径比较。
 
@@ -70,5 +70,7 @@ python <skill>/scripts/orchestrate.py finalize --run-dir RUN
 ```
 
 用 [报告模板](templates/iteration_report.md) 补全程序不能自动推出的解释：代码目录/接口与调用链、热点、修改机制、适用范围、正确性矩阵、真实样本、端到端收益、失败/回退、实际使用的资料与源码引用。未跑项目测试、race 检查或 HCU 硬件验证明确列出。迭代预算耗尽、目标达到或收益落入噪声时总结，不无限试错。
+
+按操作指南回到真实分派验证命中路径、fallback、单测/端到端与显存成本；失败/中止时也可 finalize，列出停止原因和未完成诊断。流程闭合不等于项目验收完成。
 
 报告与原始证据保留在当前任务工程。

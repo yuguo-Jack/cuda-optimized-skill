@@ -21,7 +21,37 @@ python <hip-skill>/scripts/orchestrate.py setup --baseline case/kernel.hip --ref
 
 假设当前访存连续且地址有实际对齐证据，检查宽 load/store 是否值得试。选择 `memory.vectorized_global_access`，在 methods 中记录为何不先改 coalescing（本例已连续）。在 b1/b2 中试不同向量宽度/尾块处理；每个 variant 保持数值语义。
 
+`RUN/iterv1/methods.json` 的最小计划如下；说明中的事实必须由当前输入/源码确认，再使用该例：
+
+```json
+{
+  "iter": 1,
+  "methods": [{
+    "id": "memory.vectorized_global_access",
+    "name": "对齐访问的向量化",
+    "axis": "memory",
+    "priority": 2,
+    "description": "保持 x + 2*y 的原数值规则，对满足对齐的区段使用宽访问，尾部单独处理",
+    "skipped_higher": [{
+      "id": "memory.coalesced_access",
+      "priority": 1,
+      "reason": "skip_condition",
+      "detail": "本次地址/stride 检查确认相邻 lane 已连续访问"
+    }],
+    "expected_metric_shift": "核对实际符号的访存指令及 XProf/XCompute 或 hipprof 原件；不预设必然提高带宽"
+  }]
+}
+```
+
+```bash
+python <hip-skill>/scripts/validate_methods.py --methods RUN/iterv1/methods.json --state RUN/state.json
+```
+
+先在 `analysis.md` 记录当前瓶颈和前提；机器校验通过不等于这些事实已经成立。不要照抄通用 benchmark 支持范围之外的 dtype/布局。
+
 运行 branch_explore 后查看全部 shape/seed 的原始样本与回退门禁。若尾块越界，不允许因为 typical shape 快就采用。针对实际 champion 采集、读正确符号的 ISA；出现宽指令并不自动说明访存带宽饱和。
+
+`close-iter` 会重新筛选并执行四轮独立 A/B 对照，手工 branch_explore 的最佳时间不直接晋级。采集前后分别看 `best_input.profile.json`、`kernel.profile.json` 及其指向的时间戳记录，`dcu_top.json` 只是最近一次兼容摘要；缺 .perf/CSV、未选定 dispatch 或未解读时在分析中标明。
 
 可构建只去掉向量化且仍正确的消融，保存到 `ablations/memory_vectorized_global_access/kernel.hip`。机制复核记录准确源码/产物哈希。不知道收益来源时保持 unverified。
 
@@ -33,3 +63,5 @@ python <hip-skill>/scripts/orchestrate.py finalize --run-dir RUN
 ## 最终解释
 
 报告 baseline/candidate 的输入/环境、未采集计时与噪声、多案例速度比、失败与未覆盖项、profile/ISA 原件、文件/符号和为何改。没有实际 HCU 测量就写未运行；任务若有模型集成，还须做端到端回归。报告与原件留在当前任务工程。
+
+若所有分支失败，先读 `branch_results.json` 和各分支日志，修复尚未关闭的轮次再试；停止调查也可直接 finalize。真实项目使用 `setup --benchmark PROJECT_BENCH.py`，由适配器保留工程构建、布局、精度与采集入口，参见 [实验接口](../references/experiment-artifacts.md) 和 [操作指南](../references/optimization-playbook.md)。

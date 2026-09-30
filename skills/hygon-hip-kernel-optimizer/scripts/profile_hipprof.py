@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 from analyze_sqtt import analyze as analyze_sqtt_json
+from profile_records import save_profile
 
 
 _BUNDLED_BENCHMARK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark.py")
@@ -371,7 +372,7 @@ def main() -> None:
     capture_dir = os.path.join(iter_dir, rep_name, datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
     os.makedirs(capture_dir, exist_ok=True)
     out_prefix = os.path.join(capture_dir, "capture")
-    log_path = os.path.join(iter_dir, f"{rep_name}.log")
+    log_path = os.path.join(capture_dir, "collection.log")
     provenance = {"tool": "hipprof", "profiled_file": solution, "raw_directory": capture_dir,
                   "backend": _detect_backend(solution), "pmc_group": args.pmc_group or None}
 
@@ -379,10 +380,11 @@ def main() -> None:
         top = {
             **provenance,
             "degraded": True,
+            "collection_status": "unavailable",
             "reason": "hipprof not available",
             "compute": [], "memory": [], "latency": [],
         }
-        _write_json(os.path.join(iter_dir, "dcu_top.json"), top)
+        save_profile(iter_dir, args.which, top, state, args.benchmark)
         print(json.dumps(top, indent=2))
         return
 
@@ -404,7 +406,8 @@ def main() -> None:
     if (any(flag not in help_text for flag in required)
             or (args.pmc_group and not re.search(r"\b" + re.escape(args.pmc_group) + r"\b", help_text, re.I))):
         top = {**provenance, "degraded": True, "reason": "Installed hipprof help does not confirm requested flags", "compute": [], "memory": [], "latency": [], "help": str(Path(capture_dir, "help.txt"))}
-        _write_json(os.path.join(iter_dir, "dcu_top.json"), top)
+        top["collection_status"] = "unavailable"
+        save_profile(iter_dir, args.which, top, state, args.benchmark)
         print(json.dumps(top)); return
     logs = []
     collection_results = []
@@ -480,7 +483,7 @@ def main() -> None:
             if args.sqtt_data_dir:
                 sqtt_paths.append(args.sqtt_data_dir)
             sqtt_summary = analyze_sqtt_json(sqtt_paths)
-            _write_json(os.path.join(iter_dir, f"{rep_name}.sqtt_analysis.json"), sqtt_summary)
+            _write_json(os.path.join(capture_dir, "sqtt_analysis.json"), sqtt_summary)
         except Exception as exc:  # noqa: BLE001 - profiling should still produce dcu_top
             sqtt_summary = {"error": str(exc), "output": sqtt_prefix}
 
@@ -500,7 +503,7 @@ def main() -> None:
             codeobj = _run_codeobj_analyze(
                 hipprof_bin=hipprof_bin,
                 binary=binary,
-                out_log=os.path.join(iter_dir, f"{rep_name}.codeobj_analyze.log"),
+                out_log=os.path.join(capture_dir, "codeobj_analyze.log"),
             )
         else:
             codeobj = {"available": False, "reason": "captured_benchmark_build_receipt_missing_or_changed", "kernel": solution}
@@ -513,6 +516,7 @@ def main() -> None:
     top = {
         **provenance,
         "degraded": degraded,
+        "collection_status": "partial_or_failed" if degraded else "collected",
         "reason": f"hipprof rc={rc_values}; csv metrics={len(agg)}; sqtt_unavailable={sqtt_unavailable}; see {log_path}" if degraded else None,
         "hipprof_output": out_prefix,
         "hipprof_log": log_path,
@@ -526,6 +530,7 @@ def main() -> None:
         **by_axis,
     }
     top_name = "dcu_top.json" if args.pmc_mode != "none" else f"{rep_name}.top.json"
+    save_profile(iter_dir, args.which, top, state, args.benchmark, update_top=args.pmc_mode != "none")
     _write_json(os.path.join(iter_dir, top_name), top)
 
     if args.which == "kernel" and args.promote_if_best and os.path.abspath(solution) == os.path.abspath(state.get("best_file", "")):

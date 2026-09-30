@@ -75,9 +75,17 @@ def timing_stats(times):
 def benchmark_gate(bench, source=None, reference=None):
     if bench.get("error") or bench.get("process_returncode", 0) != 0:
         return False, "benchmark execution failed"
+    for field in ("compile_pass", "contract_pass", "correctness_pass", "race_safe", "timing_valid"):
+        if bench.get(field) is False:
+            return False, f"explicit {field}=false"
     correctness = bench.get("correctness") or {}
     if correctness.get("checked") is not True or correctness.get("passed") is not True:
         return False, "correctness not checked and passed"
+    for key in ("atol", "rtol"):
+        if key in correctness:
+            value = correctness[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                return False, f"invalid correctness {key}"
     kernel = bench.get("kernel") or {}
     if not positive(kernel.get("average_ms")):
         return False, "invalid kernel timing"

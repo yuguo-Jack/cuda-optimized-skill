@@ -70,3 +70,16 @@
 2. 在共享指令指南和 HIP/Triton 入口补充真实工程构建、汇编留存与重新测试规则 — complete
 3. 文档/Skill 校验与安装副本同步 — complete
 4. 提交并正常推送，随后核对远端 SHA；发布结果在本轮完成回复中报告。
+
+## CUDA/HCU 优化 Skill 对照 review
+
+用户要求：分析当前 CUDA 优化 Skill 全流程，系统复核并完善 HCU 优化 Skill；更新过时流程图，检查后同步安装副本、提交 push。
+
+1. 对照入口、策略/数值契约、构建、实验门禁、采集、归因、恢复与交付 — complete
+2. 修复有证据的流程/实现缺口，补充必要文档与真实失败边界回归 — complete
+3. 更新 HCU 流程图与示例，确认图/文/脚本一致 — complete
+4. 整体验证、备份同步安装副本、提交 push 并核验 — in progress
+
+沿用 HCU 原有科学优化流程：查询知识库可选；瓶颈必须性能分析；两套分析工具独立；无硬件可继续静态准备，但不冒充实测。不照搬 CUDA 的硬件名称、硬停止政策或模型工具参数。
+
+检查边界：本机无 HCU Triton 运行时，triton_benchmark_template.py 的 --help 在顶层 import triton 时失败；该硬件模板只做 AST 检查，其执行须在项目要求的 HCU Triton 环境完成，不用普通 PyPI 后端替代。

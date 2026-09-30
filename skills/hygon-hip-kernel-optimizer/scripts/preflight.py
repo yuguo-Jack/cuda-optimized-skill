@@ -13,7 +13,9 @@ Checks:
     --<name>=<value> in the supplied dims dict. (Python gets a looser check
     since setup() is free-form.)
 
-Exit code: 0 iff everything checks out.
+With a custom benchmark, only paths/dims are checked here; that adapter owns
+ABI and runtime validation. Exit 0 means the applicable preflight checks passed,
+not that hardware correctness was exercised.
 """
 
 from __future__ import annotations
@@ -157,8 +159,22 @@ def _check_dims_hip(sig: list[tuple[str, str, bool]], dims: dict) -> list[str]:
 # Driver
 # ---------------------------------------------------------------------------
 
-def run(baseline: str, ref: str, dims: dict, strict_ref_params: bool = False) -> dict:
+def run(baseline: str, ref: str, dims: dict, strict_ref_params: bool = False, benchmark: str | None = None) -> dict:
     report = {"ok": True, "baseline": {}, "ref": {}, "warnings": [], "errors": []}
+
+    bundled = Path(__file__).with_name("benchmark.py").resolve()
+    if benchmark and Path(benchmark).resolve() != bundled:
+        for label, path in (("baseline", baseline), ("reference", ref), ("benchmark", benchmark)):
+            if not Path(path).is_file():
+                report["errors"].append(f"{label} file not found: {path}")
+        if not isinstance(dims, dict):
+            report["errors"].append("dims must be an object")
+        report["ok"] = not report["errors"]
+        report["baseline"] = {"path": baseline, "backend": "custom_benchmark"}
+        report["ref"] = {"path": ref}
+        report["contract_status"] = "delegated_to_custom_benchmark"
+        report["warnings"].append("Only paths/dims checked; the custom benchmark must validate its real ABI, numerical contract and runtime correctness before timing/promotion")
+        return report
 
     # ref first: it's cheaper and always .py
     try:
@@ -228,6 +244,7 @@ def main() -> None:
     p.add_argument("--baseline", required=True)
     p.add_argument("--ref", required=True)
     p.add_argument("--dims", type=str, default="{}", help="JSON dict of name→int")
+    p.add_argument("--benchmark", default=None, help="Custom adapter owns ABI/runtime validation; do not apply the flat bundled ABI")
     p.add_argument("--strict", action="store_true",
                    help="Also warn when ref.reference() parameters don't overlap solve()'s")
     p.add_argument("--out", type=str, default="",
@@ -239,7 +256,7 @@ def main() -> None:
     except json.JSONDecodeError as e:
         sys.exit(f"--dims must be valid JSON: {e}")
 
-    rep = run(os.path.abspath(args.baseline), os.path.abspath(args.ref), dims, args.strict)
+    rep = run(os.path.abspath(args.baseline), os.path.abspath(args.ref), dims, args.strict, args.benchmark)
     payload = json.dumps(rep, indent=2, ensure_ascii=False)
     print(payload)
     if args.out:

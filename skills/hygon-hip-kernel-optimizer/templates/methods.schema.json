@@ -101,7 +101,7 @@
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "description": "Continuous trigger strength (0-1) for same-axis multi-method ranking. Only required when axis budget >= 2."
+            "description": "Optional documented assessment for manual comparison; the HCU scripts do not infer or automatically rank by this value. Omit when unknown."
           },
           "expected_metric_shift": {
             "type": "string",

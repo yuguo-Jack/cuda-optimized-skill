@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from profile_records import profile_records
 
 
 def _read(path: str) -> dict:
@@ -102,7 +103,7 @@ def render(state_path: str, out_path: str) -> None:
     gpu = (env.get("gpus") or [{}])[0]
 
     lines = []
-    lines.append("# Hygon HIP Kernel Optimization Summary (v2 - Roofline-Driven)")
+    lines.append("# HCU Kernel Optimization Summary")
     lines.append("")
     lines.append(f"- **Run dir**: `{run_dir}`")
     lines.append(f"- **Baseline**: `{state.get('baseline_file_original', state.get('baseline_file'))}`")
@@ -110,6 +111,32 @@ def render(state_path: str, out_path: str) -> None:
     lines.append(f"- **Dims**: `{json.dumps(state.get('dims', {}))}`")
     lines.append(f"- **Iterations**: {len(state.get('history', []))} / {state.get('iterations_total')}")
     lines.append(f"- **Branches per iter**: {state.get('branches', 4)}")
+    lines.append("")
+    lines.append("## Execution coverage and unresolved work")
+    lines.append("")
+    lines.append("This is an experiment summary, not automatic project acceptance. Closing an iteration does not certify profiling interpretation, race safety or end-to-end validation.")
+    closed = {h.get("iter") for h in state.get("history", [])}
+    for folder in sorted(Path(run_dir).glob("iterv*")):
+        suffix = folder.name.removeprefix("iterv")
+        if suffix.isdigit() and int(suffix) not in closed:
+            lines.append(f"- `{folder.name}` remains open/prepared; its candidates and diagnostics are not a closed result.")
+        result = folder / "branch_results.json"
+        if result.is_file():
+            try:
+                for branch in (_read(str(result)).get("branches") or []):
+                    if branch.get("passed") is False:
+                        lines.append(f"- `{folder.name}/b{branch.get('branch_index')}` rejected: {branch.get('error') or 'validation failed'}")
+            except (OSError, ValueError, AttributeError):
+                lines.append(f"- Unreadable branch results: `{result}`")
+    ledger = Path(run_dir) / "stage-results.jsonl"
+    if ledger.is_file():
+        for entry in ledger.read_text(encoding="utf-8").splitlines():
+            try:
+                step = json.loads(entry)
+                if step["returncode"]:
+                    lines.append(f"- Command attempt failed: `{step['script']}` / iter {step.get('iter')}; exit={step['returncode']}. Check `{ledger}` and the stage artifacts; later retries do not erase this attempt.")
+            except (ValueError, KeyError, TypeError):
+                lines.append(f"- Unreadable execution record in `{ledger}`")
     lines.append("")
 
     lines.append("## Environment")
@@ -125,19 +152,15 @@ def render(state_path: str, out_path: str) -> None:
 
     lines.append("## Profiling artifacts by tool")
     lines.append("")
-    lines.append("| Iteration | Tool | Profiled source | Raw artifacts | Adapter degraded |")
-    lines.append("| --- | --- | --- | --- | --- |")
-    for path in sorted(Path(run_dir).glob("iterv*/dcu_top.json")):
-        try:
-            profile = _read(str(path))
-            lines.append(f"| {path.parent.name} | {profile.get('tool', 'not_recorded')} | "
-                         f"{profile.get('profiled_file', '?')} | "
-                         f"{profile.get('raw_directory') or profile.get('hipprof_output') or path} | "
-                         f"{profile.get('degraded', 'unknown')} |")
-        except (OSError, ValueError, AttributeError):
-            lines.append(f"| {path.parent.name} | unreadable | ? | {path} | unknown |")
+    lines.append("| Iteration | Tool | Role | Collection | Profiled source | Record | Adapter degraded | Reason |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+    for iteration, path, profile in profile_records(run_dir):
+        reason = str(profile.get("reason") or "Dispatch-specific interpretation still required").replace("|", "\\|").replace("\n", " ")
+        lines.append(f"| {iteration} | {profile.get('tool', 'not_recorded')} | "
+                     f"{profile.get('which', 'not_recorded')} | {profile.get('collection_status', 'unknown')} | "
+                     f"{profile.get('profiled_file', '?')} | {path} | {profile.get('degraded', 'unknown')} | {reason} |")
     lines.append("")
-    lines.append("No tool field in a historical artifact means its command must be checked. XProf .perf and hipprof outputs are not interchangeable; extraction status does not prove bottleneck analysis is complete.")
+    lines.append("All recorded attempts are shown, including retries. No tool/role field in a historical artifact means its command must be checked. XProf .perf and hipprof outputs are not interchangeable; collected means raw evidence exists, not that bottleneck analysis is complete. Record dispatch, metric definitions, findings and next experiment in analysis.md.")
     lines.append("")
 
     lines.append("## Unverified method attribution")
@@ -197,7 +220,7 @@ def render(state_path: str, out_path: str) -> None:
     lines.append("")
 
     if state.get("frontier"):
-        lines.append("## Frontier (unexplored branch candidates)")
+        lines.append("## Frontier (evaluated non-champion candidates)")
         lines.append("")
         for fe in state["frontier"][:10]:
             lines.append(

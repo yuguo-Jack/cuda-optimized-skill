@@ -1013,3 +1013,121 @@ def test_sass_check_rejects_neighbor_binary_without_build_record(tmp_path):
         result=mod.run(state,1)
     dump.assert_not_called()
     assert result['error']=='measured_binary_missing_or_changed'
+
+
+@pytest.mark.parametrize("field", ["compile_pass", "contract_pass", "correctness_pass", "race_safe", "timing_valid"])
+def test_explicit_failed_gate_cannot_be_hidden_by_allclose(tmp_path, field):
+    source = tmp_path / "kernel.hip"
+    source.write_text("candidate")
+    bench = good_bench(source)
+    bench[field] = False
+    assert load("experiment").benchmark_gate(bench, source)[0] is False
+    bench[field] = None  # Unknown remains unknown; it is not reported as a pass.
+    assert load("experiment").benchmark_gate(bench, source)[0] is True
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -1, True, "0.1"])
+def test_invalid_reported_tolerances_are_rejected(tmp_path, value):
+    source = tmp_path / "kernel.hip"
+    source.write_text("candidate")
+    bench = good_bench(source)
+    bench["correctness"]["atol"] = value
+    assert load("experiment").benchmark_gate(bench, source)[0] is False
+
+
+@pytest.mark.parametrize("field", ["tolerance", "timing_scope", "numerical_policy"])
+def test_paired_comparison_rejects_changed_semantics(tmp_path, field):
+    mod, report, state, candidate, control, benchmark, _ = comparison_fixture(tmp_path)
+    for row in report["pairs"]:
+        item = row["candidate"]
+        path = Path(item["artifact"])
+        data = json.loads(path.read_text())
+        if field == "tolerance":
+            data["correctness"]["atol"] = 1.0
+        elif field == "timing_scope":
+            data["kernel"]["timing_scope"] = "host end-to-end"
+        else:
+            data["numerical_policy"] = {"accumulator": "float16"}
+        write(path, data)
+        item["sha256"] = load("experiment").file_sha256(path)
+    assert not mod.assess(report, state, candidate, control, benchmark)["valid"]
+
+
+def test_profiles_preserve_before_after_and_retries(tmp_path):
+    mod = load("profile_records")
+    folder = tmp_path / "iterv1"
+    folder.mkdir()
+    source, benchmark = tmp_path / "source.hip", tmp_path / "bench.py"
+    source.write_text("source")
+    benchmark.write_text("benchmark")
+    for index, (role, tool, status) in enumerate([("best_input", "xprof", "collected"),
+                                               ("kernel", "hipprof", "partial_or_failed"),
+                                               ("kernel", "hipprof", "collected")]):
+        record = {"raw_directory": str(folder / f"{role}.{tool}" / str(index)),
+                  "profiled_file": str(source), "tool": tool, "collection_status": status}
+        mod.save_profile(folder, role, record, {"dims": {"N": 5}}, str(benchmark))
+    records = list(mod.profile_records(tmp_path))
+    assert len(records) == 3
+    assert {p[2]["collection_status"] for p in records} == {"collected", "partial_or_failed"}
+    assert all(p[2]["profiled_source_sha256"] == load("experiment").file_sha256(source) for p in records)
+    assert json.loads((folder / "best_input.profile.json").read_text())["tool"] == "xprof"
+    assert json.loads((folder / "kernel.profile.json").read_text())["collection_status"] == "collected"
+    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path)})
+    summary = tmp_path / "summary.md"
+    load("summarize").render(state, str(summary))
+    text = summary.read_text(encoding="utf-8")
+    assert "partial_or_failed" in text and "best_input" in text and "remains open/prepared" in text
+
+
+def test_xprof_exit_zero_without_capture_is_not_collected(tmp_path):
+    mod = load("profile_hcu")
+    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "best_file": "kernel.hip", "profiler": "xprof"})
+    def run(cmd, **kwargs):
+        return mod.subprocess.CompletedProcess(cmd, 0, "--sections --output-dir" if "--help" in cmd else "", "")
+    with patch.object(sys, "argv", ["profile", "--state", state, "--iter", "1", "--which", "best_input"]), patch.object(mod.shutil, "which", return_value="xprof"), patch.object(mod.subprocess, "run", side_effect=run):
+        mod.main()
+    result = json.loads((tmp_path / "iterv1/best_input.profile.json").read_text())
+    assert result["collection_status"] == "failed"
+    assert "no nonempty .perf" in result["reason"]
+    assert Path(result["record_path"]).is_file()
+
+
+def test_orchestrator_keeps_failed_stage_attempt_when_retry_succeeds(tmp_path):
+    mod = load("orchestrate")
+    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path)})
+    cmd = [sys.executable, "branch_explore.py", "--state", state, "--iter", "1"]
+    with patch.object(mod.subprocess, "run", side_effect=[OSError("tool missing"), subprocess.CompletedProcess(cmd, 0)]):
+        assert mod._run(cmd).returncode != 0
+        assert mod._run(cmd).returncode == 0
+    entries = [json.loads(line) for line in (tmp_path / "stage-results.jsonl").read_text().splitlines()]
+    assert [e["returncode"] for e in entries] == [1, 0]
+    summary = tmp_path / "summary.md"
+    load("summarize").render(state, str(summary))
+    assert "Command attempt failed" in summary.read_text(encoding="utf-8")
+
+
+def test_custom_preflight_does_not_impose_flat_abi_or_import_reference(tmp_path):
+    source, ref, bench = [tmp_path / name for name in ("bf16_kernel.cpp", "oracle.py", "project_bench.py")]
+    source.write_text("void project_entry_with_own_layout();")
+    ref.write_text("raise RuntimeError('must be loaded in the project runtime')")
+    bench.write_text("# custom adapter")
+    mod = load("preflight")
+    result = mod.run(str(source), str(ref), {"N": 7}, benchmark=str(bench))
+    assert result["ok"] and result["contract_status"] == "delegated_to_custom_benchmark"
+    assert not mod.run(str(source), str(ref), {"N": 7})["ok"]
+    assert not mod.run(str(source), str(ref), [], benchmark=str(bench))["ok"]
+    assert not mod.run(str(source), str(ref), {}, benchmark=str(tmp_path / "missing.py"))["ok"]
+
+
+def test_setup_passes_custom_benchmark_to_preflight(tmp_path):
+    mod = load("orchestrate")
+    args = argparse.Namespace(env_out=str(tmp_path / "env.json"), baseline="custom.cpp", ref="oracle.py",
+                              dims='{"N": 7}', benchmark="project_bench.py")
+    commands = []
+    def run(cmd, **kwargs):
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1 if Path(cmd[1]).name == "preflight.py" else 0)
+    with patch.object(mod, "_run", side_effect=run), pytest.raises(SystemExit, match="preflight failed"):
+        mod.cmd_setup(args)
+    preflight = commands[-1]
+    assert preflight[preflight.index("--benchmark") + 1] == os.path.abspath(args.benchmark)

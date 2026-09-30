@@ -29,8 +29,11 @@ def identity(state, candidate, control, benchmark, protocol):
 
 def _context(bench):
     # Custom harnesses must report the same fields to enable input/device checks.
-    return {key: bench.get(key) for key in ("dims", "seed", "warmup", "repeat", "ptr_size_override",
-            "gpu_index", "gpu_name", "arch", "inputs_sha256", "signature")}
+    context = {key: bench.get(key) for key in ("dims", "seed", "warmup", "repeat", "ptr_size_override",
+            "gpu_index", "gpu_name", "arch", "inputs_sha256", "signature", "numerical_policy")}
+    context["tolerances"] = {key: (bench.get("correctness") or {}).get(key) for key in ("atol", "rtol", "equal_nan")}
+    context["timing_scope"] = (bench.get("kernel") or {}).get("timing_scope")
+    return context
 
 
 def assess(report, state, candidate, control, benchmark, expected_cases=None):

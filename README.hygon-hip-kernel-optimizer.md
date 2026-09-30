@@ -18,7 +18,7 @@ hygon_tmp/                      # 不提交的采集、缓存、安装备份
 
 核心规范是 [HCU 工作契约](skills/hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md)，程序产物见 [实验接口](skills/hygon-hip-kernel-optimizer/references/experiment-artifacts.md)。每个 Skill 的 SKILL.md 是给 Agent 的入口。
 
-DCU/HCU 同义，旧字段与文件名保留。[指令与数据通路指南](skills/hygon-hip-kernel-optimizer/references/hcu-isa-guide.md) 区分 gfx936/938/946 的 MLS、DS/MMAC、低精度 scale、WDRA、barrier 和 TLS，并列出原件出处与待实测边界。
+DCU/HCU 同义，旧字段与文件名保留。[指令与数据通路指南](skills/hygon-hip-kernel-optimizer/references/hcu-isa-guide.md) 记录孔明至月英的目标名称，逐项区分 MLS、DS/MMAC、低精度 scale、WDRA、barrier 和 TLS 的适用范围，并列出原件出处与待实测边界。
 
 性能分析分别使用 [XProf/XCompute 指南](skills/hygon-hip-kernel-optimizer/references/xprof-xcompute-guide.md) 和 [hipprof 指南](skills/hygon-hip-kernel-optimizer/references/hipprof-guide.md)，命令、输出格式、指标定义与查看器按各自版本核对。
 
@@ -31,6 +31,45 @@ DCU/HCU 同义，旧字段与文件名保留。[指令与数据通路指南](ski
 5. 遇到 kernel 优化瓶颈时必须使用性能分析工具，优先 XProf/XCompute，也可选适用的 hipprof/DTK 工具；据采集结果决定下一项修改，保留原件、准确 kernel/dispatch、指标定义。未知计数不转成利用率。
 6. 结合源码/ISA/资源/timeline 与正确消融解释收益，缺证据的方法记待验证。最后回到真实模型/项目做端到端验收。
 7. 报告与实验原件保留在当前任务工程，说明适用范围、实际收益和未验证项。
+
+### 当前 HIP 优化流程
+
+下图是可维护的 Mermaid 源图，替代旧版仅有 hipprof/Wave64 的 HCU 图片。Triton Skill 使用独立捕获/重放流程，共用契约和分析指南，不自动执行 HIP 编排。
+
+```mermaid
+flowchart TD
+    A[需求与真实调用链<br/>数值、布局、目标 gfx 和工具链] --> B{有可运行基线及 HCU 环境?}
+    B -->|缺基线| C[建立保守 HIP 基线<br/>独立 reference 与边界用例]
+    C --> B
+    B -->|环境不可用| D[静态准备并记录阻塞<br/>不声称硬件验证]
+    B -->|具备条件| E[冻结 reference、baseline、benchmark 和矩阵<br/>运行基线正确性与稳定计时]
+    E -->|失败| F[保留日志并修复基线或环境<br/>冻结身份变化则新建 run]
+    F -->|可重试| E
+    E -->|通过| G[采集当前 best<br/>XProf 加 XCompute 或适用的 hipprof]
+    G --> H{证据足以解释当前问题?}
+    H -->|不足或采集失败| I[补采与人工分析<br/>瓶颈诊断保持未完成]
+    I --> G
+    H -->|足够| J[按真实瓶颈选择 1 到 3 项方法<br/>核对架构、数值、前提和独立改动]
+    J --> K[生成分支并串行测试<br/>正确性、多规模回退和稳定计时]
+    K -->|全部失败| FK[保留失败记录并修复候选]
+    FK -->|同轮尚未关闭| K
+    K -->|有合格候选| L[选 champion<br/>与当前 best 做四轮交替独立确认]
+    L --> M[采集 champion 并比较前后原件<br/>ISA 或真实构建汇编、必要的消融和机制复核]
+    M --> N{正确且配对确认收益通过?}
+    N -->|是| O[晋级 best]
+    N -->|否| P[保留当前 best]
+    O --> Q[记录方法归因<br/>缺消融或机制证据则 unverified]
+    P --> Q
+    Q --> R{还有预算及有依据的新实验?}
+    R -->|有| G
+    R -->|无| S[真实工程分派、单测及端到端验收<br/>显存成本、回退与未完成项报告]
+    D --> U[阶段性交付与待验证清单]
+    I -->|工具受阻或结束调查| U
+    F -->|停止| U
+    FK -->|停止| U
+```
+
+图中的“证据足够”和工程验收由 Agent 根据原件判断；脚本不自动完成瓶颈解释。`close-iter` 可以记录未验证方法，`finalize` 也可用于失败/中止任务。详细的算子路线、数值政策和恢复操作见 [实验操作指南](skills/hygon-hip-kernel-optimizer/references/optimization-playbook.md)。
 
 ## 安装
 

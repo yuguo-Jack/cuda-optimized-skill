@@ -210,6 +210,8 @@ SQTT stall triage。hipprof --sqtt --sqtt-type stat_stall/stat_valu
 
 ## 典型算子路线
 
+具体前提、反例、数值变换与工程验收见 [实验操作指南](optimization-playbook.md)。以下路线用于定位方向，不是无条件方法组合；尤其 SQTT 调查本身只提供证据，不算代码优化收益。
+
 - GEMM：访问布局→padding/tail→寄存器预取/LDS复用→MMAC与epilogue；检查stage增加的VGPR/LDS成本。
 - Attention/稀疏attention：prefill/decode、KV布局、mask/softmax数值、block稀疏调度、reduction与split策略分开验证。
 - MoE：router/sort、token分布、grouped GEMM、quant/scale、combine、EP通信分开计时；空expert、skew、capacity是关键边界。
