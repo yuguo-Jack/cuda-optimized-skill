@@ -43,6 +43,33 @@ def _higher_priority_ids(registry: dict, axis: str, priority: int) -> list[tuple
     return sorted(out, key=lambda x: x[1])
 
 
+def _semantic_effect(reg: dict, method_id: str) -> str:
+    if reg.get("semantic_effect"):
+        return reg["semantic_effect"]
+    if method_id in {
+        "compute.mixed_precision", "compute.two_level_accumulation_promotion",
+        "compute.fp8_fast_accumulation_mode", "compute.block_scaled_precision",
+        "compute.tf32_emulation_3xtf32_bf16x6", "compute.mufu_ex2_softmax_replacement",
+        "compute.fma_and_fast_math", "memory.split_k_parallel_reduce",
+    }:
+        return "tolerance_changing"
+    if method_id in {"memory.kernel_fusion", "latency.online_recomputation"}:
+        return "preconditioned"
+    return "bitwise_preserving"
+
+
+def _effective_meta(registry: dict, meta: dict) -> dict:
+    defaults = registry.get("$metadata_defaults", {})
+    merged = dict(defaults)
+    merged.update(meta)
+    return merged
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    nums = re.findall(r"\d+", str(value or ""))
+    return tuple(int(x) for x in nums[:3]) or (0,)
+
+
 def validate(
     methods_path: str,
     state_path: str,
@@ -63,6 +90,9 @@ def validate(
     # Detect sm_arch
     gpus = state.get("env", {}).get("gpus", [{}])
     detected_sm = _parse_sm_arch(gpus[0].get("sm_arch") if gpus else None)
+    backend = str(state.get("backend") or state.get("archetype_backend") or "cuda").lower()
+    toolchain = state.get("toolchain", {}) if isinstance(state.get("toolchain", {}), dict) else {}
+    archetype = str(methods_data.get("archetype") or state.get("archetype") or "generic")
 
     # Load roofline budget if available
     iter_num = methods_data.get("iter", 1)
@@ -73,9 +103,10 @@ def validate(
         roofline = _load_json(roofline_path)
         axis_budget = roofline.get("axis_budget", axis_budget)
 
-    # Validate total count matches budget
+    # A method list may intentionally use fewer slots when no eligible method
+    # has sufficient evidence; never force an unsafe filler method.
     expected_total = sum(axis_budget.values())
-    if len(methods_list) != expected_total:
+    if len(methods_list) > expected_total:
         errors.append(
             f"Expected {expected_total} methods (budget: {axis_budget}), "
             f"got {len(methods_list)}"
@@ -83,50 +114,64 @@ def validate(
 
     # Validate axis distribution
     axis_counts = {"compute": 0, "memory": 0, "latency": 0}
+    selected_ids_for_budget = {m.get("id", "") for m in methods_list}
+    grouped_ids: set[str] = set()
+    for rel in registry.get("relationships", []):
+        if rel.get("kind") == "same_budget_group":
+            ids = [x for x in rel.get("ids", []) if x in selected_ids_for_budget]
+            if len(ids) > 1:
+                grouped_ids.update(ids[1:])
     for m in methods_list:
         ax = m.get("axis", "unknown")
-        if ax in axis_counts:
+        if ax in axis_counts and m.get("id") not in grouped_ids:
             axis_counts[ax] += 1
         else:
             errors.append(f"Unknown axis '{ax}' for method {m.get('id')}")
 
     for axis in ["compute", "memory", "latency"]:
-        if axis_counts[axis] != axis_budget.get(axis, 0):
+        if axis_counts[axis] > axis_budget.get(axis, 0):
             errors.append(
                 f"Axis '{axis}': expected {axis_budget.get(axis, 0)} methods "
                 f"(from roofline budget), got {axis_counts[axis]}"
             )
+
+    for axis in ["compute", "memory", "latency"]:
         if axis_counts[axis] > 2:
-            errors.append(
-                f"Axis '{axis}': {axis_counts[axis]} methods exceeds per-axis cap of 2"
-            )
+            errors.append(f"Axis '{axis}': {axis_counts[axis]} methods exceeds per-axis cap of 2")
 
     # Validate each method
     all_submitted_ids = {m.get("id", "") for m in methods_list}
+    if len(all_submitted_ids) != len(methods_list):
+        errors.append("Duplicate method ids are not allowed")
     coupled_pairs = registry.get("coupled_methods", [])
+    relationships = registry.get("relationships", [])
+    for rel in relationships:
+        ids = rel.get("ids", [])
+        if len(ids) == 2 and set(ids).issubset(all_submitted_ids) and rel.get("kind") in {"conflicts", "subsumes"}:
+            errors.append(f"Relationship {rel.get('kind')} forbids selecting both: {ids}")
 
     for idx, m in enumerate(methods_list):
         prefix = f"methods[{idx}]"
 
-        for field in ("id", "axis", "priority"):
+        for field in ("id",):
             if field not in m:
                 errors.append(f"{prefix}: missing required field '{field}'")
-        if any(f not in m for f in ("id", "axis", "priority")):
+        if "id" not in m:
             continue
 
         mid = m["id"]
-        axis = m["axis"]
-        priority = m["priority"]
 
         # id must exist in registry
         if mid not in registry["methods"]:
             errors.append(
-                f"{prefix}: id '{mid}' not in registry. Known ids on '{axis}': "
-                f"{sorted(k for k,v in registry['methods'].items() if v['axis']==axis)}"
+                f"{prefix}: id '{mid}' not in registry. Known ids: "
+                f"{sorted(registry['methods'])}"
             )
             continue
 
-        reg = registry["methods"][mid]
+        reg = _effective_meta(registry, registry["methods"][mid])
+        axis = m.get("axis", reg["axis"])
+        priority = m.get("priority", reg["priority"])
 
         # axis & priority must match
         if reg["axis"] != axis:
@@ -137,6 +182,33 @@ def validate(
         # arch compatibility
         if reg["min_sm"] > detected_sm > 0:
             errors.append(f"{prefix}: '{mid}' requires sm_{reg['min_sm']}+ but have sm_{detected_sm}")
+        feature_map = registry.get("arch_feature_map", {})
+        arch_key = f"sm_{detected_sm}" if detected_sm else ""
+        probed = (state.get("capabilities") or state.get("env", {}).get("capabilities") or {})
+        if isinstance(probed, dict) and probed:
+            available_features = {k for k, v in probed.items() if v is True or (isinstance(v, dict) and v.get("available") is True)}
+        else:
+            available_features = set(feature_map.get(arch_key, []))
+        missing_features = set(reg.get("required_features", [])) - available_features
+        if detected_sm and missing_features:
+            errors.append(f"{prefix}: '{mid}' requires unavailable features {sorted(missing_features)} on {arch_key}")
+
+        support = reg.get("backend_support", {}).get(backend, "unsupported") if isinstance(reg.get("backend_support"), dict) else "unsupported"
+        if support in {"unsupported", "unavailable", "experimental"} and backend not in {"", "unknown"}:
+            errors.append(f"{prefix}: '{mid}' backend '{backend}' is {support}")
+        archtypes = set(reg.get("workload_archetypes", ["generic"]))
+        if archetype not in archtypes and "generic" not in archtypes:
+            errors.append(f"{prefix}: '{mid}' is not enabled for archetype '{archetype}'")
+        for key, version_key in (("min_cuda", "cuda"), ("min_cutlass", "cutlass"), ("min_triton", "triton")):
+            required = reg.get(key)
+            actual = toolchain.get(version_key, "")
+            if required and actual and _version_tuple(actual) < _version_tuple(required):
+                errors.append(f"{prefix}: '{mid}' requires {version_key}>={required}, have {actual}")
+
+        semantic = _semantic_effect(reg, mid)
+        mode = methods_data.get("numerics_mode", state.get("numerics_mode", "reference"))
+        if mode == "strict" and semantic not in {"bitwise_preserving", "preconditioned"}:
+            errors.append(f"{prefix}: '{mid}' has semantic_effect={semantic}, disallowed in strict mode")
 
         # already selected?
         selected_ids = {item.get("id") for item in state.get("selected_methods", [])}
@@ -164,7 +236,9 @@ def validate(
         higher = _higher_priority_ids(registry, axis, priority)
         skipped = m.get("skipped_higher", [])
         skipped_ids_set = {s.get("id") for s in skipped}
-        valid_reasons = {"already_selected", "arch_incompatible", "skip_condition", "no_trigger"}
+        valid_reasons = set(registry.get("skip_reason_codes", [])) or {
+            "already_selected", "arch_incompatible", "feature_unavailable", "skip_condition", "no_trigger"
+        }
 
         for hid, hpri in higher:
             if hid in all_submitted_ids:
@@ -183,14 +257,19 @@ def validate(
                     f"Valid: {valid_reasons}"
                 )
 
-    # Coupled pairs check
-    for pair in coupled_pairs:
-        pair_ids = set(pair.get("ids", []))
-        if pair_ids.issubset(all_submitted_ids):
-            errors.append(
-                f"Coupled pair both selected: {pair_ids}. "
-                f"Note: {pair.get('note', '')}"
-            )
+    # Backward-compatible relation check for registries without typed edges.
+    # Typed relationships above take precedence when present.
+    if not relationships:
+        # Coupled pairs check
+        for pair in coupled_pairs:
+            pair_ids = set(pair.get("ids", []))
+            note = str(pair.get("note", "")).lower()
+            is_conflict = any(word in note for word in ("mutually exclusive", "mutually", "pick one", "conflict"))
+            if is_conflict and pair_ids.issubset(all_submitted_ids):
+                errors.append(
+                    f"Coupled pair both selected: {pair_ids}. "
+                    f"Note: {pair.get('note', '')}"
+                )
 
     return (len(errors) == 0, errors)
 

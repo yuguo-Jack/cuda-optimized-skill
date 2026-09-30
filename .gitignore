@@ -1,8 +1,9 @@
 .claude
 .vscode
-example
+example/
 env.json
 tree.py
 hygon_tmp/
 __pycache__/
 *.pyc
+runs/

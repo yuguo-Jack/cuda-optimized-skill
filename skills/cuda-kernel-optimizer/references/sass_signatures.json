@@ -112,6 +112,21 @@
       "require_any": true,
       "note": "Verified by matching SASS output to intended PTX inline asm — patterns are case-specific"
     },
+    "compute.structured_sparsity_2to4": {
+      "sass_patterns": ["HMMA\\.SP", "MMA\\.SP", "WGMMA\\.SP"],
+      "require_any": true,
+      "note": "Sparse Tensor Core opcode must occur in the target kernel symbol"
+    },
+    "compute.int8_tensorcore_calibrated": {
+      "sass_patterns": ["IMMA", "DP4A"],
+      "require_any": true,
+      "note": "INT8 tensor operation in target kernel"
+    },
+    "compute.block_sparse_tensorcore": {
+      "sass_patterns": ["HMMA\\.SP", "MMA\\.SP", "WGMMA\\.SP"],
+      "require_any": true,
+      "note": "Block sparse MMA opcode; metadata is checked separately"
+    },
 
     "memory.kernel_fusion": {
       "sass_patterns": [],

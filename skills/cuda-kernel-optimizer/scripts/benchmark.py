@@ -18,8 +18,14 @@ When --ref is omitted:
 """
 
 import re
+import hashlib
 import os
 import sys
+try:
+    from gpu_lock import gpu_lock
+except ImportError:  # allow import via importlib in registry/unit tests
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from gpu_lock import gpu_lock
 import json
 import copy
 import glob
@@ -27,8 +33,12 @@ import subprocess
 import ctypes
 import argparse
 import importlib.util
+import math
+import statistics
 from pathlib import Path
 import torch
+from workload_matrix import generate_workload_matrix
+from contract_check import check_contract
 
 # ---------------------------------------------------------------------------
 # Type tables
@@ -356,40 +366,103 @@ def _color(text: str, ok: bool) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _time_iterations(fn, warmup: int, repeat: int) -> list:
-    """Run fn for warmup + repeat iterations and return per-iter ms timings."""
-    for _ in range(warmup):
-        fn()
-    torch.cuda.synchronize()
+def _time_iterations(fn, warmup: int, repeat: int, batches: int = 1) -> list:
+    """Run independent CUDA-event measurements.
 
-    start_event = torch.cuda.Event(enable_timing=True)
-    end_event = torch.cuda.Event(enable_timing=True)
-
-    start_event.record()
-    for _ in range(repeat):
-        fn()
-    end_event.record()
-    torch.cuda.synchronize()
-
-    avg_ms = start_event.elapsed_time(end_event) / repeat
-    return [avg_ms] * repeat
+    The previous implementation timed one aggregate window and duplicated its
+    average, which made variance and stability appear perfect.  A separate
+    event pair per invocation gives real samples while preserving GPU
+    serialization and the existing warmup semantics.
+    """
+    samples = []
+    for _ in range(max(1, int(batches))):
+        for _ in range(max(0, int(warmup))):
+            fn()
+        torch.cuda.synchronize()
+        for _ in range(max(1, int(repeat))):
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
+            fn()
+            end_event.record()
+            end_event.synchronize()
+            samples.append(float(start_event.elapsed_time(end_event)))
+    return samples
 
 
 
 def _stats(times_ms: list):
-    avg = sum(times_ms) / len(times_ms)
-    med = sorted(times_ms)[len(times_ms) // 2]
+    if not times_ms:
+        raise ValueError("timing produced no samples")
+    avg = statistics.mean(times_ms)
+    med = statistics.median(times_ms)
     return avg, med, min(times_ms), max(times_ms)
 
 
 
+def _bootstrap_ci(times_ms: list[float], statistic, confidence: float = 0.95, resamples: int = 400, seed: int = 17):
+    """Return a deterministic percentile bootstrap CI for a timing statistic."""
+    values = [float(x) for x in times_ms if math.isfinite(float(x))]
+    if len(values) < 2:
+        value = float(statistic(values)) if values else None
+        return {"low_ms": value, "high_ms": value, "confidence": confidence, "resamples": 0}
+    # A local deterministic PRNG avoids changing caller/global random state.
+    import random
+    rng = random.Random(seed)
+    estimates = []
+    n = len(values)
+    for _ in range(max(50, int(resamples))):
+        sample = [values[rng.randrange(n)] for _ in range(n)]
+        estimates.append(float(statistic(sample)))
+    estimates.sort()
+    alpha = (1.0 - confidence) / 2.0
+    lo = estimates[max(0, min(len(estimates) - 1, int(alpha * len(estimates))))]
+    hi = estimates[max(0, min(len(estimates) - 1, int((1.0 - alpha) * len(estimates)) - 1))]
+    return {"low_ms": lo, "high_ms": hi, "confidence": confidence, "resamples": len(estimates)}
+
+
+def _robust_cv(times_ms: list[float], median_ms: float | None = None) -> float | None:
+    values = [float(x) for x in times_ms if math.isfinite(float(x))]
+    if not values:
+        return None
+    med = float(median_ms if median_ms is not None else statistics.median(values))
+    if med <= 0:
+        return None
+    mad = statistics.median(abs(x - med) for x in values)
+    return float(1.4826 * mad / med)
+
+
 def _stats_dict(times_ms: list):
     avg, med, mn, mx = _stats(times_ms)
+    ordered = sorted(times_ms)
+    def percentile(p):
+        if len(ordered) == 1:
+            return ordered[0]
+        pos = (len(ordered) - 1) * p
+        lo, hi = int(math.floor(pos)), int(math.ceil(pos))
+        if lo == hi:
+            return ordered[lo]
+        return ordered[lo] + (ordered[hi] - ordered[lo]) * (pos - lo)
+    stdev = statistics.stdev(times_ms) if len(times_ms) > 1 else 0.0
+    cv = stdev / avg if avg > 0 else None
+    robust_cv = _robust_cv(times_ms, med)
+    # Use ordinary CV for compatibility, while robust CV is the stability gate
+    # for short/noisy kernels where one outlier should not dominate selection.
+    stability_cv = robust_cv if robust_cv is not None else cv
     return {
         "average_ms": avg,
         "median_ms": med,
         "min_ms": mn,
         "max_ms": mx,
+        "p10_ms": percentile(0.10),
+        "p90_ms": percentile(0.90),
+        "stddev_ms": stdev,
+        "cv": cv,
+        "robust_cv": robust_cv,
+        "confidence_interval_95": _bootstrap_ci(times_ms, statistics.median),
+        "samples": len(times_ms),
+        "stability": ("stable" if stability_cv is not None and stability_cv <= 0.05 else
+                       "borderline" if stability_cv is not None and stability_cv <= 0.10 else "unstable"),
     }
 
 
@@ -490,14 +563,30 @@ def _validate_outputs(kernel_tensors, ref_tensors, output_params, atol, rtol):
 # ---------------------------------------------------------------------------
 
 
-def _setup_cuda(solution_file, dim_values, ptr_size_override, arch, nvcc_bin, seed=None, backend_name="cuda"):
+def _load_artifact_manifest(path: str, solution_file: str, arch: str, backend: str) -> str:
+    with open(path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+    artifact = manifest.get("artifact", "")
+    source_hash = hashlib.sha256(Path(solution_file).read_bytes()).hexdigest()
+    if (manifest.get("backend") != backend or manifest.get("arch") != arch
+            or manifest.get("source_sha256") != source_hash
+            or not os.path.isfile(artifact)):
+        raise ValueError("artifact manifest does not match backend/arch or artifact is missing")
+    return artifact
+
+
+def _setup_cuda(solution_file, dim_values, ptr_size_override, arch, nvcc_bin, seed=None,
+                backend_name="cuda", artifact_manifest=""):
     params = parse_solve_signature(solution_file)
     sig_str = ", ".join(f"{'const ' if c else ''}{t} {n}" for t, n, c in params)
     print(f"[signature] solve({sig_str})\n")
 
     lib_ext = ".dll" if os.name == "nt" else ".so"
     so_file = os.path.splitext(solution_file)[0] + lib_ext
-    compile_cu(solution_file, so_file, arch, nvcc_bin, backend=backend_name)
+    if artifact_manifest:
+        so_file = _load_artifact_manifest(artifact_manifest, solution_file, arch, backend_name)
+    else:
+        compile_cu(solution_file, so_file, arch, nvcc_bin, backend=backend_name)
     lib = ctypes.CDLL(so_file)
 
     for ptype, pname, _ in params:
@@ -698,7 +787,8 @@ def _setup_triton(solution_file, dim_values, seed=None):
 
 
 
-def _setup_backend(solution_file, backend, dim_values, ptr_size_override, arch, nvcc_bin, seed=None):
+def _setup_backend(solution_file, backend, dim_values, ptr_size_override, arch, nvcc_bin, seed=None,
+                   artifact_manifest=""):
     if backend == "triton":
         return _setup_triton(solution_file, dim_values, seed=seed)
     if backend in {"cuda", "cutlass"}:
@@ -710,6 +800,7 @@ def _setup_backend(solution_file, backend, dim_values, ptr_size_override, arch, 
             nvcc_bin,
             seed=seed,
             backend_name=backend,
+            artifact_manifest=artifact_manifest,
         )
     raise ValueError(f"Unsupported backend: {backend}")
 
@@ -719,8 +810,13 @@ def _setup_backend(solution_file, backend, dim_values, ptr_size_override, arch, 
 # ---------------------------------------------------------------------------
 
 
-def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, arch, atol, rtol, seed, json_out="", nvcc_bin="nvcc", backend="auto", validation_seeds=None):
+def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, arch, atol, rtol, seed,
+        json_out="", nvcc_bin="nvcc", backend="auto", validation_seeds=None,
+        artifact_manifest="", numerics_mode="reference", timing_batches=1,
+        workload_meta=None):
     """Main benchmark pipeline."""
+    if json_out:
+        Path(json_out).unlink(missing_ok=True)
     resolved_backend = infer_backend(solution_file, backend)
     has_ref = bool(ref_file)
 
@@ -744,6 +840,7 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
         "ref_file": os.path.abspath(ref_file) if has_ref else "",
         "has_reference": has_ref,
         "dims": dim_values,
+        "workload": workload_meta or {"scale": "default", "requested_dims": dim_values, "realized_dims": dim_values},
         "warmup": warmup,
         "repeat": repeat,
         "ptr_size_override": ptr_size_override,
@@ -751,6 +848,8 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
         "gpu_name": gpu_name,
         "arch": arch,
         "seed": seed,
+        "artifact_manifest": os.path.abspath(artifact_manifest) if artifact_manifest else "",
+        "numerics_mode": numerics_mode,
         "correctness": {
             "checked": has_ref,
             "passed": None,
@@ -762,7 +861,28 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
         "reference": None,
         "speedup_vs_reference": None,
         "error": None,
+        "states": {
+            "compile_pass": "inconclusive" if resolved_backend == "triton" else "fail",
+            "contract_pass": "inconclusive",
+            "correctness_pass": "inconclusive",
+            "race_safe": "inconclusive",
+            "timing_valid": "inconclusive",
+        },
     }
+
+    # Reject malformed ABI/dimension contracts before compiling or allocating
+    # CUDA buffers. This keeps direct benchmark invocations consistent with
+    # branch_explore's post-build contract gate.
+    if resolved_backend in {"cuda", "cutlass"}:
+        pre_contract = check_contract(solution_file, dims=dim_values, compile=False)
+        result["contract"] = pre_contract
+        result["states"]["contract_pass"] = pre_contract.get("contract_pass", "inconclusive")
+        if pre_contract.get("contract_pass") == "fail":
+            result["correctness"]["passed"] = False if has_ref else None
+            result["error"] = {"code": "contract_failed", "stage": "contract_check",
+                                "message": "; ".join(pre_contract.get("errors", []))}
+            _write_json_out(json_out, result)
+            raise SystemExit(1)
 
     try:
         state = _setup_backend(
@@ -773,6 +893,7 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
             arch,
             nvcc_bin,
             seed=seed if has_ref else None,
+            artifact_manifest=artifact_manifest,
         )
     except ValueError as exc:
         message = str(exc)
@@ -797,9 +918,27 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
         _write_json_out(json_out, result)
         raise
     result["signature"] = state["signature"]
+    result["states"]["compile_pass"] = "pass"
     result["ptr_elems"] = state["ptr_elems"]
     result["total_ptr_bytes"] = state["total_ptr_bytes"]
     result["correctness"]["output_tensor_count"] = len(state["output_specs"])
+
+    # Static P0 contract gate. Runtime correctness still remains authoritative,
+    # but malformed ABI/dimension contracts must never reach GPU timing.
+    if resolved_backend in {"cuda", "cutlass"}:
+        contract = check_contract(solution_file, dims=dim_values, compile=False)
+        result["contract"] = contract
+        result["states"]["contract_pass"] = contract.get("contract_pass", "inconclusive")
+        if contract.get("contract_pass") == "fail":
+            result["correctness"]["passed"] = False if has_ref else None
+            result["error"] = {
+                "code": "contract_failed", "stage": "contract_check",
+                "message": "; ".join(contract.get("errors", [])),
+            }
+            _write_json_out(json_out, result)
+            raise SystemExit(1)
+    else:
+        result["contract"] = {"contract_pass": "inconclusive", "note": "Triton runtime handshake required"}
 
     if not state["output_specs"] and has_ref:
         print("\n[warn] No output tensors detected. Nothing to validate.", file=sys.stderr)
@@ -886,6 +1025,7 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
         print("=" * 60)
 
         result["correctness"]["passed"] = validation_passed
+        result["states"]["correctness_pass"] = "pass" if validation_passed else "fail"
         result["correctness"]["seeds"] = per_seed_results
         if not validation_passed:
             _write_json_out(json_out, result)
@@ -898,7 +1038,7 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
             name: clone_value(value) for name, value in state["reference_inputs"].items()
         }
         print(f"\n[warmup] reference  {warmup} iterations ...")
-        times_ref = _time_iterations(lambda: ref_fn(**ref_bench_inputs), warmup, repeat)
+        times_ref = _time_iterations(lambda: ref_fn(**ref_bench_inputs), warmup, repeat, timing_batches)
         print(f"[bench]  reference  {repeat} iterations ... done")
 
     if not has_ref:
@@ -925,11 +1065,27 @@ def run(solution_file, ref_file, dim_values, warmup, repeat, ptr_size_override, 
     _reset_tensor_inputs(state)
 
     print(f"\n[warmup] kernel  {warmup} iterations ...")
-    times_kernel = _time_iterations(state["callable"], warmup, repeat)
+    times_kernel = _time_iterations(state["callable"], warmup, repeat, timing_batches)
     print(f"[bench]  kernel  {repeat} iterations ... done")
 
     avg_k, med_k, mn_k, mx_k = _stats(times_kernel)
     result["kernel"] = _stats_dict(times_kernel)
+    result["states"]["timing_valid"] = "pass" if result["kernel"].get("stability") != "unstable" else "fail"
+    # The bundled ABI receives preallocated buffers. Preserve explicit timing
+    # categories so selectors cannot mistake this for an allocation-inclusive
+    # benchmark; adapters may replace the end-to-end record with a measured one.
+    result["kernel_only_ms"] = result["kernel"].get("average_ms")
+    result["end_to_end_ms"] = result["kernel"].get("average_ms")
+    result["end_to_end"] = {
+        "measured": False,
+        "average_ms": result["end_to_end_ms"],
+        "allocation_included": False,
+        "workspace_bytes": 0,
+        "launch_count": 1,
+        "synchronization_count": 1,
+        "allocator_cache_hit": None,
+        "note": "bundled ABI uses preallocated tensors; use a benchmark adapter for allocation/layout costs",
+    }
     result["kernel"]["bandwidth_gbps_rough"] = (
         state["total_ptr_bytes"] / (avg_k / 1000) / 1e9 if avg_k > 0 else None
     )
@@ -1005,6 +1161,13 @@ def main():
     parser.add_argument("--ref", type=str, default="", help="Path to reference .py file; enables validation + reference benchmark")
     parser.add_argument("--warmup", type=int, default=10, help="Warmup iterations (default: 10)")
     parser.add_argument("--repeat", type=int, default=20, help="Benchmark iterations (default: 20)")
+    parser.add_argument("--timing-batches", type=int, default=1,
+                        help="Independent timing batches (default: 1; large validation can use 5)")
+    parser.add_argument("--workload-matrix", default="", help="Optional JSON workload profile")
+    parser.add_argument("--workload-scale", choices=["small", "medium", "large"], default="",
+                        help="Select a generated workload scale")
+    parser.add_argument("--max-working-set-mb", type=int, default=384)
+    parser.add_argument("--hard-working-set-mb", type=int, default=512)
     parser.add_argument("--ptr-size", type=int, default=0, help="Override element count for all CUDA/CUTLASS pointer buffers")
     parser.add_argument("--arch", type=str, default="", help="GPU arch, e.g. sm_90 (auto-detected if omitted)")
     parser.add_argument("--gpu", type=int, default=0, help="GPU device index (default: 0)")
@@ -1017,6 +1180,10 @@ def main():
                              "Overrides --seed for validation (--seed is still used for single-shot timing).")
     parser.add_argument("--json-out", type=str, default="", help="Optional path to write structured benchmark results as JSON")
     parser.add_argument("--nvcc-bin", type=str, default="nvcc", help="NVCC executable or full path")
+    parser.add_argument("--artifact-manifest", type=str, default="",
+                        help="Use a validated prebuilt CUDA artifact manifest")
+    parser.add_argument("--numerics-mode", choices=["reference", "strict", "approximate"],
+                        default="reference")
 
     args, unknown = parser.parse_known_args()
 
@@ -1027,6 +1194,17 @@ def main():
             dim_values[key] = int(val)
         else:
             print(f"Warning: ignoring unknown arg '{item}'", file=sys.stderr)
+
+    workload_meta = None
+    if args.workload_scale:
+        cases = generate_workload_matrix(
+            dim_values, args.ptr_size, profile=args.workload_matrix or None,
+            target_mb=args.max_working_set_mb, hard_mb=args.hard_working_set_mb)
+        selected = next(c for c in cases if c["scale"] == args.workload_scale)
+        dim_values = selected["realized_dims"]
+        workload_meta = selected
+        if selected.get("realized_ptr_size"):
+            args.ptr_size = selected["realized_ptr_size"]
 
     torch.cuda.set_device(args.gpu)
     arch = args.arch if args.arch else detect_arch(args.gpu)
@@ -1039,25 +1217,28 @@ def main():
             print(f"Error: --validation-seeds must be comma-separated integers ({exc})", file=sys.stderr)
             sys.exit(2)
 
-    run(
-        solution_file=args.solution_file,
-        ref_file=args.ref,
-        dim_values=dim_values,
-        warmup=args.warmup,
-        repeat=args.repeat,
-        ptr_size_override=args.ptr_size,
-        arch=arch,
-        atol=args.atol,
-        rtol=args.rtol,
-        seed=args.seed,
-        json_out=args.json_out,
-        nvcc_bin=args.nvcc_bin,
-        backend=args.backend,
-        validation_seeds=validation_seeds,
-    )
+    with gpu_lock(args.gpu):
+        run(
+            solution_file=args.solution_file,
+            ref_file=args.ref,
+            dim_values=dim_values,
+            warmup=args.warmup,
+            repeat=args.repeat,
+            ptr_size_override=args.ptr_size,
+            arch=arch,
+            atol=args.atol,
+            rtol=args.rtol,
+            seed=args.seed,
+            json_out=args.json_out,
+            nvcc_bin=args.nvcc_bin,
+            backend=args.backend,
+            validation_seeds=validation_seeds,
+            artifact_manifest=args.artifact_manifest,
+            numerics_mode=args.numerics_mode,
+            timing_batches=args.timing_batches,
+            workload_meta=workload_meta,
+        )
 
 
 if __name__ == "__main__":
     main()
-
-

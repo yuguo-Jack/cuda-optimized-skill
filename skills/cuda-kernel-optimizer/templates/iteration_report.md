@@ -73,7 +73,7 @@ _(only if B=3 methods; omit if axis budget is 0)_
 
 ## Orthogonality check
 
-_Verify: (1) no pair is the same optimization under two names, (2) coupled pairs (memory.P5 + latency.P3) not both selected, (3) all arch-compatible, (4) axis distribution matches roofline budget._
+_Verify: (1) no pair is the same optimization under two names, (2) typed `conflicts` relations are not both selected, (3) all arch-compatible, (4) axis distribution matches roofline budget._
 
 ## Excluded candidates (higher-priority methods that were skipped)
 
@@ -81,7 +81,7 @@ _List every higher-priority method on each axis that was NOT selected, with the 
 
 - `compute.tensor_core` (P1) — skipped: kernel is pure elementwise, no matmul semantics
 - `memory.kernel_fusion` (P1) — skipped: already in `selected_methods` from iter 1
-- `latency.warp_shuffle_sync` (P1) — skipped: Triton compiler already handles via `tl.reduce`
+- `latency.warp_shuffle_sync` (P3) — skipped: Triton compiler already handles via `tl.reduce`
 
 ## Branch variants
 

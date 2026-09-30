@@ -36,9 +36,8 @@ def _find_so_file(kernel_path: str) -> str | None:
     return None
 
 
-def _dump_sass(so_path: str) -> str:
+def _dump_sass(so_path: str, cuobjdump: str = "cuobjdump") -> str:
     """Run cuobjdump --dump-sass and return output."""
-    cuobjdump = "cuobjdump"
     try:
         r = subprocess.run(
             [cuobjdump, "--dump-sass", so_path],
@@ -55,10 +54,12 @@ def check_method_sass(
     method_id: str,
     sass_text: str,
     signatures: dict,
+    target_symbol: str = "",
 ) -> dict:
     """Check if a method's expected SASS patterns appear in the disassembly."""
     result = {
         "method_id": method_id,
+        "status": "inconclusive",
         "verified": False,
         "patterns_checked": [],
         "patterns_found": [],
@@ -66,13 +67,23 @@ def check_method_sass(
     }
 
     method_sigs = signatures.get("methods", {}).get(method_id, {})
+    if target_symbol:
+        # cuobjdump emits `Function : <name>` headers. Restrict evidence to
+        # the requested kernel when the artifact exposes that symbol.
+        blocks = re.split(r"(?=Function\s*:\s*)", sass_text, flags=re.IGNORECASE)
+        scoped = [b for b in blocks if re.search(rf"Function\s*:\s*{re.escape(target_symbol)}\b", b, re.IGNORECASE)]
+        if not scoped:
+            return {"method_id": method_id, "status": "inconclusive", "verified": False,
+                    "patterns_checked": method_sigs.get("sass_patterns", []),
+                    "patterns_found": [], "patterns_missing": method_sigs.get("sass_patterns", []),
+                    "note": f"target_symbol_not_found:{target_symbol}"}
+        sass_text = "\n".join(scoped)
     patterns = method_sigs.get("sass_patterns", [])
     require_any = method_sigs.get("require_any", True)  # True = at least one pattern found
 
     if not patterns:
-        # No patterns defined for this method — skip (vacuously true)
-        result["verified"] = True
-        result["note"] = "no_patterns_defined"
+        result["status"] = "not_applicable"
+        result["note"] = "no_sass_verifier_declared"
         return result
 
     result["patterns_checked"] = patterns
@@ -88,6 +99,7 @@ def check_method_sass(
     else:
         # require_all
         result["verified"] = len(result["patterns_missing"]) == 0
+    result["status"] = "pass" if result["verified"] else "fail"
 
     return result
 
@@ -128,7 +140,8 @@ def run(state_path: str, iteration: int, signatures_path: str = None) -> dict:
         for m in methods_list:
             checks.append({
                 "method_id": m.get("id", "unknown"),
-                "verified": True,
+                "status": "not_applicable",
+                "verified": False,
                 "note": "triton_kernel_sass_not_applicable",
             })
         result = {"kernel": kernel_path, "backend": "triton", "checks": checks}
@@ -136,18 +149,32 @@ def run(state_path: str, iteration: int, signatures_path: str = None) -> dict:
         return result
 
     # CUDA/CUTLASS: find .so and dump SASS
-    so_path = _find_so_file(kernel_path)
+    manifest_path = os.path.join(iter_dir, "kernel.build.json")
+    so_path = None
+    if os.path.isfile(manifest_path):
+        try:
+            so_path = _load_json(manifest_path).get("artifact")
+        except (OSError, json.JSONDecodeError):
+            so_path = None
+    so_path = so_path if so_path and os.path.isfile(so_path) else _find_so_file(kernel_path)
     if not so_path:
-        return {"error": "so_not_found", "kernel": kernel_path, "checks": []}
+        checks = [{"method_id": m.get("id", "unknown"), "status": "inconclusive",
+                   "verified": False, "note": "artifact_not_found"} for m in methods_list]
+        result = {"error": "so_not_found", "kernel": kernel_path, "checks": checks}
+        _write_result(iter_dir, result)
+        return result
 
-    sass_text = _dump_sass(so_path)
+    env_tool = state.get("env", {}).get("cuobjdump", {})
+    cuobjdump = env_tool.get("path") if isinstance(env_tool, dict) else None
+    sass_text = _dump_sass(so_path, cuobjdump or "cuobjdump")
 
     if sass_text.startswith("ERROR:"):
         checks = []
         for m in methods_list:
             checks.append({
                 "method_id": m.get("id", "unknown"),
-                "verified": True,
+                "status": "tool_error",
+                "verified": False,
                 "note": f"cuobjdump_unavailable: {sass_text}",
             })
         result = {"kernel": kernel_path, "backend": "cuda", "sass_error": sass_text, "checks": checks}
@@ -156,15 +183,17 @@ def run(state_path: str, iteration: int, signatures_path: str = None) -> dict:
 
     # Check each method
     checks = []
+    target_symbol = str(state.get("kernel_symbol", ""))
     for m in methods_list:
         mid = m.get("id", "unknown")
-        check = check_method_sass(mid, sass_text, signatures)
+        check = check_method_sass(mid, sass_text, signatures, target_symbol)
         checks.append(check)
 
     result = {
         "kernel": kernel_path,
         "so": so_path,
         "backend": "cuda",
+        "target_symbol": target_symbol,
         "sass_lines": len(sass_text.splitlines()),
         "checks": checks,
     }

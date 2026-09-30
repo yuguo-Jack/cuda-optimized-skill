@@ -32,13 +32,14 @@ V2 把循环从“试错–记录”升级为“试错–归因–验证–学�
 在 Claude 运行的宿主机上：
 
 - 一块可用的 CUDA GPU，并且驱动正常（`nvidia-smi` 可运行）
-- `$PATH` 中有 `nvcc`（用于 CUDA / CUTLASS backend）
-- `$PATH` 中有 `ncu`，并且有权限读取性能计数器；否则这个 skill 会退化为仅基于代码静态分析的推理能力，效果会明显变弱
-- `$PATH` 中有 `cuobjdump`（CUDA toolkit 自带）— V2 的 SASS 验证步骤需要它
+- CUDA / CUTLASS backend 需要 `nvcc`
+- `ncu` 必须有权限读取性能计数器
+- SASS 验证需要 CUDA toolkit 自带的 `cuobjdump`
 - Python 3.10+，安装了 `torch`（CUDA 版本）；如果要用 Triton backend，还需要 `triton`
 - 对于 CUTLASS kernel：`$CUTLASS_PATH` 或 `$CUTLASS_INCLUDE_DIR` 需要指向同时包含 `cutlass/` 和 `cute/` 头文件的目录树
 
 `benchmark.py`（通用算子 benchmark driver）已经内置在 `scripts/benchmark.py` 中，不需要单独安装。
+严格硬件门禁会搜索 `PATH`、CUDA 根目录和常见 Nsight 安装目录。如果 GPU Runtime 或必需工具连续三次探测仍不可用，会在生成候选代码前停止优化。
 
 ### `ncu` 权限常见问题
 
@@ -134,6 +135,8 @@ cuda-kernel-optimizer/
 ├── scripts/
 │   ├── benchmark.py                 # 内置 benchmark driver（来自项目）
 │   ├── check_env.py                 # 检测 GPU / nvcc / ncu / cuobjdump / CUTLASS / 依赖库
+│   ├── hardware_gate.py              # 严格工具发现与 CUDA Runtime 门禁（最多三次）
+│   ├── strict_validation.py          # benchmark/NCU 判定与持久化停止状态
 │   ├── preflight.py                 # 校验 baseline 与 ref 的契约
 │   ├── state.py                     # state.json 的唯一写入者
 │   ├── validate_methods.py          # 优先级合规校验器（由 state.py 调用）
@@ -174,7 +177,7 @@ cuda-kernel-optimizer/
    - 运行 `sass_check.py` → `iterv1/sass_check.json`
    - 运行 `ablate.py` → `iterv1/attribution.json`
    - 更新 state：每个方法按 `SASS ✓/✗ × 归因值是否超过噪声` 进入 `effective_methods` / `ineffective_methods` / `implementation_failed_methods` 之一
-9. 如果正确性失败（所有 K 个分支都失败）：检查 `bench.json.correctness` 与 `bench.stderr.txt`，重写 kernel，并重试（最多 3 次）
+9. 如果所有 K 个分支均未通过编译、正确性或稳定测速：写入 `stop.json` 并停止，不生成后续迭代
 10. 如果成功：若更快则推进 `best_file`；本轮 roofline 结果追加进 `roofline_history`
 11. 回到第 3 步，进入下一轮迭代
 12. 调用 `orchestrate.py finalize`，并将回顾总结写入 `summary.md` — 其中包含来自 `roofline_history` 的瓶颈漂移表
@@ -189,7 +192,7 @@ cuda-kernel-optimizer/
 - **ncu CSV 列名**：较旧版本的 `ncu`（< 2022.1）会输出 `"Metric Value"`，其大小写和单位格式可能不同；`profile_ncu.py` 做了兼容处理，但如果你看到全 0，先检查迭代目录下的 `.ncu.log` 文件。
 - **分支成本**：当 K=4 且开启消融时，每轮迭代最多要编译 K + (方法数) 个 kernel。在干净环境下首次构建会比较慢；如果更看重墙钟时间，可适当降低 `--branches`。
 - **SASS 签名是启发式的**：`sass_signatures.json` 只是按指令模式做 grep，并不做完整的语义等价判定。一个方法可能通过了 grep 但实现依然次优 —— 这正是归因机制要兜住的部分。
-- **重试是有上限的**：单轮迭代最多允许 3 次正确性失败。超过后，skill 会记录这次尝试失败并继续往下，而不是无限循环。一个 kernel 如果 3 次都无法修正，通常意味着存在需要人工审查的概念性问题。
+- **重试是有上限的**：硬件和工具最多探测三次。正确性、稳定测速或 NCU 失败时立即停止本次 run，不再生成后续迭代。
 
 ## 示例结果
 
@@ -212,4 +215,3 @@ https://tensara.org/problems  以 Tensara 平台上的 Batch Normalization 题�
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=KernelFlow-ops/cuda-optimized-skill&type=date&legend=top-left" />
  </picture>
 </a>
-

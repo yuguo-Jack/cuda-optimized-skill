@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Global state manager for the optimization loop (v2 — roofline-driven).
+"""Global state manager for the optimization loop (v5 — strict hardware gates).
 
 Subcommands:
   init               create run_YYYYMMDD_HHMMSS/, seed state.json
@@ -10,7 +10,7 @@ Subcommands:
   set-best-ncu-rep   helper called by profile_ncu after promoting best
   show               pretty-print current state (debug)
 
-state.json schema (all paths stored absolute):
+state.json schema (all paths stored absolute; older runs are read compatibly):
 {
   "run_dir": str,
   "baseline_file": str,
@@ -45,6 +45,12 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+try:
+    from strict_validation import benchmark_gate, ncu_gate
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from strict_validation import benchmark_gate, ncu_gate
 
 
 # ---------------------------------------------------------------------------
@@ -107,11 +113,53 @@ def cmd_init(args: argparse.Namespace) -> None:
         "branches": int(args.branches),
         "noise_threshold_pct": float(args.noise_threshold_pct),
         "ptr_size": int(args.ptr_size),
+        "schema_version": 5,
+        "gpu": int(args.gpu),
+        "gpu_uuid": ((env.get("gpus") or [{}])[int(args.gpu)].get("uuid") or (env.get("gpus") or [{}])[int(args.gpu)].get("gpu_uuid", "")
+                     if isinstance(env.get("gpus"), list) and int(args.gpu) < len(env.get("gpus")) else ""),
+        "compile_jobs": str(args.compile_jobs),
+        "numerics_mode": args.numerics_mode,
+        "archetype": args.archetype,
+        "validation_seeds": args.validation_seeds,
+        "workload_matrix": args.workload_matrix or "",
+        "max_working_set_mb": int(args.max_working_set_mb),
+        "hard_working_set_mb": int(args.hard_working_set_mb),
+        "adaptive_downscale": bool(args.adaptive_downscale),
+        "oom_retries": int(args.oom_retries),
+        "timing_batches": int(args.timing_batches),
+        "timing_repeats": int(args.timing_repeats),
+        "scale_weights": {"small": 0.20, "medium": 0.30, "large": 0.50},
+        "stability_policy": {"stable_cv": 0.05, "max_cv": 0.10, "max_large_regression_pct": 5.0},
+        "large_regression_gate": {"max_pct": 5.0, "required": True},
+        "timing_policy": {
+            "batches": int(args.timing_batches), "repeats": int(args.timing_repeats),
+            "stable_cv": 0.05, "max_cv": 0.10, "robust_cv_primary": True,
+            "calibration_target_ms": 40.0,
+        },
+        "profiling_policy": {
+            "full_max_duration_ms": 10.0, "light_max_duration_ms": 50.0,
+            "timeout_sec": 120.0, "bundle": None,
+        },
+        "global_champion": None,
+        "run_status": "initializing",
+        "generation_allowed": False,
+        "stop_reason": None,
+        "stop_stage": None,
+        "hardware_attempts": len(env.get("attempts", [])),
+        "verified_iterations": 0,
+        "last_verified_iter": 0,
+        "baseline_verified": False,
+        "contract_policy": {
+            "required_states": ["compile_pass", "contract_pass", "correctness_pass", "race_safe", "timing_valid"],
+            "block_timing_on_contract_fail": True,
+        },
+        "build_cache_dir": os.path.join(run_dir, ".build-cache"),
         "dims": dims,
         "selected_methods": [],
         "effective_methods": [],
         "ineffective_methods": [],
         "implementation_failed_methods": [],
+        "unverified_methods": [],
         "history": [],
         "roofline_history": [],
         "frontier": [],
@@ -119,9 +167,6 @@ def cmd_init(args: argparse.Namespace) -> None:
     }
     state_path = os.path.join(run_dir, "state.json")
     _write(state_path, state)
-
-    for i in range(1, state["iterations_total"] + 1):
-        os.makedirs(os.path.join(run_dir, f"iterv{i}"), exist_ok=True)
 
     print(json.dumps({"run_dir": run_dir, "state": state_path}, indent=2))
 
@@ -148,6 +193,12 @@ def _merge_unique(bag: list[dict], new_items: list[dict]) -> list[dict]:
 
 def cmd_update(args: argparse.Namespace) -> None:
     state = _read(args.state)
+    # Older runs remain readable; missing v4 collections are initialized and
+    # never retroactively migrated or reinterpreted.
+    for key in ("selected_methods", "effective_methods", "ineffective_methods",
+                "implementation_failed_methods", "unverified_methods",
+                "history", "roofline_history", "frontier"):
+        state.setdefault(key, [])
     bench = _read(args.bench)
     methods = _read(args.methods_json)
 
@@ -176,11 +227,39 @@ def cmd_update(args: argparse.Namespace) -> None:
             sys.stderr.write(rv.stderr or "")
             sys.exit(1)
 
-    validation_passed = bool(bench.get("correctness", {}).get("passed", True))
+    bench_states = bench.get("states", {}) if isinstance(bench.get("states", {}), dict) else {}
+    strict_run = int(state.get("schema_version", 0)) >= 5
+    if strict_run:
+        validation_passed, validation_error = benchmark_gate(
+            bench, max_cv=float((state.get("stability_policy") or {}).get("max_cv", 0.10)),
+            require_reference_timing=True)
+        if not validation_passed:
+            sys.exit(f"Champion failed strict benchmark gate: {validation_error}")
+        iter_dir = os.path.join(state["run_dir"], f"iterv{args.iter}")
+        ncu_top_path = os.path.join(iter_dir, "ncu_top.json")
+        ncu_top = _read(ncu_top_path) if os.path.isfile(ncu_top_path) else {}
+        ncu_valid, ncu_error = ncu_gate(ncu_top, args.kernel_ncu_rep)
+        if not ncu_valid:
+            sys.exit(f"Champion failed strict NCU gate: {ncu_error}")
+    else:
+        validation_passed = bool(bench.get("correctness", {}).get("passed", True))
+        if any(bench_states.get(name) == "fail" for name in
+               ("compile_pass", "contract_pass", "correctness_pass", "timing_valid")):
+            validation_passed = False
+        iter_dir = os.path.join(state["run_dir"], f"iterv{args.iter}")
     new_ms = None
     ref_ms = None
     if bench.get("kernel"):
         new_ms = bench["kernel"].get("average_ms")
+    # Launch/fusion/overlap strategies are selected on end-to-end latency when
+    # an adapter supplied that measurement; ordinary kernels remain
+    # kernel-only for backward compatibility.
+    method_ids = {str(m.get("id", "")) for m in methods_list}
+    e2e_methods = {"latency.cuda_graphs", "latency.static_launch_grid_graph",
+                   "latency.independent_kernel_overlap", "memory.kernel_fusion",
+                   "latency.grouped_gemm_scheduler"}
+    if method_ids & e2e_methods and bench.get("end_to_end_ms") is not None:
+        new_ms = bench.get("end_to_end_ms")
     if bench.get("reference"):
         ref_ms = bench["reference"].get("average_ms")
 
@@ -223,16 +302,21 @@ def cmd_update(args: argparse.Namespace) -> None:
         attr_info = attribution_data.get(mid, {})
         sass_info = sass_data.get(mid, {})
 
-        sass_verified = sass_info.get("verified", True)  # Default True if no check
+        sass_status = sass_info.get("status")
+        sass_verified = sass_info.get("verified", False) if sass_status is None else sass_status == "pass"
+        sass_inconclusive = sass_status in {None, "inconclusive", "not_applicable", "tool_error"}
         contributed = attr_info.get("contributed", None)
         attr_ms = attr_info.get("attribution_ms", None)
 
         m_entry = dict(m)
 
-        if not sass_verified:
+        if sass_status == "fail":
             # SASS signature missing — implementation failed
             m_entry["note"] = f"SASS patterns not found: {sass_info.get('patterns_missing', [])}"
             state["implementation_failed_methods"].append(m_entry)
+        elif sass_inconclusive:
+            m_entry["note"] = f"verification_status={sass_status or 'missing'}"
+            state["unverified_methods"].append(m_entry)
         elif contributed is True or contributed is None:
             # Contributed (or no ablation data — assume effective if overall improved)
             if validation_passed and improved:
@@ -252,9 +336,18 @@ def cmd_update(args: argparse.Namespace) -> None:
     if validation_passed and improved:
         state["best_file"] = os.path.abspath(args.kernel)
         state["best_metric_ms"] = new_ms
+        if bench.get("artifact_manifest"):
+            state["best_build_manifest"] = bench["artifact_manifest"]
+        if args.kernel_ncu_rep and os.path.isfile(args.kernel_ncu_rep):
+            state["best_ncu_rep"] = os.path.abspath(args.kernel_ncu_rep)
+        state["global_champion"] = {
+            "iter": int(args.iter),
+            "kernel": state["best_file"],
+            "average_ms": new_ms,
+            "artifact_manifest": state.get("best_build_manifest"),
+        }
 
     # Load roofline data if available
-    iter_dir = os.path.join(state["run_dir"], f"iterv{args.iter}")
     roofline_path = os.path.join(iter_dir, "roofline.json")
     if os.path.isfile(roofline_path):
         roofline = _read(roofline_path)
@@ -292,7 +385,19 @@ def cmd_update(args: argparse.Namespace) -> None:
         "validation_passed": validation_passed,
         "status": status,
         "retries": int(args.retries),
+        "states": bench_states,
+        "kernel_only_ms": bench.get("kernel_only_ms", new_ms),
+        "end_to_end_ms": bench.get("end_to_end_ms", new_ms),
     })
+
+    if strict_run:
+        # state.update is called only after the strict champion NCU gate passes.
+        state["verified_iterations"] = max(int(state.get("verified_iterations", 0)), int(args.iter))
+        state["last_verified_iter"] = int(args.iter)
+        state["run_status"] = (
+            "completed" if int(args.iter) >= int(state.get("iterations_total", 0)) else "ready"
+        )
+        state["generation_allowed"] = state["run_status"] != "completed"
 
     _write(args.state, state)
     print(json.dumps({
@@ -323,12 +428,22 @@ def cmd_set_best_ncu(args: argparse.Namespace) -> None:
 def cmd_set_baseline_metric(args: argparse.Namespace) -> None:
     state = _read(args.state)
     bench = _read(args.bench)
-    if not bench.get("correctness", {}).get("passed", True):
+    strict_run = int(state.get("schema_version", 0)) >= 5
+    if strict_run:
+        max_cv = float((state.get("stability_policy") or {}).get("max_cv", 0.10))
+        valid, reason = benchmark_gate(bench, max_cv=max_cv, require_reference_timing=True)
+        if not valid:
+            sys.exit(f"Baseline failed strict benchmark gate: {reason}")
+    elif not bench.get("correctness", {}).get("passed", True):
         sys.exit("Baseline failed correctness validation — cannot proceed.")
     ms = bench.get("kernel", {}).get("average_ms")
     if ms is None:
         sys.exit("Baseline bench has no kernel timing.")
     state["best_metric_ms"] = ms
+    if strict_run:
+        state["baseline_verified"] = True
+    if bench.get("artifact_manifest"):
+        state["best_build_manifest"] = bench["artifact_manifest"]
     _write(args.state, state)
     print(json.dumps({"baseline_ms": ms}, indent=2))
 
@@ -356,6 +471,19 @@ def main() -> None:
     pi.add_argument("--env", type=str, default="")
     pi.add_argument("--noise-threshold-pct", type=float, default=2.0)
     pi.add_argument("--ptr-size", type=int, default=0)
+    pi.add_argument("--gpu", type=int, default=0)
+    pi.add_argument("--compile-jobs", default="auto")
+    pi.add_argument("--numerics-mode", choices=["reference", "strict", "approximate"], default="reference")
+    pi.add_argument("--archetype", default="generic")
+    pi.add_argument("--validation-seeds", default="7,19,41,73,101",
+                    help="Comma-separated seeds passed to every candidate validation")
+    pi.add_argument("--workload-matrix", default="")
+    pi.add_argument("--max-working-set-mb", type=int, default=384)
+    pi.add_argument("--hard-working-set-mb", type=int, default=512)
+    pi.add_argument("--adaptive-downscale", action=argparse.BooleanOptionalAction, default=True)
+    pi.add_argument("--oom-retries", type=int, default=3)
+    pi.add_argument("--timing-batches", type=int, default=5)
+    pi.add_argument("--timing-repeats", type=int, default=30)
     pi.set_defaults(func=cmd_init)
 
     pu = sub.add_parser("update")
@@ -371,6 +499,7 @@ def main() -> None:
     pu.add_argument("--retries", type=int, default=0)
     pu.add_argument("--skip-validation", action="store_true")
     pu.add_argument("--allow-ineffective", action="store_true")
+    pu.add_argument("--kernel-ncu-rep", type=str, default="")
     pu.set_defaults(func=cmd_update)
 
     pb = sub.add_parser("set-baseline-metric")
