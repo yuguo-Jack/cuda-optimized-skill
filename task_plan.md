@@ -60,6 +60,6 @@
 1. 核对七个架构名称、Builtin/指令/测试的适用边界 — complete
 2. 修订 WDRA/Ebarrier、WASP 与 hipprof 26.10 指南及脚本 — complete
 3. CPU 回归 92 项、33 个脚本 AST、三个 Skill 校验与相对链接检查 — complete
-4. 备份安装副本、同步哈希核验、提交推送 — in_progress
+4. 备份安装副本、同步哈希核验、提交推送 — complete（主体 f5daf22；远端 main 与本地一致）
 
 保持知识查询可选，不加入知识库更新流程；瓶颈诊断必须采集并解读，hipprof 与 XProf/XCompute 分开。未运行 HCU 构建/设备测试。
