@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from hcu_targets import describe, normalize_gfx
 
 
 def _run(cmd: list[str], timeout: int = 10) -> tuple[int, str, str]:
@@ -30,7 +31,7 @@ def _detect_gpus() -> list[dict]:
             for i in range(torch.cuda.device_count()):
                 props = torch.cuda.get_device_properties(i)
                 gcn = getattr(props, "gcnArchName", None)
-                arch = str(gcn).split(":", 1)[0] if gcn else None
+                arch = normalize_gfx(gcn)
                 gpus.append({
                     "index": i,
                     "name": torch.cuda.get_device_name(i),
@@ -49,7 +50,7 @@ def _detect_gpus() -> list[dict]:
     if rocminfo:
         rc, out, _ = _run([rocminfo], timeout=20)
         if rc == 0:
-            matches = re.findall(r"\b(gfx[0-9a-fA-F]+)\b", out)
+            matches = [normalize_gfx(x) for x in re.findall(r"\b(gfx[0-9a-f]+)\b", out, re.I)]
             for i, arch in enumerate(dict.fromkeys(matches)):
                 gpus.append({"index": i, "name": arch, "gcn_arch": arch, "gfx_arch": arch})
     return gpus
@@ -70,9 +71,10 @@ def _detect_hipprof() -> dict:
     if not info["available"]:
         return info | {"pmc_available": False}
     path = info["path"]
-    rc, out, err = _run([path, "--list-basic"], timeout=20)
-    info["pmc_available"] = rc == 0
-    info["pmc_note"] = None if rc == 0 else (err or out).strip()[:400]
+    rc, out, err = _run([path, "-h"], timeout=20)
+    info["pmc_flag_advertised"] = bool(re.search(r"--pmc(?:[\s=,]|$)", out + err))
+    info["pmc_available"] = None  # A help listing cannot verify device collection.
+    info["pmc_note"] = "Collection unverified; check requested group in help and perform a target dispatch capture"
     return info
 
 
@@ -124,6 +126,8 @@ def collect_env() -> dict:
         "python": sys.version.split()[0],
         "gpus": gpus,
         "primary_gfx_arch": primary,
+        "target_identity": describe(primary),
+        "dcc": _detect_tool("dcc", ["--version"]),
         "hipcc": _detect_tool("hipcc", ["--version"]),
         "hipprof": _detect_hipprof(),
         "xprof": _detect_tool("xprof", ["--help"]),

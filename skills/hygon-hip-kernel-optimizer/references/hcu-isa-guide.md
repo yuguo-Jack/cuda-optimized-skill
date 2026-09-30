@@ -17,9 +17,19 @@ GFX938 Builtin 表中存在“所列名称不存在、实际为带 `_alt2` 的�
 
 ## 2. MLS、LDS 与 MMAC：先核对布局和代际
 
-北美洲=gfx936，南美洲=gfx938，少伯=gfx946。gfx 编号不能按数值大小推导功能；也不能因为同属 `matrix_load` 就沿用 descriptor、tile 和同步设置。
+| 名称 | target |
+|---|---|
+| 孔明 / kongming | gfx926 |
+| 孔明e / kongming-e | gfx928 |
+| 伯温a0 / bowen a0 / 北美洲 | gfx936 |
+| 伯温b0 / bowen b0 / 南美洲 | gfx938 |
+| 少伯 / shaobo | gfx946 |
+| 塞班b1 / saipan b1 | gfx948 |
+| 月英 / yueying | gfx92a |
 
-以下只列原表明确支持的部分形式，不能当作完整兼容矩阵。[E2，PDF 第 4–5 页，已看原表]
+这些名称是身份映射，不是能力矩阵。gfx92a 是完整目标名；某个测试内部用数值宏9210，不可传给 `--offload-arch`。更早架构按实际任务单独查证。gfx 编号不能按数值大小推导功能；同属 `matrix_load` 也不能沿用 descriptor、tile 和同步设置。
+
+以下只列旧少伯资料原表明确支持的部分形式，不能当作当前所有代际的完整兼容矩阵。[E2，PDF 第 4–5 页，已看原表] 新 Builtin 表还区分月英/塞班形式；阅读时检查整行、重载和真实合并单元格，空白不自动继承上一行。支持列与备注不一致时保留差异，再核对目标编译器与用例。
 
 | 指令形式 | 原表涉及的 HCU 目标 | 使用时的注意点 |
 |---|---|---|
@@ -55,6 +65,8 @@ gfx936 的数学库 GEMM 示例同时出现 `ds_read_m32x16_b16` 与 `v_mmac_f32
 ## 4. WDRA 与 Co-Issue
 
 文档给出了 `__builtin_hcu_s_set_vgpr_size(short N)` 到 `s_set_vgpr_size N` 的路径；另有 `_prsv` 形式及参数形式差别。[E3 第 6 页；E1 第 5 页] 这些是查证入口，不应自行猜测 intrinsic 原型。
+
+新编译器资料中，基础 Ebarrier 与 `s_set_vgpr_size` 出现 gfx92a/gfx946 的 feature 条件，而部分 Ebarrier reduction 变体只列 gfx946。因此旧少伯文档的范围不应变成“月英没有这些能力”的断言。反过来，编译器声明接受也不证明任意设备/编译分支均能运行。WDRA 初始化接口有版本撤回情况，必须查当前声明和 lowering，不能复制旧示例后只凭名字补 intrinsic。
 
 WDRA 调整 wave 间 VGPR 分配，不会凭空增加整个 threadgroup 的寄存器预算。资料中的波组、分配粒度与 phase/barrier 约束要结合实际 kernel 核对：wave 分工、谁释放/申请、是否仍有存活值、跨 wave 数据与同步是否安全。不能声称一条 `s_set_vgpr_size` 就能提高初始 occupancy。
 
@@ -97,6 +109,16 @@ Co-Issue 有明确指令配对限制。资料对 gfx946 的 AI-MMAC pass 数和�
 5. 对优化前后做同环境新鲜对照；结果需超过重复测量波动，筛选最快候选后再独立确认。
 6. 遇到瓶颈，按 [XProf/XCompute](xprof-xcompute-guide.md) 或 [hipprof](hipprof-guide.md) 的独立流程采集，解释指标/资源/时间线与瓶颈的关系。两套工具参数、格式和指标不得混用。
 7. 报告支持范围与反例；多个耦合修改的总体收益不能平均分给每条指令或方法。
+
+### 用 ISAtest 查例子时
+
+查宿主注册/兼容规则与黑名单，再读设备 kernel、输入初始化和 golden。注册矩阵是测试选择逻辑，不是硬件完整向后兼容表；0 tests 或 skip 不算通过。存在性环境变量设成字符串 `0` 仍可能开启，检查实际 `getenv` 判断。
+
+编译缓存可能只比较源文件时间与 ELF target。更换编译器、头文件或 flags 后用独立目录或工程提供的清理目标，避免旧 code object 被当成新结果。核对宿主/设备缓冲长度（`sizeof(pointer)` 不是 pointee 大小）、动态 LDS、descriptor、数值比较规则；测试仓本身也可能有缺陷。功能测试总时长包含初始化/编译/拷贝，不能当指令 latency。
+
+### 新接口与多编译器
+
+AICC 的 MMAC 入口可能采用无后缀重载，DCC 的声明/参数编码与后端树需独立核对。省略累加器的重载可能默认零，不能替代原有 `C += A*B`。MLS 旧返回向量接口与 descriptor 搬运接口、VMEM atomic 的 GLC/返回值限制都要逐目标核验。DCC 内有顶层 LLVM 与 GCVM 两套目标实现时，先确认构建开关实际选中了哪套；分支名不能代替 LLVM、DTK 和产品版本。
 
 ## 8. 本次查证来源
 

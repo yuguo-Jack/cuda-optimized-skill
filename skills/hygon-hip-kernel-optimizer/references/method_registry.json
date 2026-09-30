@@ -336,16 +336,17 @@
     "compute.shaobo_wdra": {
       "axis": "compute",
       "priority": 9,
-      "name": "少伯 producer/consumer VGPR 分配",
+      "name": "HCU producer/consumer VGPR allocation (legacy ID)",
       "trigger_metric": "source/ISA/resource/timeline review",
       "trigger_direction": "manual",
       "required_features": [],
       "requires_target_probe": true,
       "allowed_arches": [
+        "gfx92a",
         "gfx946"
       ],
-      "reference_impl": "WDRA redistributes a fixed thread-group register budget; investigate spills and role balance, not an assumed increase in initial occupancy. Read synchronization/descriptor restrictions before probing.",
-      "evidence_scope": "source-reported gfx946 feature, not hardware tested by this skill; exact target/toolchain probe required"
+      "reference_impl": "Legacy shaobo ID retained. The reviewed DCC s_set_vgpr_size declaration gates gfx92a/gfx946; check actual initialization/attribute and backend version. Triton automatic WASP has a separate gfx946 gate. Redistribution does not imply higher initial occupancy.",
+      "evidence_scope": "Compiler-source candidate scope, not hardware validation; exact target/toolchain probe and synchronization evidence required"
     },
     "memory.shaobo_tls": {
       "axis": "memory",
@@ -374,6 +375,21 @@
       ],
       "reference_impl": "Check arrive/wait, phase/transaction count, barrier identity and participant lifetime against exact gfx946 compiler/runtime implementation; add race and progress tests.",
       "evidence_scope": "source-reported gfx946 feature, not hardware tested by this skill; exact target/toolchain probe required"
+    },
+    "latency.hcu_ebarrier": {
+      "axis": "latency",
+      "priority": 9,
+      "name": "HCU Ebarrier wave-group synchronization",
+      "trigger_metric": "source/ISA/timeline review",
+      "trigger_direction": "manual",
+      "required_features": [],
+      "requires_target_probe": true,
+      "allowed_arches": [
+        "gfx92a",
+        "gfx946"
+      ],
+      "reference_impl": "Basic arrive/sync/count/slot declarations; gfx946 reduction variants and Abarrier are separate. Validate participants, count=0 default semantics, slot reuse and loop progress on the exact target.",
+      "evidence_scope": "Declaration and test-source scope only, not a cross-generation hardware promise"
     }
   },
   "coupled_methods": [
@@ -425,6 +441,13 @@
         "latency.split_k_streamk"
       ],
       "note": "Both address underfilled grids; choose based on whether work is irregular or K-parallel."
+    },
+    {
+      "ids": [
+        "latency.hcu_ebarrier",
+        "latency.shaobo_abarrier_ebarrier"
+      ],
+      "note": "Basic Ebarrier and the gfx946 combined barrier strategy may describe the same synchronization delta; separate variants and count a shared change once."
     }
   ],
   "skip_reason_codes": [
@@ -442,9 +465,13 @@
   ],
   "scope_note": "gfx IDs are not ordered capability numbers. Historical method IDs are stable; source/probe evidence governs target applicability. DCU and HCU are aliases, including legacy paths and fields. See hcu-isa-guide.md for evidence-scoped ISA guidance.",
   "hardware_names": {
-    "gfx936": "北美洲",
-    "gfx938": "南美洲",
-    "gfx946": "少伯"
+    "gfx926": "孔明",
+    "gfx928": "孔明e",
+    "gfx936": "伯温a0（北美洲）",
+    "gfx938": "伯温b0（南美洲）",
+    "gfx946": "少伯",
+    "gfx948": "塞班b1",
+    "gfx92a": "月英"
   },
   "knowledge_navigation": [
     "mls-wdra-generation-boundaries",

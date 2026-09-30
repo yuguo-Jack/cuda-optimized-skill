@@ -23,7 +23,7 @@ python <skill>/scripts/check_env.py --out env.json
 python <skill>/scripts/preflight.py --baseline kernel.hip --ref ref.py --dims '{"N":1048576}' --out preflight.json
 ```
 
-确认准确 gfx（936/938/946 等）、编译器、库提交、wave width、设备可用性。AICC 与 DTK 自带编译器分别记录。硬件缺失不妨碍静态开发，但不能写成已经跑过 HCU。
+确认准确 gfx（包括完整拼写 gfx92a）、编译器、库提交、wave width、设备可用性。名称映射与指令能力分开，参照指令指南核对月英/少伯/塞班的具体形式。AICC 与 DTK DCC/hipcc 分别记录。硬件缺失不妨碍静态开发，但不能写成已经跑过 HCU。
 
 普通 flat ABI 需要 `extern "C" void solve(...)` 和 reference 中同名参数的 `reference(...)`；非 const 指针为输出。它只支持独立连续简单类型；半精度/量化、非连续/alias/in-place、多 stream 和通信应使用项目专用 `--benchmark`，不能悄悄简化契约。专用结果须符合 [实验产物](references/experiment-artifacts.md) 的验证门禁。
 

@@ -22,3 +22,11 @@
 ## 模型层调整
 
 小tensor初始化、scatter/atomic、融合后scalarized GEMM都是调查入口。比较初始化融合、批处理、gather/分段归约、库分派和最小compile边界；不能看到某种kernel就强制fallback。模型重写保留语义，并重新验证训练/推理必要的正反向与端到端性能。
+
+## WASP / WDRA 的调查顺序
+
+在 HCU 分支使用 warp specialization 前，先读所装版本的 `backend/wasp.py`、`compiler.py` 及分区测试。选项存在不等于 IR 请求了该变换；记录实际生效 metadata、分区 wave tuple 和总启动 wave，不只保存初始 `num_warps`。旧总 wave 参数可能已删除；WDRA、WASP-only 和普通流水的合法拓扑/stage 不同，不能共用一张无条件 autotune 表。
+
+当前已查版本的自动 WASP 路径限 gfx946；不能由月英存在某些 WDRA 编译接口推断 Triton 前端已经支持。分区 VGPR 配额是每 lane 数值，粒度/总预算按当前实现检查，不能再乘整个工作组。生成代码的分区 spill 反馈、真实需求和已用配额应与 LLIR 一致；scratch 非零不自动等于寄存器 spill，SGPR spill 也不能靠调整 VGPR 配额解决。
+
+MLS、普通 async pipeline 与 WASP 可能互斥或拥有不同变换阶段。修改分区/fragment必须保留既定 LDS layout 与生产/消费同步。检查尾 K、多消费者共享load、重复启动、阶段翻转及数值；用实际资源/驻留/等待和无profiler计时判断收益。失败保留生成IR/ISA和日志，回退到已验收流水，不删除等待凑出更快结果。

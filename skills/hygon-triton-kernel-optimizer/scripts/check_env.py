@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hygon-hip-kernel-optimizer/scripts"))
+from hcu_targets import HCU_NAMES, describe, normalize_gfx
 
 
 def _run(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
@@ -59,8 +61,7 @@ def _torch_info() -> dict:
             for i in range(torch.cuda.device_count()):
                 props = torch.cuda.get_device_properties(i)
                 gcn = getattr(props, "gcnArchName", None)
-                raw_arch = str(gcn).split(":", 1)[0] if gcn else ""
-                arch = raw_arch if raw_arch.startswith("gfx") else None
+                arch = normalize_gfx(gcn)
                 info["devices"].append({
                     "index": i,
                     "name": torch.cuda.get_device_name(i),
@@ -89,7 +90,7 @@ def _rocminfo_arches() -> list[str]:
     rc, out, _ = _run([rocminfo], timeout=30)
     if rc != 0:
         return []
-    return list(dict.fromkeys(re.findall(r"\b(gfx[0-9a-fA-F]+)\b", out)))
+    return list(dict.fromkeys(normalize_gfx(x) for x in re.findall(r"\b(gfx[0-9a-f]+)\b", out, re.I)))
 
 
 def collect() -> dict:
@@ -110,11 +111,13 @@ def collect() -> dict:
         "torch": torch_info,
         "triton": _triton_info(),
         "primary_arch": primary_arch,
+        "target_identity": describe(primary_arch),
         "rocminfo_arches": rocminfo_arches,
         "tools": {
             "xprof": _tool("xprof", ["--help"]),
             "xcompute": _tool("xcompute", ["--help"]),
             "aicc": _tool("aicc", ["--version"]),
+            "dcc": _tool("dcc", ["--version"]),
             "hipcc": _tool("hipcc", ["--version"]),
             "hipprof": _tool("hipprof", ["-h"]),
             "dccobjdump": _tool("dccobjdump", ["--version"]),
@@ -127,6 +130,8 @@ def collect() -> dict:
             "TORCHINDUCTOR_TRACE": os.environ.get("TORCHINDUCTOR_TRACE"),
             "TRITON_CAPTURE_DIR": os.environ.get("TRITON_CAPTURE_DIR"),
             "TORCHINDUCTOR_CACHE_DIR": os.environ.get("TORCHINDUCTOR_CACHE_DIR"),
+            "TRITON_HIP_CLANG_PATH": os.environ.get("TRITON_HIP_CLANG_PATH"),
+            "ROCM_PATH": os.environ.get("ROCM_PATH"),
         },
         "warnings": [],
     }
@@ -137,8 +142,8 @@ def collect() -> dict:
         env["warnings"].append("torch.cuda is not available; run capture/benchmark on the DCU host.")
     if not primary_arch:
         env["warnings"].append("No gfx arch detected; run on the Hygon DCU host for capture and benchmark.")
-    if primary_arch and primary_arch not in {"gfx936", "gfx938", "gfx946"}:
-        env["warnings"].append(f"Unexpected gfx arch for this workflow: {primary_arch}")
+    if primary_arch and primary_arch not in HCU_NAMES:
+        env["warnings"].append(f"Target is outside the currently named HCU set: {primary_arch}; confirm vendor and toolchain support")
     return env
 
 

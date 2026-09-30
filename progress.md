@@ -72,3 +72,7 @@
 - 已同步到 C:\Users\Administrator\.codex\skills，逐文件验证 55 个 SHA256（5/35/15），无额外遗留文件。旧版本备份：hygon_tmp/skill-backups/20260930_120404_801998。
 
 - 实现提交 e52bfd1 已正常推送 origin/main（yuguo-Jack/cuda-optimized-skill）；安装目录的 Triton 扫描 CLI 已验证能加载共享 ISA 模块。此次没有修改 HCU-Knowledge，没有声称硬件实测。
+
+## 2026-09-30
+
+完成三个 HCU Skill 的说明、策略表、ISA 线索及环境/hipprof脚本更新。92 项 CPU 回归通过（5.74 s）；33 个脚本解析、三个 quick_validate、相对链接与 diff whitespace 检查通过。等待最终安装哈希同步及 origin 推送核验。

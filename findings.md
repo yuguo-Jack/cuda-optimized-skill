@@ -72,3 +72,11 @@
 - 消融改为同参数配对重测，方向不一致/噪声/失败均不推导有效性；有效归因同时需要原始配对证据与独立机制复核。诊断本身不算代码优化。
 - 修复 gfx92a 等字母后缀标识解析；耦合方法有可分离差异和验证计划时允许同选；SQ_WAVES 不再作为低 occupancy 自动触发条件。
 - HCU-Knowledge 只读，既有 catalog/evidence 未提交改动保持原样。新指南不携带原始 PDF 或汇编全文，不绑定本机知识库路径。
+
+## 2026-09-30 本轮复核
+
+- 七个名称映射只表示目标身份，不代表指令能力继承；保留完整 gfx92a。DCC 的基础 Ebarrier/s_set_vgpr_size 声明与 Triton gfx946 WASP 门禁分开，初始化接口随版本核验。
+- hipprof 26.10 命名 PMC 组与旧 read/write flags 分开；波驻留、L2请求、MMOP计量不能混作理论 occupancy、HBM流量或全部VALU算力。
+- 修复旧脚本通过相邻 .so 找 code object 的风险：只接受本次 benchmark 构建收据且源文件/二进制哈希一致；SQTT 返回失败、无可读产物或解析失败都标记 degraded，PMC成功不覆盖它。
+- SQTT 解析排除 benchmark receipt；工具 help 只记录参数发现，不再用未核实的 --list-basic 推断设备可采集。
+- 回归验证了 stale binary、错误收据类型、命名组/旧组互斥、SQTT失败/缺产物、准确gfx与未知目标；无硬件性能结论。

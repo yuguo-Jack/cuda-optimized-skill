@@ -13,7 +13,7 @@ DCU 与 HCU 同义，保留原有字段和文件名。baseline、HIP/CK Tile、T
 3. 复杂问题拆开查：算子/调用链、数据布局、硬件特性、编译器、工具指标、类似案例。先工程 `local/overview/engineering-guide.md`，再 topics/cases 和源码。用 `cases` 与案例索引查算子、手段、硬件和输入规模；未命中不等于不支持。
 4. `read` 读全文，`original` 看原 PDF/指令表/图，`read-code` 固定源码提交。父仓子模块按 gitlink 固定子提交。记录 ID、SHA、路径/页码、适用条件；pending 仍可查，但兼容性待证。源码、PR review、文档描述和本次实测分开记录。
 
-选择参考源码时，同用途且同步的实现优先 HYGON-AI GitHub；内部 GitLab 有实质领先则用内部活跃 HCU 分支。新 CI 时间不等于新实现；默认分支可能落后。DeepGEMM 通用发版方向与 MegaMoE 方向分别判断。HCU rocBLAS、hipBLASLt、MIOpen、RCCL 的不可见源码不能用 AMD 上游代替。NVIDIA/AMD 官方资料仅作标明厂商的对比参考；同名 API 或相邻 gfx 编号不证明兼容。
+选择参考源码时，同用途且同步的实现优先 HYGON-AI GitHub；内部 GitLab 有实质领先则用内部活跃 HCU 分支。新 CI 时间不等于新实现；默认分支可能落后。DeepGEMM 通用发版方向与 MegaMoE 方向分别判断。HCU rocBLAS、hipBLASLt、MIOpen、RCCL 有权限时读 HCU 维护源码；没有权限时说明缺口，不用 AMD 上游代替。NVIDIA/AMD 官方资料仅作标明厂商的对比参考；同名 API 或相邻 gfx 编号不证明兼容。
 
 可选检索入口：`xprof-xcompute-workflow`、`hcu-performance-workflow`、AICC engineering-guide、CK Tile example/cases、FlashAttention、DeepGEMM、BoltOPs、Triton 的当前工程指南，以及数学库 `gemm-assembly-examples` 原始示例。
 
@@ -21,7 +21,9 @@ DCU 与 HCU 同义，保留原有字段和文件名。baseline、HIP/CK Tile、T
 
 - 北美洲=gfx936、南美洲=gfx938、少伯=gfx946。少伯新增 Abarrier/Ebarrier/MLS 扩展/TLS/WDRA 等资料仅用于 gfx946；gfx936/gfx938 本身也有 MLS 指令或源码命名族，不能反过来禁止这些既有路径。逐条核对 descriptor、opcode、同步与数据布局，不能从名称继承少伯新增语义。少伯指令资料还描述 FP4/FP6 与带 scale 的矩阵/转换路径，不再沿用旧 Skill 的全局“无 FP4”判断；实际支持仍需精确工具链探针。
 - gfx 是标识符，不是可用 `>=` 比较的能力等级。记录真实设备、CU 数、wave width、驱动、DTK、编译器路径/版本、PyTorch/HIP、Triton、库提交、工具版本、环境变量与运行方式。
+- 完整名称映射见 [指令指南](hcu-isa-guide.md)。月英 gfx92a 的基础 Ebarrier/部分 WDRA 编译入口与少伯扩展形式分别核对；塞班 gfx948 在资料、测试仓和编译器分支中的覆盖可能不同。保持旧少伯材料自身范围，不能将其当新表的全局能力门禁。
 - AICC 是独立编译器，区别于 DTK 自带工具链。保留准确二进制与安装来源；同一源码切编译器也要重做正确性、代码对象、资源和性能对照。`--hipcc-bin` 只适配支持相同参数的驱动，不能自动把任意 AICC 二进制当 hipcc。
+- DCC/hipcc 的包装关系以实际路径和版本为准；Triton 构建用的 LLVM/MLIR 与运行时产生设备码的 clang 也分别记录。源码通过 revision 文件固定依赖时，像 gitlink 一样保存父文件/父提交及实际子仓提交，不直接读取子仓最新 HEAD 代替。
 - Agent 可在本机编辑、检索和读产物，构建/执行/采集在实际 HCU 节点。按项目配置和远端工作 Skill 决定 SSH、容器、挂载与 DTK 激活；不统一要求 Docker，也不统一禁止 Docker。不把本机 NVIDIA GPU 测试当 HCU 测试。
 - 探测工具存在只是发现能力，不证明目标架构支持、权限或采集成功。读取已安装 `--help`，对必要接口做小型编译/运行探针。无硬件时仍可写代码与做静态检查，明确标记待硬件验证。
 

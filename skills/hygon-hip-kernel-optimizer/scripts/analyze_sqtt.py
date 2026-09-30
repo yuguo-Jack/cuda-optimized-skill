@@ -59,6 +59,8 @@ def _iter_sqtt_files(paths: list[str]) -> tuple[list[Path], list[Path]]:
         seen = set()
         out = []
         for item in items:
+            if item.name.endswith(".benchmark.json"):
+                continue  # Collection runner receipt is not an instruction trace.
             resolved = str(item.resolve())
             if resolved not in seen:
                 seen.add(resolved)

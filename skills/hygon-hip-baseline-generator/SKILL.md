@@ -15,6 +15,8 @@ CUDA 移植按 API、线程模型、共享内存/同步、数值类型、矩阵�
 
 选择独立 oracle：优先可读、语义完整的原 reference；Triton/TileLang/CUDA 参考必须保留，必要时另写 Torch/CPU 数学实现并与原实现对照。不要同步修改 oracle 与候选来让测试通过。
 
+ISAtest可用于查具体builtin/同步/矩阵布局的最小用法，不能直接充当业务算子oracle；同时读宿主、设备代码和golden，检查真正注册/执行的测试数、缓冲长度和编译缓存。原表支持列、编译器feature与实际设备验证分别记录。
+
 ## 2. 使用脚手架的边界
 
 ```bash

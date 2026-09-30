@@ -29,7 +29,7 @@ KERNEL_EXTS = (".hip", ".cu", ".cpp", ".cc", ".cxx", ".py")
 METRIC_RUBRIC: list[tuple[str, str, bool]] = [
     (r"SQ_INSTS_MMOP|MMAC|MATRIX|VALU_FMA|VALU_ADD|VALU_MUL|SQ_BUSY|GRBM_GUI_ACTIVE", "compute", True),
     (r"TCC|TCP|TA_|TD_|READ_REQ|WRITE_REQ|CACHE|L2|L1|BW|BANDWIDTH", "memory", True),
-    (r"STALL|LATENCY|WAIT|WAVE_CYCLES|BARRIER|ATOMIC|SQ_WAVES", "latency", True),
+    (r"STALL|LATENCY|WAIT|OCCUPANCY|WAVE[ _]?CYCLES|ACTIVE[ _]?CYCLES|BARRIER|ATOMIC|SQ_WAVES", "latency", True),
     (r"LDS|BANK_CONFLICT|DS_READ|DS_WRITE", "memory", True),
 ]
 
@@ -84,12 +84,25 @@ def _to_float(value) -> float | None:
         return None
 
 
-def _find_binary(kernel_path: str) -> str | None:
-    base = os.path.splitext(kernel_path)[0]
-    for ext in (".so", ""):
-        candidate = base + ext
-        if os.path.isfile(candidate):
-            return candidate
+def _measured_binary(reports: list[str], solution: str) -> str | None:
+    """Use the captured benchmark's build receipt, never a neighboring stale .so."""
+    from experiment import file_sha256
+    for path in reversed(reports):
+        try:
+            bench = _read(path)
+            if not isinstance(bench, dict):
+                continue
+            build = bench.get("build") or {}
+            if not isinstance(build, dict):
+                continue
+            binary = build.get("binary")
+            source_sha = file_sha256(solution)
+            if (bench.get("source_sha256") == source_sha == build.get("source_sha256")
+                    and binary and Path(binary).is_file()
+                    and build.get("binary_sha256") == file_sha256(binary)):
+                return binary
+        except (OSError, ValueError, TypeError):
+            continue
     return None
 
 
@@ -106,6 +119,8 @@ def _run_hipprof(
     kernel_name: str = "",
     collect_flag: str = "--pmc",
     pmc_type: str = "3",
+    pmc_group: str = "",
+    benchmark_json: str = "",
     sqtt_type: str = "",
     output_type: str = "",
     data_dir: str = "",
@@ -122,6 +137,10 @@ def _run_hipprof(
     if output_type:
         cmd.extend(["--output-type", output_type])
     cmd.append(collect_flag)
+    if pmc_group:
+        if collect_flag != "--pmc" or pmc_group not in PMC_GROUPS:
+            raise ValueError("A named PMC group requires --pmc and a supported group")
+        cmd.append(pmc_group)
     if collect_flag.startswith("--pmc"):
         cmd.extend(["--pmc-type", pmc_type])
     if collect_flag == "--sqtt" and sqtt_type:
@@ -135,6 +154,8 @@ def _run_hipprof(
     ])
     cmd.extend(_ptr_size_argv(ptr_size))
     cmd.extend(_dims_argv(dims))
+    if benchmark_json:
+        cmd.extend(["--json-out", benchmark_json])
     print(f"[hipprof] {' '.join(cmd)}", file=sys.stderr)
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore", env=env, timeout=600)
@@ -282,7 +303,14 @@ def _rank_by_axis(agg: dict[str, dict], top_n: int) -> dict[str, list]:
     return out
 
 
-def _pmc_plan(mode: str, out_prefix: str) -> list[tuple[str, str, str]]:
+PMC_GROUPS = ("default", "read", "write", "compute", "wave", "util", "memory")
+
+
+def _pmc_plan(mode: str, out_prefix: str, group: str = "") -> list[tuple[str, str, str]]:
+    if group:
+        if mode != "pmc" or group not in PMC_GROUPS:
+            raise ValueError("--pmc-group cannot be combined with legacy --pmc-mode read/write/all/none")
+        return [("pmc_" + group, "--pmc", out_prefix + ".pmc_" + group)]
     plans = {
         "none": [],
         "pmc": [("pmc", "--pmc", out_prefix)],
@@ -309,12 +337,16 @@ def main() -> None:
     p.add_argument("--kernel-name", default="")
     p.add_argument("--pmc-mode", default="pmc", choices=["none", "pmc", "read", "write", "all"])
     p.add_argument("--pmc-type", default="3")
+    p.add_argument("--pmc-group", default="", choices=["", *PMC_GROUPS],
+                   help="DTK 26.10 named group; use only when installed hipprof help lists it")
     p.add_argument("--sqtt-type", default="", help="Optional SQTT collection type, e.g. '1', 'stat_stall', 'stat_valu', or 'all'")
     p.add_argument("--sqtt-output-type", default="", choices=["", "0", "1", "2"], help="Optional hipprof --output-type; verify its effect on SQTT in the installed version")
     p.add_argument("--sqtt-data-dir", default="", help="Optional hipprof -d data directory for SQTT trace artifacts")
     p.add_argument("--no-codeobj-analyze", action="store_true")
     p.add_argument("--promote-if-best", action="store_true")
     args = p.parse_args()
+    if args.pmc_group and args.pmc_mode != "pmc":
+        p.error("--pmc-group requires --pmc-mode pmc (the default)")
 
     state = _read(args.state)
     from experiment import resolve_benchmark, require_open_iteration, iteration_kernel
@@ -341,7 +373,7 @@ def main() -> None:
     out_prefix = os.path.join(capture_dir, "capture")
     log_path = os.path.join(iter_dir, f"{rep_name}.log")
     provenance = {"tool": "hipprof", "profiled_file": solution, "raw_directory": capture_dir,
-                  "backend": _detect_backend(solution)}
+                  "backend": _detect_backend(solution), "pmc_group": args.pmc_group or None}
 
     if not shutil.which(hipprof_bin) and not os.path.isfile(hipprof_bin):
         top = {
@@ -360,7 +392,7 @@ def main() -> None:
     except (OSError, subprocess.TimeoutExpired) as exc:
         help_text = str(exc)
     Path(capture_dir, "help.txt").write_text(help_text, encoding="utf-8")
-    required = [flag for _, flag, _ in _pmc_plan(args.pmc_mode, out_prefix)]
+    required = [flag for _, flag, _ in _pmc_plan(args.pmc_mode, out_prefix, args.pmc_group)]
     if args.pmc_mode != "none":
         required.append("--pmc-type")
     if args.sqtt_type:
@@ -369,16 +401,18 @@ def main() -> None:
             required.append("--output-type")
     if args.kernel_name:
         required.append("--kernel-name")
-    if any(flag not in help_text for flag in required):
+    if (any(flag not in help_text for flag in required)
+            or (args.pmc_group and not re.search(r"\b" + re.escape(args.pmc_group) + r"\b", help_text, re.I))):
         top = {**provenance, "degraded": True, "reason": "Installed hipprof help does not confirm requested flags", "compute": [], "memory": [], "latency": [], "help": str(Path(capture_dir, "help.txt"))}
         _write_json(os.path.join(iter_dir, "dcu_top.json"), top)
         print(json.dumps(top)); return
     logs = []
     collection_results = []
     rc_values = []
-    pmc_rc_values = []
     profile_outputs = []
-    for label, flag, prefix in _pmc_plan(args.pmc_mode, out_prefix):
+    benchmark_reports = []
+    for label, flag, prefix in _pmc_plan(args.pmc_mode, out_prefix, args.pmc_group):
+        benchmark_json = prefix + ".benchmark.json"
         rc, log = _run_hipprof(
             hipprof_bin=hipprof_bin,
             out_prefix=prefix,
@@ -391,11 +425,15 @@ def main() -> None:
             kernel_name=args.kernel_name,
             collect_flag=flag,
             pmc_type=args.pmc_type,
+            pmc_group=args.pmc_group,
+            benchmark_json=benchmark_json,
         )
         rc_values.append(rc)
-        pmc_rc_values.append(rc)
         profile_outputs.append(prefix)
-        collection_results.append({"label": label, "flag": flag, "output": prefix, "returncode": rc})
+        if rc == 0:
+            benchmark_reports.append(benchmark_json)
+        collection_results.append({"label": label, "flag": flag, "pmc_group": args.pmc_group or None,
+                                   "output": prefix, "benchmark_json": benchmark_json, "returncode": rc})
         logs.append(f"===== {label} ({flag}) rc={rc} output={prefix} =====\n{log}")
 
     sqtt_summary = None
@@ -420,9 +458,12 @@ def main() -> None:
             output_type=args.sqtt_output_type,
             data_dir=args.sqtt_data_dir,
             env=sqtt_env,
+            benchmark_json=sqtt_prefix + ".benchmark.json",
         )
         rc_values.append(rc)
         profile_outputs.append(sqtt_prefix)
+        if rc == 0:
+            benchmark_reports.append(sqtt_prefix + ".benchmark.json")
         collection_results.append({
             "label": "sqtt",
             "flag": "--sqtt",
@@ -454,7 +495,7 @@ def main() -> None:
 
     codeobj = None
     if not args.no_codeobj_analyze and not solution.endswith(".py"):
-        binary = _find_binary(solution)
+        binary = _measured_binary(benchmark_reports, solution)
         if binary:
             codeobj = _run_codeobj_analyze(
                 hipprof_bin=hipprof_bin,
@@ -462,13 +503,17 @@ def main() -> None:
                 out_log=os.path.join(iter_dir, f"{rep_name}.codeobj_analyze.log"),
             )
         else:
-            codeobj = {"available": False, "reason": "binary_not_found_after_benchmark", "kernel": solution}
+            codeobj = {"available": False, "reason": "captured_benchmark_build_receipt_missing_or_changed", "kernel": solution}
 
-    degraded = any(rc != 0 for rc in pmc_rc_values) or (args.pmc_mode != "none" and not agg)
+    sqtt_unavailable = bool(args.sqtt_type) and (not sqtt_summary or bool(sqtt_summary.get("error"))
+        or bool(sqtt_summary.get("parse_errors"))
+        or not (sqtt_summary.get("file_count") or sqtt_summary.get("csv_files")))
+    degraded = (not rc_values or any(rc != 0 for rc in rc_values)
+                or (args.pmc_mode != "none" and not agg) or sqtt_unavailable)
     top = {
         **provenance,
         "degraded": degraded,
-        "reason": f"hipprof rc={rc_values}; csv metrics={len(agg)}; see {log_path}" if degraded else None,
+        "reason": f"hipprof rc={rc_values}; csv metrics={len(agg)}; sqtt_unavailable={sqtt_unavailable}; see {log_path}" if degraded else None,
         "hipprof_output": out_prefix,
         "hipprof_log": log_path,
         "collections": collection_results,

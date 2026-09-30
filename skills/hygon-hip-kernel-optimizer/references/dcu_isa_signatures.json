@@ -231,7 +231,7 @@
         "\\bs_set_vgpr_size(?:_prsv)?\\b"
       ],
       "require_any": true,
-      "note": "Documented gfx946 discovery patterns, not a compiler or hardware support verdict. Check hcu-isa-guide.md and probe exact target."
+      "note": "Static s_set_vgpr_size discovery; legacy method ID. Declaration, actual initialization protocol, target and measured resources must be verified separately."
     },
     "memory.shaobo_tls": {
       "isa_patterns": [
@@ -246,6 +246,13 @@
       ],
       "require_any": true,
       "note": "Documented gfx946 discovery patterns, not a compiler or hardware support verdict. Check hcu-isa-guide.md and probe exact target."
+    },
+    "latency.hcu_ebarrier": {
+      "isa_patterns": [
+        "\\bs_ebarrier_[a-z0-9_]+\\b"
+      ],
+      "require_any": true,
+      "note": "Presence does not validate count/participants/slot reuse or prove progress."
     }
   }
 }

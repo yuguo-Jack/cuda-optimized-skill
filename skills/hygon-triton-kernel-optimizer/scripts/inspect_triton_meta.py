@@ -78,11 +78,11 @@ def inspect_file(path: str) -> dict:
 
     notes = []
     if counts["tl_atomic_add"]:
-        notes.append("atomic_add present; memory bandwidth may be structurally limited.")
+        notes.append("atomic_add present; inspect contention, traffic and ordering with target profiling before identifying a bottleneck.")
     if ptr_args and not any(p["has_pointer_range"] for p in ptr_hint_status):
         notes.append("No pointer_range hint detected for pointer args.")
     if ptr_args and counts["tl_assume"] == 0:
-        notes.append("No tl.assume detected; check non-negative offset assumptions.")
+        notes.append("No tl.assume detected; add assumptions only when proven by the input contract, never infer signed range from pointer syntax.")
 
     return {
         "file": str(Path(path).resolve()),

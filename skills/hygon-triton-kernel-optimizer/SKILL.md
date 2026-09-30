@@ -17,6 +17,8 @@ python <skill>/scripts/check_env.py --out triton_env.json
 
 gfx946 少伯新特性不能推广到 936/938。Triton 对某 gfx 的支持、`num_warps` 与 wave、dot lowering、编译开关取决于 HCU 分支与安装版本。先读目标源码/帮助与小编译探针；不能用 NVIDIA/AMD 新文档直接推导 HCU 行为。
 
+月英gfx92a/塞班gfx948应保留完整目标名；工具识别到名称不等于该Triton分支已支持。WASP/WDRA按 [候选优化](references/optimization_patterns.md) 检查真实IR请求、分区wave/寄存器配额、spill反馈与目标门禁，不能只照抄旧总wave参数或用scratch大小替代spill判断。
+
 手写 Triton：直接建立独立 reference 和工作负载矩阵。TorchInductor：先用应用 profile 找到真实热点并连接模型节点→生成代码→kernel/dispatch；用 XProf/XCompute 或已有 DTK 工具，而非只看 autotune 最快数字。
 
 ## 2. 捕获并复现 Inductor kernel

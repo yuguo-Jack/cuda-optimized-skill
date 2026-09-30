@@ -218,7 +218,7 @@ SQTT stall triage。hipprof --sqtt --sqtt-type stat_stall/stat_valu
 
 方法有效性只对应已测形状/环境；一次变快不能替整个方法族作通用结论。
 
-## 少伯新增能力的专项候选
+## 按准确架构查证的专项候选
 
 北美洲/南美洲资料和 CK 代码已有 MLS 命名/实现，不能误称 MLS 仅在少伯存在。少伯新资料里的 store、BPS、descriptor 编码等扩展须单独查证。参考知识页 `mls-wdra-generation-boundaries` 与 CK 工程指南。
 
@@ -228,11 +228,15 @@ gfx946 instructions describe FP4/FP6 and scale-aware conversion/matrix paths; ve
 
 限定 gfx946 新特性资料范围，必须提供 target_evidence。来源文档描述支持不等于当前编译器或本机硬件已验证。
 
-### `compute.shaobo_wdra` — 少伯 producer/consumer VGPR 分配
+### `compute.shaobo_wdra` — HCU producer/consumer VGPR 分配（保留旧 ID）
 
-WDRA redistributes a fixed thread-group register budget; investigate spills and role balance, not an assumed increase in initial occupancy. Read synchronization/descriptor restrictions before probing.
+WDRA redistributes a fixed thread-group register budget; investigate spills and role balance, not an assumed increase in initial occupancy. DCC declarations cover gfx92a/gfx946, while the currently inspected Triton WASP automatic path is gated to gfx946. Read synchronization, initialization and descriptor restrictions before probing; declaration alone does not verify a working initialization sequence.
 
-限定 gfx946 新特性资料范围，必须提供 target_evidence。来源文档描述支持不等于当前编译器或本机硬件已验证。
+候选范围 gfx92a/gfx946，必须提供 target_evidence；不能把 Triton 自动路径扩展到月英，也不能从数值编号推断 gfx948 可用。
+
+### `latency.hcu_ebarrier` — Ebarrier 基础同步
+
+gfx92a/gfx946 的基础 arrive/sync/count/slot 声明与 gfx946 reduction 变体、Abarrier 分开。核验参与者、count=0 的默认语义、slot 重用及循环进度；必须最小编译并在准确目标验证。与下述组合 barrier 方法同时选择时解释独立改动，同一同步变更不能重复记收益。
 
 ### `memory.shaobo_tls` — 少伯 Tensor Load/Store 描述符路径
 

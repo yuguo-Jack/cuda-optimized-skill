@@ -412,6 +412,93 @@ def test_hipprof_uses_selected_champion_not_stale_extension(tmp_path):
     assert json.loads((folder / "dcu_top.json").read_text())["tool"] == "hipprof"
 
 
+def test_hipprof_named_group_and_legacy_are_distinct():
+    mod = load("profile_hipprof")
+    assert mod._pmc_plan("pmc", "out", "wave")[0][1] == "--pmc"
+    assert mod._pmc_plan("read", "out")[0][1] == "--pmc-read"
+    with pytest.raises(ValueError):
+        mod._pmc_plan("all", "out", "wave")
+    with patch.object(mod.subprocess, "run", return_value=types.SimpleNamespace(returncode=0, stdout="", stderr="")) as run:
+        mod._run_hipprof(hipprof_bin="hipprof", out_prefix="out", benchmark_py="bench.py", solution="kernel.hip",
+                        dims={}, ptr_size=0, warmup=1, repeat=3, pmc_group="wave", benchmark_json="captured.json")
+    argv = run.call_args.args[0]
+    assert argv[argv.index("--pmc") + 1] == "wave"
+    assert "--pmc-read" not in argv
+    assert argv[argv.index("--json-out") + 1] == "captured.json"
+
+
+def test_hipprof_binary_receipt_rejects_stale_and_malformed(tmp_path):
+    mod = load("profile_hipprof")
+    exp = load("experiment")
+    source, binary = tmp_path / "kernel.hip", tmp_path / "cache.so"
+    source.write_text("current source")
+    binary.write_bytes(b"current binary")
+    sha = exp.file_sha256(source)
+    receipt = write(tmp_path / "captured.json", {"source_sha256": sha, "build": {
+        "source_sha256": sha, "binary": str(binary), "binary_sha256": exp.file_sha256(binary)}})
+    assert mod._measured_binary([receipt], str(source)) == str(binary)
+    source.write_text("new source")
+    assert mod._measured_binary([receipt], str(source)) is None
+    source.write_text("current source")
+    binary.write_bytes(b"replaced binary")
+    assert mod._measured_binary([receipt], str(source)) is None
+    for value in [[], {"build": ["wrong shape"]}, {"build": None}]:
+        write(Path(receipt), value)
+        assert mod._measured_binary([receipt], str(source)) is None
+
+
+@pytest.mark.parametrize("sqtt_rc,has_trace,degraded", [(1, True, True), (0, False, True), (0, True, False)])
+def test_hipprof_sqtt_failure_is_not_hidden_by_pmc(tmp_path, sqtt_rc, has_trace, degraded):
+    mod = load("profile_hipprof")
+    kernel = tmp_path / "kernel.hip"
+    kernel.write_text("test")
+    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "best_file": str(kernel)})
+    trace = {"file_count": int(has_trace), "csv_files": [], "parse_errors": []}
+    def capture(**kwargs):
+        return (sqtt_rc if kwargs['collect_flag'] == '--sqtt' else 0), "test capture"
+    args = ["profile", "--state", state, "--iter", "1", "--which", "best_input", "--sqtt-type", "1", "--no-codeobj-analyze"]
+    with patch.object(sys, "argv", args), patch.object(mod.shutil, "which", return_value="hipprof"), \
+         patch.object(mod.subprocess, "run", return_value=types.SimpleNamespace(stdout="--pmc --pmc-type --sqtt --sqtt-type", stderr="")), \
+         patch.object(mod, "_run_hipprof", side_effect=capture), patch.object(mod, "_sqtt_env_with_llvm_objdump", return_value=({}, None)), \
+         patch.object(mod, "analyze_sqtt_json", return_value=trace), patch.object(mod, "_parse_csv_metrics", return_value={"SQ_BUSY": {
+             "value": 50, "axis": "compute", "samples": 1, "source_files": []}}):
+        mod.main()
+    assert json.loads((tmp_path / "iterv1/dcu_top.json").read_text())["degraded"] is degraded
+
+
+def test_sqtt_excludes_benchmark_receipt(tmp_path):
+    mod = load("analyze_sqtt")
+    write(tmp_path / "capture.sqtt.benchmark.json", {"kernel": "s_waitcnt"})
+    result = mod.analyze([str(tmp_path / "capture.sqtt")])
+    assert result["file_count"] == 0 and result["instruction_count"] == 0
+    write(tmp_path / "capture.sqtt.trace.json", {"traceEvents": [{"name": "s_waitcnt", "dur": 1}]})
+    result = mod.analyze([str(tmp_path / "capture.sqtt")])
+    assert result["file_count"] == 1 and result["waitcnt_count"] == 1
+
+
+@pytest.mark.parametrize("arch,name", [("gfx92a:xnack-", "月英"), ("gfx948", "塞班b1"), ("GFX928", "孔明e")])
+def test_target_names_preserve_hex_ids_without_claiming_capabilities(arch, name):
+    target = load("hcu_targets").describe(arch)
+    assert target["architecture_name"] == name
+    assert target["gfx"] == arch.split(":")[0].lower()
+    assert target["capabilities_verified"] is False
+
+
+def test_unknown_target_does_not_inherit_hcu_capabilities():
+    mod = load("hcu_targets")
+    assert mod.describe("gfx949")["architecture_name"] is None
+    assert mod.describe("gfx92a-invalid")["gfx"] is None
+
+
+def test_hipprof_help_does_not_claim_working_hardware_collection():
+    mod = load("check_env")
+    with patch.object(mod, "_detect_tool", return_value={"available": True, "path": "hipprof"}), \
+         patch.object(mod, "_run", return_value=(0, "--pmc default/read/wave", "")) as run:
+        info = mod._detect_hipprof()
+    assert run.call_args.args[0] == ["hipprof", "-h"]
+    assert info["pmc_flag_advertised"] is True and info["pmc_available"] is None
+
+
 def test_capture_key_separates_same_name_different_layouts():
     tree = ast.parse((TRITON / "autotune_capture_patch.py").read_text(encoding="utf-8"))
     functions = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_capture_key"]
