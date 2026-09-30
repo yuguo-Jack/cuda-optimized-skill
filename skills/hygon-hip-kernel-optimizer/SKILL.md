@@ -47,7 +47,7 @@ python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py -
 
 读 state、原始 bench、dcu_top、roofline 和实际使用的参考证据。`roofline.json` 的 null 是未知；预算是建议，不能据此宣布 compute/memory bound 或 near-peak。
 
-按 [指标与工具](references/dcu_metrics_guide.md) 的步骤过滤设备/kernel/dispatch、选择 sections、打开 XCompute 的 Details/Source 等页面，并对修改前后做同口径比较。自动采集只提供原件与发现信息，命令成功或生成 `.perf` 不代表分析完成；必须把观察到的指标/时间线连接到瓶颈假设与下一项实验。不能用累计 waves 推导驻留，也不能用 waitcnt 数量推导依赖等待比例。
+从 [性能分析入口](references/dcu_metrics_guide.md) 选择对应指南：[XProf/XCompute](references/xprof-xcompute-guide.md) 使用 sections/metrics 与 `.perf` 分析；[hipprof](references/hipprof-guide.md) 使用自己的 trace/PMC/SQTT 参数和产物。命令、格式、指标公式与查看器不能互换。自动采集只提供原件与发现信息，命令成功不代表分析完成；必须把观察到的指标/时间线连接到瓶颈假设与下一项实验，并对修改前后做同口径比较。
 
 1. 用 [策略目录](references/optimization_catalog.md) 和 registry 选 1..3 项，不凑数；每轴最多 2 项，跳过更高优先项写具体理由。
 2. `methods.json` 按 [schema](templates/methods.schema.json)：方法 ID、改什么、为何可能有效、预期证据、精确目标证据、跳过理由。重试先前方法给 `retry_reason`。

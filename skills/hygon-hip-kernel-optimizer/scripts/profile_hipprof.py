@@ -310,7 +310,7 @@ def main() -> None:
     p.add_argument("--pmc-mode", default="pmc", choices=["none", "pmc", "read", "write", "all"])
     p.add_argument("--pmc-type", default="3")
     p.add_argument("--sqtt-type", default="", help="Optional SQTT collection type, e.g. '1', 'stat_stall', 'stat_valu', or 'all'")
-    p.add_argument("--sqtt-output-type", default="", choices=["", "0", "1", "2"], help="Optional hipprof SQTT export type: 0=json, 1=html, 2=perfetto when supported")
+    p.add_argument("--sqtt-output-type", default="", choices=["", "0", "1", "2"], help="Optional hipprof --output-type; verify its effect on SQTT in the installed version")
     p.add_argument("--sqtt-data-dir", default="", help="Optional hipprof -d data directory for SQTT trace artifacts")
     p.add_argument("--no-codeobj-analyze", action="store_true")
     p.add_argument("--promote-if-best", action="store_true")
@@ -341,13 +341,14 @@ def main() -> None:
     os.makedirs(capture_dir, exist_ok=True)
     out_prefix = os.path.join(capture_dir, "capture")
     log_path = os.path.join(iter_dir, f"{rep_name}.log")
+    provenance = {"tool": "hipprof", "profiled_file": solution, "raw_directory": capture_dir,
+                  "backend": _detect_backend(solution)}
 
     if not shutil.which(hipprof_bin) and not os.path.isfile(hipprof_bin):
         top = {
+            **provenance,
             "degraded": True,
             "reason": "hipprof not available",
-            "profiled_file": solution,
-            "backend": _detect_backend(solution),
             "compute": [], "memory": [], "latency": [],
         }
         _write_json(os.path.join(iter_dir, "dcu_top.json"), top)
@@ -365,8 +366,12 @@ def main() -> None:
         required.append("--pmc-type")
     if args.sqtt_type:
         required.extend(["--sqtt", "--sqtt-type"])
+        if args.sqtt_output_type:
+            required.append("--output-type")
+    if args.kernel_name:
+        required.append("--kernel-name")
     if any(flag not in help_text for flag in required):
-        top = {"degraded": True, "reason": "Installed hipprof help does not confirm requested flags", "compute": [], "memory": [], "latency": [], "help": str(Path(capture_dir, "help.txt"))}
+        top = {**provenance, "degraded": True, "reason": "Installed hipprof help does not confirm requested flags", "compute": [], "memory": [], "latency": [], "help": str(Path(capture_dir, "help.txt"))}
         _write_json(os.path.join(iter_dir, "dcu_top.json"), top)
         print(json.dumps(top)); return
     logs = []
@@ -462,10 +467,9 @@ def main() -> None:
 
     degraded = any(rc != 0 for rc in pmc_rc_values) or (args.pmc_mode != "none" and not agg)
     top = {
+        **provenance,
         "degraded": degraded,
         "reason": f"hipprof rc={rc_values}; csv metrics={len(agg)}; see {log_path}" if degraded else None,
-        "profiled_file": solution,
-        "backend": _detect_backend(solution),
         "hipprof_output": out_prefix,
         "hipprof_log": log_path,
         "collections": collection_results,
@@ -486,6 +490,7 @@ def main() -> None:
             json.dump(state, f, indent=2, ensure_ascii=False)
 
     print(json.dumps({
+        "tool": "hipprof",
         "hipprof_output": out_prefix,
         "dcu_top": os.path.join(iter_dir, top_name),
         "degraded": degraded,

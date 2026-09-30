@@ -49,7 +49,7 @@ python <skill>/scripts/run_captured_kernel.py repro/capture/UNIQUE/KERNEL.py --j
 
 **遇到 kernel 优化瓶颈时必须使用性能分析工具。** 调参收益停滞/落入噪声、明显回退或耗时原因不清时，先用 XProf/XCompute（或目标支持的 hipprof/DTK 工具）分析实际目标 kernel，再提出下一轮修改。autotune 最佳时间、源码阅读和静态 ISA 扫描不能代替性能采集与解读。
 
-按 [XProf/XCompute 操作与指标指南](../hygon-hip-kernel-optimizer/references/dcu_metrics_guide.md) 确认 kernel/dispatch 与输入，检查计算、访存、资源和等待；需要解释流水空泡时再采 SQTT 并关联 ISA。工具或权限受阻则记录待采命令、标记诊断未完成，可继续独立的正确性准备，不把推测写成工具结论。
+按 [性能分析入口](../hygon-hip-kernel-optimizer/references/dcu_metrics_guide.md) 选择 [XProf/XCompute](../hygon-hip-kernel-optimizer/references/xprof-xcompute-guide.md) 或 [hipprof](../hygon-hip-kernel-optimizer/references/hipprof-guide.md) 的独立操作步骤，确认 kernel/dispatch 与输入，检查计算、访存、资源和等待。需要解释流水空泡时按当前工具支持的 SQTT 方式采集并关联 ISA，不互换两套参数/格式。工具或权限受阻则记录待采命令、标记诊断未完成，可继续独立的正确性准备，不把推测写成工具结论。
 
 ```bash
 python <skill>/scripts/inspect_triton_meta.py KERNEL.py --json-out meta.json

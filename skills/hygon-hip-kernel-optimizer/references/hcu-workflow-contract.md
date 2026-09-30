@@ -48,7 +48,7 @@ baseline、HIP/CK Tile、Triton 三个 Skill 共用本规范。按问题读取�
 
 ## 5. 性能分析层次与工具
 
-遇到 kernel 优化瓶颈（收益停滞、明显回退、性能偏离预期或原因不明）必须进行工具采集与分析，再据此选择修改。已有同源码、输入、环境且足以回答当前问题的采集可以复用；条件变化或证据不足时重新采集。仅有 benchmark 时间、静态 ISA 或自动脚本成功状态不满足此要求。工具/权限受阻时保留具体原因和待执行命令，标记诊断未完成；无采集模式不能用来绕过瓶颈诊断。具体操作见 [XProf/XCompute 指南](dcu_metrics_guide.md)。
+遇到 kernel 优化瓶颈（收益停滞、明显回退、性能偏离预期或原因不明）必须进行工具采集与分析，再据此选择修改。已有同源码、输入、环境且足以回答当前问题的采集可以复用；条件变化或证据不足时重新采集。仅有 benchmark 时间、静态 ISA 或自动脚本成功状态不满足此要求。工具/权限受阻时保留具体原因和待执行命令，标记诊断未完成；无采集模式不能用来绕过瓶颈诊断。具体操作从 [性能分析入口](dcu_metrics_guide.md) 进入各工具独立指南。
 
 1. 应用系统时间线：找 kernel/launch 热点、CPU、通信、同步和 overlap。先明确优化单 kernel 还是端到端。
 2. 优先使用 XProf 采集、XCompute 分析；现有 hipprof/DTK 路径仍可用。`profile_hcu.py` 默认 auto，XProf 存在时使用其已确认参数；否则进入 hipprof adapter。none 仅表示准备阶段不采集；进入瓶颈诊断应选择可用工具。工具失败应记录具体原因，不等于已完成诊断。
@@ -57,7 +57,7 @@ baseline、HIP/CK Tile、Triton 三个 Skill 共用本规范。按问题读取�
 5. `SQ_WAVES` 累计波数≠驻留 wave。理论 occupancy（资源上限）、实测活跃/驻留、网格是否覆盖 CU、issue/依赖等待分别分析。高 occupancy 不自动等于快，低 occupancy 不自动需要降寄存器。
 6. 原始 PMC 计数≠百分比，静态 waitcnt/branch 次数≠stall fraction。`roofline.py` 未知项输出 null，只给搜索预算建议；不凭猜测峰值自动宣布 near-peak 或停止。
 7. SQTT 用于普通数据不能解释的问题，按具体硬件/工具支持选择 SE/CU 和范围，记录开销与漏采。系统 kernel 时间线、PC sampling、SQTT 内部指令时间线不同；没有确认导出功能时保留原始格式，不许虚构通用 timeline JSON。
-8. 通信/跨进程同步 kernel 的 replay 可能改变正确性；查当前工具关闭 replay 的选项，采用真实多进程测量。缓存/UTCL2 等指标也可能受 profiler/replay 干扰。
+8. 通信/跨进程同步 kernel 的采集可能改变正确性，需保留真实多进程执行条件。XProf 的 replay/SPM/UTCL2 注意事项仅按其手册使用；hipprof 的采集、flush 和同步控制单独查证，不把两套开关视为等价。
 
 ## 6. 实验与归因
 

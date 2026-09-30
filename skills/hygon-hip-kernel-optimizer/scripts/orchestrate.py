@@ -5,7 +5,7 @@ Subcommands:
   setup       Steps 0-2: env check, preflight, init, seed baseline, profile+roofline for iter 1
   open-iter   Prepare an iteration: profile best → dcu_top → roofline → axis budgets
               (Codex then writes K branch kernels + methods.json + analysis.md)
-  close-iter  Steps 3e-3j: branch explore → champion → hipprof champion → ablate → ISA check → update
+  close-iter  Steps 3e-3j: branch explore → champion → profile champion → ablate → ISA check → update
   finalize    Step 4: emit summary.md
 """
 
@@ -118,7 +118,7 @@ def cmd_setup(args):
         "--benchmark", os.path.abspath(args.benchmark),
     ]).returncode
     if rc != 0:
-        print("[warn] hipprof profiling failed or degraded", file=sys.stderr)
+        print("[warn] profiling command failed; inspect the selected tool and artifacts", file=sys.stderr)
 
     # 3b for iter 1: roofline
     rc = _run([
@@ -171,7 +171,7 @@ def cmd_open_iter(args):
         "--benchmark", os.path.abspath(args.benchmark),
     ]).returncode
     if rc != 0:
-        print("[warn] hipprof profiling failed or degraded", file=sys.stderr)
+        print("[warn] profiling command failed; inspect the selected tool and artifacts", file=sys.stderr)
 
     # Roofline
     rc = _run([
@@ -209,7 +209,7 @@ def cmd_open_iter(args):
 
 
 # ---------------------------------------------------------------------------
-# close-iter  —  branch explore → hipprof champion → ablate → ISA check → update
+# close-iter  —  branch explore → profile champion → ablate → ISA check → update
 # ---------------------------------------------------------------------------
 
 def cmd_close_iter(args):
@@ -271,7 +271,7 @@ def cmd_close_iter(args):
         }, indent=2))
         sys.exit(2)
 
-    # Step 3g: Profile champion with hipprof
+    # Step 3g: Profile champion with the selected HCU tool
     rc = _run([
         sys.executable, str(SCRIPT_DIR / "profile_hcu.py"),
         "--state", state_path,
@@ -281,7 +281,7 @@ def cmd_close_iter(args):
         "--promote-if-best",
     ]).returncode
     if rc != 0:
-        print("[warn] hipprof profiling of champion failed", file=sys.stderr)
+        print("[warn] champion profiling failed; inspect the selected tool and artifacts", file=sys.stderr)
 
     # Step 3h: Ablation attribution (optional — runs if ablation kernels exist)
     attribution_path = os.path.join(iter_dir, "attribution.json")

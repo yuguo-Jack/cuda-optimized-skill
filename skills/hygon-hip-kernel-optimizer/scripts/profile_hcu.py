@@ -35,9 +35,10 @@ def main():
         source = state["best_file"]
     else:
         source = json.loads((folder / "branch_results.json").read_text(encoding="utf-8"))["champion"]["kernel"]
-    out = folder / (args.which + ".xprof") / datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    tool = "none" if which == "none" else "xprof"
+    out = folder / (args.which + "." + tool) / datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     out.mkdir(parents=True)
-    result = {"tool": "xprof", "profiled_file": source, "raw_directory": str(out),
+    result = {"tool": tool, "requested_tool": which, "profiled_file": source, "raw_directory": str(out),
               "degraded": True, "compute": [], "memory": [], "latency": [],
               "reason": "Raw .perf needs dispatch-specific XCompute review and metric definitions; no automatic utilization conversion"}
     try:

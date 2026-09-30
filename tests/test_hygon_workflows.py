@@ -382,6 +382,7 @@ def test_hipprof_uses_selected_champion_not_stale_extension(tmp_path):
     with patch.object(sys, "argv", ["profile", "--state", state, "--iter", "1", "--which", "kernel"]), patch.object(mod.shutil, "which", return_value=None):
         mod.main()
     assert json.loads((folder / "dcu_top.json").read_text())["profiled_file"] == str(winner)
+    assert json.loads((folder / "dcu_top.json").read_text())["tool"] == "hipprof"
 
 
 def test_capture_key_separates_same_name_different_layouts():
@@ -405,3 +406,66 @@ def test_captured_timeout_replaces_previous_success_json(tmp_path):
             mod.main()
     assert exc.value.code == 124
     assert json.loads(output.read_text())["returncode"] == 124
+
+
+def test_xprof_command_and_artifact_identity(tmp_path):
+    mod = load("profile_hcu")
+    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "best_file": "kernel.hip", "profiler": "xprof"})
+    commands = []
+    def run(command, **kwargs):
+        commands.append(command)
+        if "--help" in command:
+            return mod.subprocess.CompletedProcess(command, 0, "--sections --output-dir", "")
+        Path(command[command.index("--output-dir")+1], "capture.perf").write_text("raw")
+        return mod.subprocess.CompletedProcess(command, 0, "", "")
+    with patch.object(sys, "argv", ["profile", "--state", state, "--iter", "1", "--which", "best_input"]), patch.object(mod.shutil, "which", return_value="xprof"), patch.object(mod.subprocess, "run", side_effect=run):
+        mod.main()
+    result = json.loads((tmp_path / "iterv1/dcu_top.json").read_text())
+    assert result["tool"] == "xprof"
+    assert any(p.endswith("capture.perf") for p in result["artifacts"])
+    assert result["degraded"] is True  # Captured raw data still needs XCompute review.
+    assert "--sections" in commands[-1] and "--pmc" not in commands[-1]
+
+
+def test_no_profiling_is_not_reported_as_xprof(tmp_path):
+    mod = load("profile_hcu")
+    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "best_file": "kernel.hip", "profiler": "none"})
+    with patch.object(sys, "argv", ["profile", "--state", state, "--iter", "1", "--which", "best_input"]), patch.object(mod.subprocess, "run") as run:
+        mod.main()
+    run.assert_not_called()
+    result = json.loads((tmp_path / "iterv1/dcu_top.json").read_text())
+    assert result["tool"] == "none" and result["degraded"] is True
+
+
+def test_auto_without_xprof_routes_only_to_hipprof(tmp_path):
+    mod = load("profile_hcu")
+    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "profiler": "auto"})
+    with patch.object(sys, "argv", ["profile", "--state", state, "--iter", "1", "--which", "best_input"]), patch.object(mod.shutil, "which", return_value=None), patch.object(mod.subprocess, "call", return_value=7) as call:
+        with pytest.raises(SystemExit) as exc:
+            mod.main()
+    assert exc.value.code == 7
+    assert Path(call.call_args.args[0][1]).name == "profile_hipprof.py"
+    assert "--sections" not in call.call_args.args[0]
+
+
+def test_hipprof_command_does_not_use_xprof_switches():
+    mod = load("profile_hipprof")
+    proc = mod.subprocess.CompletedProcess([], 0, "", "")
+    with patch.object(mod.subprocess, "run", return_value=proc) as run:
+        mod._run_hipprof(hipprof_bin="hipprof", out_prefix="out", benchmark_py="bench.py", solution="kernel.hip",
+                        dims={}, ptr_size=0, warmup=1, repeat=1, kernel_name="target", collect_flag="--pmc", pmc_type="3")
+    command = run.call_args.args[0]
+    assert "--pmc" in command and "--pmc-type" in command and "--kernel-name" in command
+    assert not {"--sections", "--output-dir", "--kernels", "--enable-sqtt"}.intersection(command)
+
+
+def test_summary_preserves_per_iteration_tool_identity(tmp_path):
+    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "profiler": "auto"})
+    for i, tool in [(1, "xprof"), (2, "hipprof"), (3, "none")]:
+        write(tmp_path / f"iterv{i}/dcu_top.json", {"tool": tool, "raw_directory": f"raw_{tool}", "degraded": True})
+    write(tmp_path / "iterv4/dcu_top.json", {"raw_directory": "legacy"})
+    output = tmp_path / "summary.md"
+    load("summarize").render(state, str(output))
+    report = output.read_text(encoding="utf-8")
+    for i, tool in [(1, "xprof"), (2, "hipprof"), (3, "none"), (4, "not_recorded")]:
+        assert f"| iterv{i} | {tool} |" in report

@@ -18,6 +18,8 @@ hygon_tmp/                      # 不提交的采集、缓存、安装备份
 
 核心规范是 [HCU 工作契约](skills/hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md)，程序产物见 [实验接口](skills/hygon-hip-kernel-optimizer/references/experiment-artifacts.md)。每个 Skill 的 SKILL.md 是给 Agent 的入口。
 
+性能分析分别使用 [XProf/XCompute 指南](skills/hygon-hip-kernel-optimizer/references/xprof-xcompute-guide.md) 和 [hipprof 指南](skills/hygon-hip-kernel-optimizer/references/hipprof-guide.md)，命令、输出格式、指标定义与查看器按各自版本核对。
+
 ## 工作原理
 
 1. 用户需求与当前代码形成精度/布局/版本/性能契约。

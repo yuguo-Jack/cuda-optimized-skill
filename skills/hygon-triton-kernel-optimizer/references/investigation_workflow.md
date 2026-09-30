@@ -18,7 +18,7 @@
 
 ## 4. 差异与验证
 
-遇到 kernel 优化瓶颈必须先采集分析，不能只继续 autotune 或扫描 ISA。使用共享的 [XProf/XCompute 指南](../../hygon-hip-kernel-optimizer/references/dcu_metrics_guide.md)：
+遇到 kernel 优化瓶颈必须先采集分析，不能只继续 autotune 或扫描 ISA。从 [性能分析入口](../../hygon-hip-kernel-optimizer/references/dcu_metrics_guide.md) 选定工具。以下 2–3 项是 [XProf/XCompute](../../hygon-hip-kernel-optimizer/references/xprof-xcompute-guide.md) 的操作；使用 hipprof 时改按 [hipprof 指南](../../hygon-hip-kernel-optimizer/references/hipprof-guide.md)，不能套用 XCompute 的视图和参数：
 
 1. 将生成文件、源码/代码对象、实际 kernel 名、shape/stride/config 与 dispatch 对应起来。初始化、JIT、warmup、输入捕获产生的 kernel 不作为目标；新运行需重新确认 dispatch 编号。
 2. 对代表性瓶颈用例采 speed-of-light/compute/memory/occupancy，再按现象补 scheduler/wave-state；在 XCompute 中确认到底是计算、内存、资源还是等待问题。

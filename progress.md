@@ -36,3 +36,11 @@
 - HIP/Triton 入口、共同规范和报告模板明确瓶颈时必须工具采集并分析；收益停滞、回退或原因不明时先诊断，再决定修改。无法采集时记录原因/命令和未完成状态。
 - 扩充共享指标指南：设备/kernel/dispatch过滤、定向sections、XCompute Summary/Details/Raw/Source/Wavefront/Inst/Baseline、occupancy区别、SQTT范围、replay off下SPM限制、UTCL2采集干扰及前后验证。baseline仅增加进入优化阶段的导航。
 - 三个Skill格式与13份Markdown相对链接检查通过，git diff --check通过；已备份同步Codex，50文件SHA256一致。备份目录hygon_tmp/skill-backups/20260930_110205_818241；仅文档变化，未运行硬件采集。
+
+## 后续修订：工具内容与产物分离
+
+- 核对DTK 26.04.1 hipprof手册及25.04.1 SQTT专项资料，与XProf/XCompute指南分开。通用hipprof手册的output-type不能直接证明SQTT格式，更不能推导XProf导出能力。
+- 新增独立xprof-xcompute-guide.md、hipprof-guide.md，共用dcu_metrics_guide只保留选型/通用解释；入口和Triton流程按工具导航。
+- XProf/hipprof摘要标记tool，none不再误写xprof；编排警告使用实际选择语境，报告逐轮列出工具/原件。旧无标记产物保持not_recorded，不能猜测。
+- 41项Hygon CPU回归通过，包含新增路由/参数/工具身份测试；三个Skill格式、15份Markdown链接、compileall和两个采集CLI帮助及diff检查通过。没有HCU硬件采集。
+- 同步Codex安装目录，52文件SHA256一致；备份hygon_tmp/skill-backups/20260930_110944_994939。知识库未修改。

@@ -114,9 +114,28 @@ def render(state_path: str, out_path: str) -> None:
     lines.append("")
     lines.append(f"- GPU: **{gpu.get('name', '?')}** ({gpu.get('gfx_arch') or gpu.get('gcn_arch') or '?'})")
     lines.append(f"- hipcc: `{env.get('hipcc',{}).get('version','?')}`")
+    lines.append(f"- Profiler selection: `{state.get('profiler', 'not_recorded')}` (actual tool recorded below)")
+    lines.append(f"- XProf discovered: `{env.get('xprof',{}).get('path')}`; XCompute discovered: `{env.get('xcompute',{}).get('path')}`")
     lines.append(f"- hipprof: `{env.get('hipprof',{}).get('version','?')}` (pmc_available={env.get('hipprof',{}).get('pmc_available')})")
     lines.append(f"- dccobjdump: `{env.get('dccobjdump',{}).get('version','?')}`")
     lines.append(f"- CK Tile include: `{env.get('ck_tile',{}).get('include_dir','-')}`")
+    lines.append("")
+
+    lines.append("## Profiling artifacts by tool")
+    lines.append("")
+    lines.append("| Iteration | Tool | Profiled source | Raw artifacts | Adapter degraded |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    for path in sorted(Path(run_dir).glob("iterv*/dcu_top.json")):
+        try:
+            profile = _read(str(path))
+            lines.append(f"| {path.parent.name} | {profile.get('tool', 'not_recorded')} | "
+                         f"{profile.get('profiled_file', '?')} | "
+                         f"{profile.get('raw_directory') or profile.get('hipprof_output') or path} | "
+                         f"{profile.get('degraded', 'unknown')} |")
+        except (OSError, ValueError, AttributeError):
+            lines.append(f"| {path.parent.name} | unreadable | ? | {path} | unknown |")
+    lines.append("")
+    lines.append("No tool field in a historical artifact means its command must be checked. XProf .perf and hipprof outputs are not interchangeable; extraction status does not prove bottleneck analysis is complete.")
     lines.append("")
 
     lines.append("## Unverified method attribution")
@@ -179,7 +198,7 @@ def render(state_path: str, out_path: str) -> None:
     lines.append("")
     lines.append("_Agent will fill this section in:_")
     lines.append("")
-    lines.append("- Which optimizations moved the needle and why (tie to hipprof/PMC/SQTT + attribution evidence).")
+    lines.append("- Which optimizations moved the needle and why (name the actual tool/version, native artifacts, metric definitions, and attribution evidence).")
     lines.append("- Which ones were no-ops or regressions, and plausible reasons.")
     lines.append("- How roofline gaps shifted across iterations (did the bound type change?).")
     lines.append("- Next steps if the user wants more iterations.")
