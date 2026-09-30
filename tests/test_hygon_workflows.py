@@ -164,7 +164,7 @@ def test_invalid_ablation_does_not_prove_essential(tmp_path):
     ab.write_text("bad")
     state = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "ref_file": str(ref)})
     mod = load("ablate")
-    with patch.object(mod, "_bench_kernel", return_value={"error": "bad"}):
+    with patch.object(mod, "compare", return_value={"assessment": {"valid": False, "reason": "bad"}}):
         assert mod.run(state, 1)["attributions"][0]["contributed"] is None
 
 
@@ -293,7 +293,7 @@ def test_method_selection_is_not_gfx_numeric_inheritance(tmp_path):
     assert not ok and any("gfx946" in error for error in errors)
 
 
-def test_state_promotes_kernel_without_fabricating_attribution(tmp_path):
+def test_state_rejects_historical_timing_and_unpaired_attribution(tmp_path):
     mod = load("state")
     ref, kernel = tmp_path / "ref.py", tmp_path / "kernel.hip"
     ref.write_text("oracle")
@@ -312,7 +312,8 @@ def test_state_promotes_kernel_without_fabricating_attribution(tmp_path):
     args.sass_check = write(tmp_path / "isa_check.json", {"checks": [{"method_id": "m", "verified": True}]})
     mod.cmd_update(args)
     saved = json.loads(Path(state_path).read_text())
-    assert saved["best_metric_ms"] == 1.
+    assert saved["best_metric_ms"] == 2.
+    assert saved["history"][0]["status"] == "unconfirmed"
     assert len(saved["unverified_methods"]) == 1
     assert saved["effective_methods"] == []
     with pytest.raises(SystemExit):
@@ -325,7 +326,7 @@ def test_state_promotes_kernel_without_fabricating_attribution(tmp_path):
                        "artifact": "isa.txt", "artifact_sha256": load("experiment").file_sha256(evidence)}]})
     args.iter = 2
     mod.cmd_update(args)
-    assert len(json.loads(Path(state_path).read_text())["effective_methods"]) == 1
+    assert len(json.loads(Path(state_path).read_text())["effective_methods"]) == 0
 
 
 def test_branch_explore_runs_processes_and_selects_only_valid_candidate(tmp_path):
@@ -597,8 +598,12 @@ def test_cpu_run_lifecycle_with_custom_benchmark_and_matrix(tmp_path):
     benchmark.write_text('''import argparse,hashlib,json
 from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('source');p.add_argument('--ref');p.add_argument('--json-out')
-a,_=p.parse_known_args();ms=float(Path(a.source).read_text());digest=lambda x:hashlib.sha256(Path(x).read_bytes()).hexdigest()
+for flag,default in [('--seed',42),('--warmup',10),('--repeat',20),('--ptr-size',0)]: p.add_argument(flag,type=int,default=default)
+a,rest=p.parse_known_args();ms=float(Path(a.source).read_text());digest=lambda x:hashlib.sha256(Path(x).read_bytes()).hexdigest()
+dims={item[2:].split('=')[0]:int(item.split('=')[1]) for item in rest}
 Path(a.json_out).write_text(json.dumps({'source_sha256':digest(a.source),'reference_sha256':digest(a.ref),
+'inputs_sha256':'synthetic fixed inputs','gpu_index':0,'gpu_name':'CPU MOCK','arch':'gfx938',
+'signature':[{'name':'x','type':'fixture'}],'dims':dims,'seed':a.seed,'warmup':a.warmup,'repeat':a.repeat,'ptr_size_override':a.ptr_size,
 'correctness':{'checked':True,'passed':True},'kernel':{'average_ms':ms,'samples_ms':[ms]*5}}))
 ''', encoding="utf-8")
     workloads = write(tmp_path / "workloads.json", {"cases": [
@@ -626,6 +631,9 @@ Path(a.json_out).write_text(json.dumps({'source_sha256':digest(a.source),'refere
     assert state["best_suite_score"] == pytest.approx(2)
     assert state["effective_methods"] == [] and len(state["unverified_methods"]) == 1
     assert len(state["history"][0]["workload_suite"]["cases"]) == 3
+    confirmation = json.loads((it / "confirmation/comparison.json").read_text())
+    assert len(confirmation["pairs"]) == 12
+    assert state["history"][0]["confirmation"]["round_speedups"] == [2.] * 4
     report = cli("orchestrate.py", "finalize", "--run-dir", run_dir)
     assert report.returncode == 0, report.stderr
     assert "Frozen workload weighted speedup" in (run_dir / "summary.md").read_text(encoding="utf-8")
@@ -664,3 +672,257 @@ def test_triton_collection_preserves_colliding_names_and_avoids_cache_recursion(
     with pytest.raises(ValueError, match="source cache"):
         mod.collect(args)
     assert not Path(args.out).exists()
+
+
+def comparison_fixture(tmp_path, ratios=(2., 2., 2., 2.), context_change=None):
+    mod = load("paired_measurement")
+    candidate, control, ref, benchmark = [tmp_path / n for n in ("candidate.hip", "control.hip", "ref.py", "bench.py")]
+    for p in (candidate, control, ref, benchmark):
+        p.write_text(p.name)
+    state = {"run_dir": str(tmp_path), "best_file": str(control), "ref_file": str(ref),
+             "benchmark_file": str(benchmark), "dims": {"N": 10}, "ptr_size": 10}
+    orders = []
+    def measure(cmd, output, log):
+        r = int(Path(output).relative_to(tmp_path / "paired").parts[0])
+        role = Path(output).stem
+        orders.append(role)
+        source = control if role == "control" else candidate
+        ms = ratios[r] if role == "control" else 1.
+        b = good_bench(source, ref)
+        b.update(kernel=load("experiment").timing_stats([ms] * 5), inputs_sha256="fixture inputs",
+                 gpu_index=0, gpu_name="CPU MOCK", arch="gfx938", signature=[{"name": "x", "type": "f32"}],
+                 dims={"N": 10}, seed=42, warmup=10, repeat=20, ptr_size_override=10)
+        if role == "candidate" and context_change:
+            b.update(context_change)
+        write(Path(output), b)
+        return b
+    with patch.object(mod, "run_json", side_effect=measure):
+        report = mod.compare(state, str(candidate), str(control), str(benchmark), tmp_path / "paired")
+    return mod, report, state, candidate, control, benchmark, orders
+
+
+def test_fresh_comparison_alternates_and_rechecks_raw_evidence(tmp_path):
+    mod, report, state, candidate, control, benchmark, orders = comparison_fixture(tmp_path)
+    assert orders == ["control", "candidate", "candidate", "control"] * 2
+    assert report["assessment"]["improved"] is True
+    artifact = Path(report["pairs"][0]["candidate"]["artifact"])
+    artifact.write_text("{}")
+    assert not mod.assess(report, state, candidate, control, benchmark)["valid"]
+
+
+@pytest.mark.parametrize("ratios,direction", [((1.01,)*4, "inconclusive"), ((1.1, 1.1, .9, 1.1), "inconclusive"),
+                                               ((.8,)*4, "harmful")])
+def test_noisy_or_opposite_comparisons_do_not_promote(tmp_path, ratios, direction):
+    report = comparison_fixture(tmp_path, ratios)[1]
+    assert not report["assessment"]["improved"]
+    assert report["assessment"]["direction"] == direction
+
+
+@pytest.mark.parametrize("change", [{"inputs_sha256": "different"}, {"arch": "gfx946"},
+                                      {"warmup": 5}, {"dims": {"N": 5}}, {"gpu_index": 1}])
+def test_comparison_rejects_changed_inputs_device_or_protocol(tmp_path, change):
+    assert not comparison_fixture(tmp_path, context_change=change)[1]["assessment"]["valid"]
+
+
+def test_comparison_requires_metadata_even_if_both_legacy_results_match(tmp_path):
+    mod, report, state, candidate, control, benchmark, _ = comparison_fixture(tmp_path)
+    for row in report["pairs"]:
+        for role in ("candidate", "control"):
+            path = Path(row[role]["artifact"])
+            b = json.loads(path.read_text()); b.pop("inputs_sha256")
+            write(path, b); row[role]["sha256"] = load("experiment").file_sha256(path)
+    report["assessment"]["improved"] = True
+    assert not mod.assess(report, state, candidate, control, benchmark)["valid"]
+
+
+def test_state_promotes_only_confirmed_comparison(tmp_path):
+    _, report, state, candidate, control, benchmark, _ = comparison_fixture(tmp_path)
+    state.update(best_metric_ms=2., selected_methods=[], effective_methods=[], ineffective_methods=[],
+                 implementation_failed_methods=[], history=[], roofline_history=[], frontier=[])
+    state_path = write(tmp_path / "state.json", state)
+    b = good_bench(candidate, state["ref_file"]); b["confirmation"] = report
+    bench = write(tmp_path / "bench.json", b)
+    methods = write(tmp_path / "methods.json", {"methods": [{"id": "memory.lds_tiling", "axis": "memory"}]})
+    args = argparse.Namespace(state=state_path, iter=1, kernel=str(candidate), bench=bench, methods_json=methods,
+                              skip_validation=True, allow_ineffective=False, attribution=None, sass_check=None, retries=0)
+    load("state").cmd_update(args)
+    saved = json.loads(Path(state_path).read_text())
+    assert saved["best_file"] == str(candidate) and saved["history"][0]["status"] == "improved"
+    assert saved["best_source_sha256"] == load("experiment").file_sha256(candidate)
+    assert len(saved["unverified_methods"]) == 1
+    candidate.write_text("changed after closing")
+    with pytest.raises(SystemExit, match="best_file changed"):
+        load("experiment").check_frozen_inputs(saved)
+
+
+def test_output_poison_detects_unwritten_zero_and_padding_damage():
+    mod = load("benchmark")
+    state = {"tensor_inputs": {"x": torch.ones(5), "out": torch.zeros(5)},
+             "pristine_tensors": {"x": torch.ones(5), "out": torch.zeros(5)}, "output_specs": [("out", "float*")]}
+    reference = {"x": torch.ones(5), "out": torch.zeros(5)}
+    extents = mod._prepare_validation(state, reference, {"out": 3})
+    reference["out"][:3] = 0.
+    assert not mod._validate_contract(state, reference, extents, 0., 0.)
+    state["tensor_inputs"]["out"][:3] = 0.
+    assert mod._validate_contract(state, reference, extents, 0., 0.)
+    state["tensor_inputs"]["out"][4] = 1.
+    assert not mod._validate_contract(state, reference, extents, 0., 0.)
+    state["tensor_inputs"]["out"][4] = 0.
+    state["tensor_inputs"]["x"][0] = 2.
+    assert not mod._validate_contract(state, reference, extents, 0., 0.)
+
+
+def test_output_extent_and_input_fingerprint():
+    mod = load("benchmark")
+    state = {"tensor_inputs": {"out": torch.zeros(5, dtype=torch.int32)},
+             "output_specs": [("out", "int*")], "reference_inputs": {"x": torch.arange(4), "N": 4}}
+    ref = {"out": torch.zeros(5, dtype=torch.int32)}
+    for extent in (-1, 6, True):
+        with pytest.raises(ValueError):
+            mod._prepare_validation(state, ref, {"out": extent})
+    mod._prepare_validation(state, ref, {"out": 5})
+    assert not torch.equal(state["tensor_inputs"]["out"], ref["out"])
+    before = mod._input_fingerprint(state)
+    state["reference_inputs"]["x"][0] = 10
+    assert mod._input_fingerprint(state) != before
+
+
+def test_isa_parser_excludes_comments_macros_and_other_symbols(tmp_path):
+    source = '''.type first,@function
+.type second,@function
+.macro helper
+ v_mmac_f32_16x16x16_bf16 v0, v1, v2, v3
+.endm
+first:
+ // v_mmac_f32_16x16x16_bf16 ignored
+ .LBB0:
+ 000000: D0000000 buffer_load_dword v0, v1, s[0:3]
+ s_waitcnt_vbcnt 0 ; matrix_load_b16 is a comment
+.size first, .-first
+second:
+ v_mmac_scale_f32_16x16x64_fp4 v0, v1, v2, v3
+'''
+    parser = load("isa")
+    assert len(parser.parse(source)["instructions"]) == 3
+    assert [r["mnemonic"] for r in parser.parse(source, "first")["instructions"]] == ["buffer_load_dword", "s_waitcnt_vbcnt"]
+    assert parser.parse(source, "absent")["scope"] == "unresolved_symbol"
+    path = tmp_path / "first.amdgcn"; path.write_text(source)
+    result = load("scan_amdgcn", TRITON).scan(str(path), "first")
+    assert result["totals"]["v_mmac"] == 0
+    assert result["totals"]["s_waitcnt_vbcnt"] == 1
+    assert load("scan_amdgcn", TRITON).scan(str(path), "absent")["unresolved"]
+
+
+def test_isa_scan_never_treats_builtin_or_notes_as_machine_instructions():
+    text = '// buffer_load_dword v0, v1 lds\n__builtin_amdgcn_raw_buffer_load_lds(p);\nmetadata: v_mmac_f32\n'
+    sig = json.loads((HIP.parent / "references/dcu_isa_signatures.json").read_text(encoding="utf-8"))
+    assert not load("sass_check").check_method("memory.global_to_lds_async", text, sig)["pattern_presence"]
+    assert not load("isa").parse(text)["instructions"]
+
+
+def test_hex_gfx_identifier_and_coupled_independent_deltas(tmp_path):
+    mod = load("validate_methods")
+    assert mod._parse_gfx_arch("gfx92a:sramecc+") == "gfx92a"
+    assert mod._parse_gfx_arch("sm_90") == ""
+    registry = {"methods": {"a": {"axis": "memory", "priority": 1}, "b": {"axis": "memory", "priority": 2}},
+                "coupled_methods": [{"ids": ["a", "b"]}]}
+    state = write(tmp_path / "state.json", {})
+    reg = write(tmp_path / "reg.json", registry)
+    data = {"methods": [{"id": "a", "axis": "memory", "priority": 1}, {"id": "b", "axis": "memory", "priority": 2}]}
+    path = write(tmp_path / "methods.json", data)
+    assert not mod.validate(path, state, reg)[0]
+    data["coupling_reviews"] = [{"ids": ["a", "b"], "separate_deltas": "separate loader and layout edits",
+                                 "validation_plan": "semantic checks followed by isolated ablations"}]
+    write(Path(path), data)
+    assert mod.validate(path, state, reg)[0]
+
+
+def test_compile_records_exact_binary_not_neighbor(tmp_path):
+    mod = load("benchmark")
+    source, output = tmp_path / "kernel.hip", tmp_path / "measured.so"
+    source.write_text("source")
+    def compiler(cmd, **kwargs):
+        Path(cmd[cmd.index("-o") + 1]).write_bytes(b"measured binary")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    with patch.object(mod.subprocess, "run", side_effect=compiler):
+        build = mod.compile_hip(str(source), str(output), "gfx938", "hipcc", "hip")
+    assert build["binary_sha256"] == load("experiment").file_sha256(output)
+    assert build["source_sha256"] == load("experiment").file_sha256(source)
+    assert "--offload-arch=gfx938" in build["command"]
+
+
+def test_paired_matrix_cannot_hide_case_regression(tmp_path):
+    mod, _, state, candidate, control, benchmark, _ = comparison_fixture(tmp_path)
+    state['workloads'] = [{'id':'fast','dims':{'N':10},'seeds':[42],'weight':9},
+                          {'id':'regression','dims':{'N':10},'seeds':[42],'weight':1}]
+    def measure(cmd, output, log):
+        role = Path(output).stem; case = Path(output).parent.parent.name
+        source = control if role == 'control' else candidate
+        ms = (2. if case == 'fast' else .9) if role == 'control' else 1.
+        b=good_bench(source,state['ref_file']); b.update(kernel=load('experiment').timing_stats([ms]*5),
+            inputs_sha256='fixed',gpu_index=0,gpu_name='CPU MOCK',arch='gfx938',signature=[{'type':'f32'}],
+            dims={'N':10},seed=42,warmup=10,repeat=20,ptr_size_override=10)
+        write(Path(output),b); return b
+    with patch.object(mod,'run_json',side_effect=measure):
+        report=mod.compare(state,str(candidate),str(control),str(benchmark),tmp_path/'matrix')
+    a=report['assessment']
+    assert a['valid'] and all(r>1.5 for r in a['round_speedups'])
+    assert not a['case_regression_guards_passed'] and not a['improved']
+
+
+def test_valid_paired_ablation_and_mechanism_are_both_required(tmp_path):
+    _, report, state, candidate, control, _, _ = comparison_fixture(tmp_path)
+    state.update(best_metric_ms=2.,selected_methods=[],effective_methods=[],ineffective_methods=[],
+                 implementation_failed_methods=[],history=[],roofline_history=[],frontier=[])
+    state_path=write(tmp_path/'state.json',state)
+    b=good_bench(candidate,state['ref_file']); b['confirmation']=report
+    bench=write(tmp_path/'bench.json',b)
+    mid='memory.lds_tiling'
+    methods=write(tmp_path/'methods.json',{'methods':[{'id':mid,'axis':'memory'}]})
+    attribution=write(tmp_path/'attr.json',{'champion_source_sha256':b['source_sha256'],
+        'attributions':[{'method_id':mid,'ablated_kernel':str(control),'comparison':report}]})
+    evidence=tmp_path/'iterv1/isa.txt';evidence.parent.mkdir();evidence.write_text('synthetic mechanism fixture')
+    write(evidence.with_name('mechanism-review.json'),{'source_sha256':b['source_sha256'],
+        'methods':[{'id':mid,'status':'verified','explanation':'Fixture for provenance and attribution gates',
+                    'artifact':'isa.txt','artifact_sha256':load('experiment').file_sha256(evidence)}]})
+    args=argparse.Namespace(state=state_path,iter=1,kernel=str(candidate),bench=bench,methods_json=methods,
+                           skip_validation=True,allow_ineffective=False,attribution=attribution,sass_check=None,retries=0)
+    load('state').cmd_update(args)
+    assert len(json.loads(Path(state_path).read_text())['effective_methods'])==1
+
+
+def test_boolean_output_sentinels_remain_distinct():
+    mod=load('benchmark')
+    state={'tensor_inputs':{'out':torch.zeros(4,dtype=torch.bool)},'output_specs':[('out','bool')]}
+    ref={'out':torch.zeros(4,dtype=torch.bool)}
+    mod._prepare_validation(state,ref,None)
+    assert not torch.equal(state['tensor_inputs']['out'],ref['out'])
+
+
+def test_duplicate_case_seeds_rejected(tmp_path):
+    path=write(tmp_path/'cases.json',{'cases':[{'id':'same','dims':{},'seeds':[42,42]}]})
+    with pytest.raises(ValueError,match='unique'):
+        load('workload_suite').load_cases(path)
+
+
+def test_generated_matmul_adapter_declares_logical_extent():
+    analysis={'chosen_reference':{'name':'reference','args':['A','B']},
+              'signature_hint':{'tensor_args':['A','B'],'output_args':[],'return_style':'return'},
+              'dims':{'M':3,'N':5,'K':7}}
+    text=load('generate_baseline',BASE)._adapter_py(analysis,'C','matmul','original.py')
+    node=next(n for n in ast.parse(text).body if isinstance(n,ast.FunctionDef) and n.name=='output_extents')
+    namespace={};exec(compile(ast.Module(body=[node],type_ignores=[]),'<fixture>','exec'),namespace)
+    assert namespace['output_extents'](M=3,N=5,K=7)=={'C':15}
+
+
+def test_sass_check_rejects_neighbor_binary_without_build_record(tmp_path):
+    it=tmp_path/'iterv1';it.mkdir()
+    source,ref=it/'kernel.hip',tmp_path/'ref.py'
+    source.write_text('source');ref.write_text('oracle');source.with_suffix('.so').write_bytes(b'unmeasured')
+    write(it/'methods.json',{'methods':[]});write(it/'bench.json',good_bench(source,ref))
+    state=write(tmp_path/'state.json',{'run_dir':str(tmp_path)})
+    mod=load('sass_check')
+    with patch.object(mod,'_dump_isa') as dump:
+        result=mod.run(state,1)
+    dump.assert_not_called()
+    assert result['error']=='measured_binary_missing_or_changed'

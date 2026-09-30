@@ -1,23 +1,17 @@
 {
   "$note": "Heuristic instruction discovery only. Symbol/target/build identity and semantic mechanism require separate review; missing patterns are inconclusive.",
-  "$version": "2.0",
+  "$version": "2.1",
   "methods": {
     "compute.mmac_tensor_core": {
       "isa_patterns": [
-        "\\bv_mmac(?:_[a-z0-9]+)+\\b",
-        "\\bmmop\\b"
+        "\\bv_mmac(?:_[a-z0-9]+)+\\b"
       ],
       "require_any": true,
-      "note": "Hygon HCU matrix core. Source-backed HCU/AMD-named builtins are implementation routes; final proof is v_mmac/MMOP ISA, not source names."
+      "note": "HCU matrix instructions are discovery evidence. Review actual v_mmac operand/layout semantics and scoped measurements; builtin names alone prove no lowering."
     },
     "compute.mixed_precision_fp8_bf8": {
       "isa_patterns": [
-        "\\b(?:fp8|bf8|tf32)\\b",
-        "\\bv_cvt(?:_[a-z0-9]+)*(?:fp8|bf8|tf32)",
-        "\\bcvt(?:_[a-z0-9]+)*(?:fp8|bf8|tf32)",
-        "\\b(?:v_)?cvt_pk(?:_[a-z0-9]+)*(?:fp8|bf8|bf16|f16)",
-        "\\b(?:v_)?cvt_sr(?:_[a-z0-9]+)*(?:fp8|bf8)",
-        "\\bv_mmac_[a-z0-9_]*(?:fp8|bf8|tf32)[a-z0-9_]*\\b"
+        "\\bv_(?:cvt|mmac)[a-z0-9_]*(?:fp8|bf8|tf32)[a-z0-9_]*\\b"
       ],
       "require_any": true,
       "note": "Legacy FP8/BF8/TF32 strategy. gfx946 scale-aware FP4/FP6 requires its separate scoped strategy and exact compiler validation."
@@ -99,20 +93,20 @@
     },
     "memory.global_to_lds_async": {
       "isa_patterns": [
-        "\\braw_buffer_load_lds\\b",
-        "\\bbuffer_load_[a-z0-9x_]+\\b.*\\blds\\b",
-        "\\bglobal_load_[a-z0-9x_]+\\b.*\\blds\\b"
+        "\\b(?:buffer|global)_load_[a-z0-9x_]+\\b.*\\blds\\b"
       ],
       "require_any": true,
-      "note": "Direct global/buffer-to-LDS staging path. raw_buffer_load_lds is an ISA/staging signature; use source-backed builtin wrappers only after target compile."
+      "note": "Builtin/IR names are source clues, not machine mnemonics. Confirm exact target lowering, wait domain and LDS visibility.",
+      "source_patterns": [
+        "\\b__builtin_amdgcn_raw_buffer_load_lds\\b"
+      ]
     },
     "memory.matrix_load_mls": {
       "isa_patterns": [
-        "\\bmatrix_load(?:_[a-z0-9]+)*\\b",
-        "\\bmls\\b"
+        "\\bmatrix_load(?:_[a-z0-9]+)+\\b"
       ],
       "require_any": true,
-      "note": "Verified by target ISA, CK Tile/HCU MLS source diff, correctness, and timing. Source-backed matrix-load builtins must compile before use."
+      "note": "Exact MLS forms differ across gfx936/938/946; see hcu-isa-guide.md. Names do not prove compatible descriptors/layouts."
     },
     "memory.ds_read_matrix_layout": {
       "isa_patterns": [
@@ -162,10 +156,11 @@
     },
     "latency.waitcnt_pipeline": {
       "isa_patterns": [
-        "\\bs_waitcnt\\b.*\\b(?:vmcnt|lgkmcnt|expcnt)\\("
+        "\\bs_waitcnt\\b.*\\b(?:vmcnt|lgkmcnt|expcnt)\\(",
+        "\\bs_waitcnt_vbcnt\\b"
       ],
       "require_any": true,
-      "note": "Wait-count scheduling should be visible in ISA."
+      "note": "Wait domain follows the exact operation and target, including documented bypass paths; static wait sites do not measure stalls."
     },
     "latency.reduce_barrier": {
       "isa_patterns": [
@@ -220,27 +215,37 @@
     "latency.sqtt_stall_triage": {
       "isa_patterns": [],
       "require_any": true,
-      "note": "Diagnostic method; verified by hipprof SQTT artifacts."
+      "note": "Diagnostic only; use supported XProf/XCompute or hipprof SQTT artifacts with actual tool and kernel identity."
     },
     "compute.shaobo_mx_low_precision": {
-      "isa_patterns": [],
+      "isa_patterns": [
+        "\\bv_mmac_scale_[a-z0-9_]+\\b",
+        "\\bv_cvt_scale_[a-z0-9_]+\\b",
+        "\\bds_scale_copy_(?:buf2ds|ds2buf)\\b"
+      ],
       "require_any": true,
-      "note": "Requires exact gfx946 source/instruction/resource review; do not guess builtin or instruction spelling."
+      "note": "Documented gfx946 discovery patterns, not a compiler or hardware support verdict. Check hcu-isa-guide.md and probe exact target."
     },
     "compute.shaobo_wdra": {
-      "isa_patterns": [],
+      "isa_patterns": [
+        "\\bs_set_vgpr_size(?:_prsv)?\\b"
+      ],
       "require_any": true,
-      "note": "Requires exact gfx946 source/instruction/resource review; do not guess builtin or instruction spelling."
+      "note": "Documented gfx946 discovery patterns, not a compiler or hardware support verdict. Check hcu-isa-guide.md and probe exact target."
     },
     "memory.shaobo_tls": {
-      "isa_patterns": [],
+      "isa_patterns": [
+        "\\btensor_load\\b"
+      ],
       "require_any": true,
-      "note": "Requires exact gfx946 source/instruction/resource review; do not guess builtin or instruction spelling."
+      "note": "Documented gfx946 discovery patterns, not a compiler or hardware support verdict. Check hcu-isa-guide.md and probe exact target."
     },
     "latency.shaobo_abarrier_ebarrier": {
-      "isa_patterns": [],
+      "isa_patterns": [
+        "\\bs_(?:abarrier|ebarrier)_[a-z0-9_]+\\b"
+      ],
       "require_any": true,
-      "note": "Requires exact gfx946 source/instruction/resource review; do not guess builtin or instruction spelling."
+      "note": "Documented gfx946 discovery patterns, not a compiler or hardware support verdict. Check hcu-isa-guide.md and probe exact target."
     }
   }
 }

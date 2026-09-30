@@ -48,6 +48,7 @@ import sys
 from pathlib import Path
 from experiment import benchmark_gate, positive, file_sha256, resolve_benchmark, require_open_iteration
 from workload_suite import load_cases, suite_identity
+from paired_measurement import assess as assess_comparison
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +72,8 @@ def _write(path: str, payload: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_init(args: argparse.Namespace) -> None:
+    if not math.isfinite(args.noise_threshold_pct) or not 0 <= args.noise_threshold_pct < 100:
+        sys.exit("noise-threshold-pct must be finite and in [0, 100)")
     baseline = os.path.abspath(args.baseline)
     ref = os.path.abspath(args.ref)
     if not os.path.isfile(baseline):
@@ -104,6 +107,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         "baseline_source_sha256": file_sha256(baseline_copy),
         "reference_sha256": file_sha256(ref),
         "best_file": baseline_copy,
+        "best_source_sha256": file_sha256(baseline_copy),
         "best_metric_ms": None,
         "best_hipprof_output": None,
         "env": env,
@@ -116,7 +120,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         "noise_threshold_pct": float(args.noise_threshold_pct),
         "ptr_size": int(args.ptr_size),
         "dims": dims,
-        "schema_version": 3,
+        "schema_version": 4,
         "workloads": load_cases(args.workloads) if args.workloads else [],
         "best_suite_score": 1.0,
         "unverified_methods": [],
@@ -209,6 +213,15 @@ def cmd_update(args: argparse.Namespace) -> None:
     if args.attribution and os.path.isfile(args.attribution):
         attr = _read(args.attribution)
         for a in attr.get("attributions", []) if attr.get("champion_source_sha256") == file_sha256(args.kernel) else []:
+            cases = [{"id": "primary", "dims": state.get("dims", {}), "ptr_size": state.get("ptr_size", 0),
+                      "seeds": [bench.get("seed", 42)]}]
+            reviewed = (assess_comparison(a["comparison"], state, args.kernel, a["ablated_kernel"], benchmark, cases)
+                        if a.get("comparison") and a.get("ablated_kernel") else {"valid": False})
+            a = {**a, "paired_evidence_verified": reviewed.get("valid") is True,
+                 "validation_passed": reviewed.get("valid") is True,
+                 "attribution_ms": reviewed.get("difference_ms"),
+                 "contributed": True if reviewed.get("direction") == "beneficial" else
+                                False if reviewed.get("direction") == "harmful" else None}
             attribution_data[a["method_id"]] = a
 
     sass_data = {}
@@ -230,17 +243,9 @@ def cmd_update(args: argparse.Namespace) -> None:
                         and evidence_path.is_file() and item.get("artifact_sha256") == file_sha256(evidence_path)):
                     sass_data[item["id"]] = {"verified": True, "note": item["explanation"]}
 
-    # Decide improvement
+    # Historical timings are descriptive only; fresh confirmation decides promotion.
     best_before = state.get("best_metric_ms")
-    threshold = 1.0 - (state.get("noise_threshold_pct", 2.0) / 100.0)
-    improved = False
-    speedup_vs_best_before = None
-    if validation_passed and positive(new_ms):
-        if best_before is None:
-            improved = True
-        else:
-            speedup_vs_best_before = best_before / new_ms
-            improved = new_ms < best_before * threshold
+    speedup_vs_best_before = best_before / new_ms if positive(best_before) and positive(new_ms) else None
 
     suite = bench.get("workload_suite") or {}
     if state.get("workloads"):
@@ -252,9 +257,14 @@ def cmd_update(args: argparse.Namespace) -> None:
         score = suite.get("weighted_speedup")
         if not positive(score):
             sys.exit("Workload suite has no valid score")
-        improved = validation_passed and positive(score) and score > state.get("best_suite_score", 1) / threshold
-        if improved:
-            state["best_suite_score"] = score
+
+    confirmation = bench.get("confirmation") or {}
+    confirmation_assessment = (assess_comparison(confirmation, state, args.kernel, state["best_file"], benchmark)
+                               if confirmation and state.get("best_file") else
+                               {"valid": False, "improved": False, "reason": "fresh paired confirmation missing"})
+    improved = validation_passed and confirmation_assessment.get("improved") is True
+    if improved and state.get("workloads"):
+        state["best_suite_score"] = score
 
     # Annotate each method
     for m in methods_list:
@@ -278,7 +288,9 @@ def cmd_update(args: argparse.Namespace) -> None:
         if not validation_passed:
             m_entry["note"] = validation_reason
             state.setdefault("unverified_methods", []).append(m_entry)
-        elif (attr_info.get("validation_passed") is True
+        elif (m.get("id") != "latency.sqtt_stall_triage" and attr_info.get("validation_passed") is True
+              and type(attr_info.get("contributed")) is bool
+              and attr_info.get("paired_evidence_verified") is True
               and isinstance(attr_ms, (int, float)) and math.isfinite(attr_ms) and mechanism_verified):
             m_entry["attribution_ms"] = attr_ms
             m_entry["note"] = "Validated ablation on this workload; interactions and other shapes remain scoped"
@@ -291,6 +303,7 @@ def cmd_update(args: argparse.Namespace) -> None:
     # Update best
     if validation_passed and improved:
         state["best_file"] = os.path.abspath(args.kernel)
+        state["best_source_sha256"] = file_sha256(args.kernel)
         state["best_metric_ms"] = new_ms
 
     # Load roofline data if available
@@ -317,7 +330,8 @@ def cmd_update(args: argparse.Namespace) -> None:
 
     status = (
         "improved" if (validation_passed and improved)
-        else "regressed" if validation_passed
+        else "unconfirmed" if validation_passed and not confirmation_assessment.get("valid")
+        else "not_improved" if validation_passed
         else "failed_validation"
     )
     state["history"].append({
@@ -333,6 +347,7 @@ def cmd_update(args: argparse.Namespace) -> None:
         "validation_reason": validation_reason,
         "source_sha256": file_sha256(args.kernel),
         "workload_suite": suite,
+        "confirmation": confirmation_assessment,
         "status": status,
         "retries": int(args.retries),
     })

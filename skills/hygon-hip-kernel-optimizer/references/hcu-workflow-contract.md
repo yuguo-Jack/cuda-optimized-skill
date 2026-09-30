@@ -1,6 +1,6 @@
 # HCU 算子开发与优化：共同契约
 
-baseline、HIP/CK Tile、Triton 三个 Skill 共用本规范。按问题读取相应章节；Skill 负责开发与实验流程，HCU-Knowledge 是可选参考来源。未安装或未查询知识库也可完成开发优化；不能把本文件中的候选策略当作硬件兼容表。
+DCU 与 HCU 同义，保留原有字段和文件名。baseline、HIP/CK Tile、Triton 三个 Skill 共用本规范。按问题读取相应章节；Skill 负责开发与实验流程，HCU-Knowledge 是可选参考来源。未安装或未查询知识库也可完成开发优化；不能把本文件中的候选策略当作硬件兼容表。
 
 ## 1. 证据来源与按需知识查询
 
@@ -25,6 +25,8 @@ baseline、HIP/CK Tile、Triton 三个 Skill 共用本规范。按问题读取�
 - Agent 可在本机编辑、检索和读产物，构建/执行/采集在实际 HCU 节点。按项目配置和远端工作 Skill 决定 SSH、容器、挂载与 DTK 激活；不统一要求 Docker，也不统一禁止 Docker。不把本机 NVIDIA GPU 测试当 HCU 测试。
 - 探测工具存在只是发现能力，不证明目标架构支持、权限或采集成功。读取已安装 `--help`，对必要接口做小型编译/运行探针。无硬件时仍可写代码与做静态检查，明确标记待硬件验证。
 
+低层开发另读 [指令与数据通路指南](hcu-isa-guide.md)，其中区分源码 builtin、IR、实际 ISA 与硬件实测，列出已核对的跨代形式和同步限制。
+
 ## 3. 问题契约与正确性
 
 先写 `contract.md`：运算数学语义、所有输入输出 shape/dtype/stride、广播、padding、mask、量化尺度、索引范围、alias/in-place、stream、原子与确定性要求，允许的误差和目标场景。维度参数不都是 shape；alpha、负 stride、空张量等不能被通用脚本擅自解释。
@@ -32,6 +34,7 @@ baseline、HIP/CK Tile、Triton 三个 Skill 共用本规范。按问题读取�
 - 原 reference 是独立 oracle，不随候选同步“修正”；调整精度/近似策略必须符合用户目标。保留 reference 哈希。整数/布尔精确比对，浮点保留实际精度；NaN/Inf 单独规定，不能用大容差掩盖逻辑错误。
 - 覆盖典型、小/大、非整除尾块、退化形状、稀疏/路由不均、边界索引以及多 seed。attention 分 prefill/decode、causal/padding、KV cache 和稀疏模式；MoE 分路由、token sorting、GEMM、合并与通信；并非每个实验都适用全部维度。
 - 本仓 flat HIP harness 只支持独立、连续、同一 per-pointer 容量的简单 ABI，非 const 指针视作输出。必须显式 `--ptr-size`，且覆盖每个指针真实索引范围。FP16/BF16/FP8、不同布局、in-place、alias、多个 stream、自定义 scratch/通信必须使用任务自己的 `--benchmark` 适配器；不要为了套 harness 改算子语义。
+- 通用 harness 的输出必须是完全写出的有效区域；默认整个输出分配区有效。若分配有 padding，在独立 reference 中提供 `output_extents(**dims)`，返回输出名到有效前缀元素数的映射。验证前填充哨兵，整数再换哨兵复测；同时检查只读输入与 padding 未被改写。此检查不覆盖分配区外的所有越界，也不替代 race 检查。
 - Python harness 也只支持独立连续输入；复杂布局用专门适配器。`preflight` 会导入 reference/adapter 并执行顶层代码，只对已审查的当前任务文件使用，它不是沙箱。
 - 正确性与 race safety 分开。检查越界、写覆盖、同步、跨 block/设备通信；使用目标实际支持的检查工具并保存命令。不能因一次 allclose 通过宣称无竞争。
 - 资源不足是该用例未完成，不偷偷缩小 shape 后宣布原场景成功。需要缩小只作为显式命名的补充用例。
@@ -44,6 +47,8 @@ baseline、HIP/CK Tile、Triton 三个 Skill 共用本规范。按问题读取�
 - 逐次同步/恢复会改变缓存状态，短 kernel 的 event/host 调度也会有扰动。若需连续 steady-state 或 graph replay，使用专门 harness，保存该口径，所有版本一致。不要混用两类数据。
 - `workloads.json` 是显式回归矩阵。`orchestrate setup --workloads ...` 将内容冻结到 state；候选对每个 case/seed 串行重测 baseline 和 candidate。全部正确且稳定、每例不超过自己的回退上限才参与加权几何平均速度比选择。配置文件中的单一案例只支持单一范围的结论。
 - 不传 `--workloads` 仅执行主 shape。交付可复用 kernel 前必须补该功能支持范围的矩阵；报告明确实际覆盖。真实数据分布、量化与路由由专门 harness 构造，而不是随便随机一个 int 张量。
+- 分支筛选与晋级分开：close 对当前 best 与候选执行四轮独立串行对照，顺序 A→B、B→A 交替；矩阵每轮覆盖所有 case/seed，逐例遵守回退上限，四轮加权速度比都超过预设门槛才晋级。无矩阵仅主 shape。输入指纹、设备、签名及 warmup/repeat 等必须匹配，原始 JSON 带哈希，state 重新读取校验。四轮一致是保守的可重复性要求，不是统计置信区间；边缘收益可另开更长实验，不事后降低门槛。
+- 消融也独立重测 champion 与去除方法的变体，沿用相同参数并交替顺序；收益混在噪声或四轮方向不一致时保持未知。当前自动消融仅主用例，不能声称跨规模都有效。
 - 分配字节数/时间是 footprint rate，不是 HBM 带宽；实际 traffic 还涉及缓存、复用、读写次数、压缩、写分配。Roofline 需要计算量、流量及相同 dtype/设备/时钟的可达峰值依据。
 
 ## 5. 性能分析层次与工具
@@ -65,7 +70,8 @@ baseline、HIP/CK Tile、Triton 三个 Skill 共用本规范。按问题读取�
 
 记录链条：问题与环境 → 热点与瓶颈证据 → 为什么这样改 → 文件/符号与调用链 → 最小差异 → 正确性矩阵 → 未采集性能 → 同口径 profile/ISA → 失败条件/回退。
 
-- ISA grep 只是模式出现提示。定位实际符号/目标代码对象/dispatch，并检查源码与加载二进制一致；编译器 `-save-temps` 是重新编译的辅助证据，不自动等于执行过的二进制。
+- 耦合方法可按 `coupling_reviews` 记录可分开的代码差异和验证计划后同轮实验；不可分割的同一差异只计一次。诊断工具的使用本身不算代码优化收益。
+- ISA grep 只是模式出现提示。定位实际符号/目标代码对象/dispatch，并检查源码与加载二进制一致；通用 benchmark 为每次编译保留独立 `.hcu-build/<id>/kernel.so` 与 SHA，ISA 检查只读取所测 build 记录。编译器 `-save-temps` 是重新编译的辅助证据，不自动等于执行过的二进制。
 - 不存在一条普遍适用的 ISA 就能证明 fusion、coalescing、occupancy、流水重叠或消除竞争。按方法选择源码、资源、timeline 和计数器等证据。
 - 有效消融必须保持语义、通过正确性和稳定计时；消融失败不能证明某方法“性能必需”。没有消融或机制证据进入 `unverified_methods`，可保留更快且正确的 kernel，但不能给每个方法分配收益。
 - `isa_check.json` 保留自动扫描；复核后另写 `mechanism-review.json`，不要篡改原件。包含候选 `source_sha256` 和每个方法的 `id/status/explanation/artifact/artifact_sha256`；status=verified 必须有可读、哈希一致的证据。`state.py` 结合正确消融判断有效性。

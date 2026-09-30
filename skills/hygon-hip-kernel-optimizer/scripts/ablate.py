@@ -9,7 +9,8 @@ This script benchmarks each ablated kernel and computes attribution:
   attribution(m) = ms_ablated(m) - ms_champion
 
 Positive means the method helped (removing it slowed things down).
-Zero/negative means the method did not help or actually hurt.
+Near-zero or inconsistent repetitions remain inconclusive; consistent negative
+contribution means the method hurt this particular workload.
 
 Writes iterv{i}/attribution.json.
 """
@@ -19,51 +20,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
-from experiment import benchmark_gate, positive, run_json, resolve_benchmark, require_open_iteration, iteration_kernel
+from experiment import benchmark_gate, resolve_benchmark, require_open_iteration, iteration_kernel
+from paired_measurement import compare
 
 
-_BUNDLED_BENCHMARK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark.py")
 KERNEL_EXTS = (".hip", ".cu", ".cpp", ".cc", ".cxx", ".py")
 
 
 def _load_json(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
-
-
-def _dims_argv(dims: dict) -> list[str]:
-    return [f"--{k}={v}" for k, v in dims.items()]
-
-
-def _ptr_size_argv(ptr_size: int) -> list[str]:
-    return ["--ptr-size", str(ptr_size)] if ptr_size and ptr_size > 0 else []
-
-
-def _bench_kernel(
-    benchmark_py: str,
-    kernel_path: str,
-    ref_path: str,
-    dims: dict,
-    ptr_size: int,
-    json_out: str,
-    warmup: int = 5,
-    repeat: int = 15,
-) -> dict | None:
-    """Run benchmark.py on a single kernel and return the parsed JSON result."""
-    cmd = [
-        sys.executable, benchmark_py, kernel_path,
-        "--ref", ref_path,
-        "--warmup", str(warmup),
-        "--repeat", str(repeat),
-        "--json-out", json_out,
-    ] + _ptr_size_argv(ptr_size) + _dims_argv(dims)
-
-    Path(json_out).parent.mkdir(parents=True, exist_ok=True)
-
-    return run_json(cmd, json_out, str(Path(json_out).with_suffix(".log")))
 
 
 def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
@@ -89,7 +57,6 @@ def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
     methods_data = _load_json(methods_path)
     methods_list = methods_data.get("methods", [])
 
-    ref_file = state["ref_file"]
     dims = state.get("dims", {})
     ptr_size = state.get("ptr_size", 0)
     noise_threshold = state.get("noise_threshold_pct", 2.0)
@@ -102,12 +69,11 @@ def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
         method_dir = os.path.join(ablation_dir, mid.replace(".", "_"))
 
         # Find ablated kernel
-        ablated_kernel = None
-        for ext in KERNEL_EXTS:
-            candidate = os.path.join(method_dir, f"kernel{ext}")
-            if os.path.isfile(candidate):
-                ablated_kernel = candidate
-                break
+        entries = [str(Path(method_dir) / ("kernel" + ext)) for ext in KERNEL_EXTS
+                   if (Path(method_dir) / ("kernel" + ext)).is_file()]
+        if len(entries) > 1:
+            raise SystemExit(f"Ambiguous ablation entry points: {entries}")
+        ablated_kernel = entries[0] if entries else None
 
         if ablated_kernel is None:
             # No ablated kernel: attribution remains unknown.
@@ -123,54 +89,25 @@ def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
             })
             continue
 
-        # Benchmark ablated kernel
-        ablated_json_out = os.path.join(method_dir, "bench.json")
-        result = _bench_kernel(
-            bench_py, ablated_kernel, ref_file, dims, ptr_size, ablated_json_out,
-        )
-
-        if result is None or not benchmark_gate(result, ablated_kernel, ref_file)[0]:
-            # Invalid ablation cannot establish performance contribution.
-            attributions.append({
-                "method_id": mid,
-                "ablated_kernel": ablated_kernel,
-                "ablated_ms": None,
-                "champion_ms": champion_ms,
-                "attribution_ms": None,
-                "attribution_pct": None,
-                "contributed": None,
-                "note": "invalid_ablation_not_performance_evidence",
-            })
-            continue
-
-        ablated_ms = (result.get("kernel") or {}).get("average_ms")
-        if not positive(ablated_ms):
-            attributions.append({
-                "method_id": mid,
-                "ablated_kernel": ablated_kernel,
-                "ablated_ms": None,
-                "champion_ms": champion_ms,
-                "attribution_ms": None,
-                "attribution_pct": None,
-                "contributed": None,
-                "note": "no_timing_in_ablated_bench",
-            })
-            continue
-
-        # Compute attribution
-        attr_ms = ablated_ms - champion_ms
-        attr_pct = (attr_ms / champion_ms * 100) if champion_ms > 0 else 0.0
-        contributed = attr_pct > noise_threshold
-
+        cases = [{"id": "primary", "dims": dims, "ptr_size": ptr_size,
+                  "seeds": [champion_data.get("seed", 42)]}]
+        comparison = compare(state, iteration_kernel(iter_dir), ablated_kernel, bench_py,
+                             Path(method_dir) / "paired", champion_data.get("warmup", 10),
+                             champion_data.get("repeat", 20), cases)
+        assessment = comparison["assessment"]
+        valid = assessment.get("valid") is True
+        direction = assessment.get("direction")
+        contributed = True if direction == "beneficial" else False if direction == "harmful" else None
+        current_ms = assessment.get("candidate_ms")
+        delta = assessment.get("difference_ms")
         attributions.append({
-            "method_id": mid,
-            "ablated_kernel": ablated_kernel,
-            "ablated_ms": round(ablated_ms, 4),
-            "champion_ms": round(champion_ms, 4),
-            "attribution_ms": round(attr_ms, 4),
-            "attribution_pct": round(attr_pct, 2),
-            "contributed": contributed,
-            "validation_passed": True,
+            "method_id": mid, "ablated_kernel": ablated_kernel,
+            "ablated_ms": assessment.get("control_ms"), "champion_ms": current_ms,
+            "attribution_ms": delta, "attribution_pct": delta / current_ms * 100 if valid else None,
+            "contributed": contributed, "validation_passed": valid,
+            "comparison": comparison,
+            "note": "primary workload only; inconclusive repetitions do not prove ineffectiveness" if valid
+                    else "invalid_ablation_not_performance_evidence",
         })
 
     output = {

@@ -53,3 +53,20 @@
 - Codex 安装副本已备份至 hygon_tmp/skill-backups/20260930_112556_951678 并同步，baseline 5 / HIP 32 / Triton 15 文件经独立 SHA256 核对一致；无多余旧文件，安装目录格式检查通过。
 - 推送前再次获取 origin，确认无远端新增提交；提交本轮修复并正常推送，随后核对远端 SHA。
 - 修复提交 321d7b2 已随此前上游合并及规则修订推送至 yuguo-Jack/cuda-optimized-skill 的 main；ls-remote 确认远端 SHA 与本地完全一致。随后仅补齐本段完成记录并同步。
+
+## 指令集与科学优化专项完善
+
+- 新一轮从干净 005c8bc 开始。读取知识库绑定/查询规则，执行两组 hybrid 检索（本地和飞书均成功），查 MLS/WDRA、Abarrier/Ebarrier 与硬件-编译器映射。
+- 定位少伯 ISA/MLS/WDRA/TLS、gfx938 builtin 清单及 GEMM 原始汇编证据；只读保留原件，不修改知识库内容。
+- 批量原件输出过长，改按页/符号定向摘读；一次跨 cwd 读取脚本路径错误已纠正，使用各仓明确 workdir。
+
+### 指令与科学实验专项：实现及验证
+
+- 完成 3 个入口、共同契约、指令指南、策略/签名、产物/自定义 harness 契约更新。
+- 完成 benchmark、baseline adapter、配对测量、消融、状态、ISA 解析/扫描、方法验证、矩阵和报告脚本修订。
+- CPU 回归新增失败边界与真实 subprocess 矩阵闭环；截至本阶段 Hygon 81 项通过，上游 CUDA 10 项通过。
+- 静态检查：3 个 Skill、32 个 Python 文件、4 个 JSON、3 个 YAML、38 个 Skill 内本地 Markdown 链接、25 个 CLI 帮助通过。
+- Git fetch origin 成功，远端未出现待合并提交。尚未执行 HCU 硬件编译/计时/采集。
+
+- 最终验证再次通过 81 + 10 项测试；3 Skill / 32 Python / 4 JSON / 3 YAML / 38 链接 / 25 CLI 检查通过。
+- 已同步到 C:\Users\Administrator\.codex\skills，逐文件验证 55 个 SHA256（5/35/15），无额外遗留文件。旧版本备份：hygon_tmp/skill-backups/20260930_120404_801998。

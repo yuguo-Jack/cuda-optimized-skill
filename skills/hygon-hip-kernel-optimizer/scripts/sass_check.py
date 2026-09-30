@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from isa import parse as parse_isa
 
 
 _DEFAULT_SIGNATURES = Path(__file__).resolve().parent.parent / "references" / "dcu_isa_signatures.json"
@@ -22,15 +23,6 @@ KERNEL_EXTS = (".hip", ".cu", ".cpp", ".cc", ".cxx", ".py")
 def _load_json(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
-
-
-def _find_binary(kernel_path: str) -> str | None:
-    base = os.path.splitext(kernel_path)[0]
-    for ext in (".so", ""):
-        candidate = base + ext
-        if os.path.isfile(candidate):
-            return candidate
-    return None
 
 
 _INSTRUCTION_RE = re.compile(
@@ -47,8 +39,10 @@ def _collect_texts(root: Path) -> tuple[list[str], list[str]]:
         if path.is_file() and path.stat().st_size < 20_000_000:
             files.append(str(path.relative_to(root)))
             try:
-                texts.append(path.read_text(encoding="utf-8", errors="ignore"))
-            except OSError:
+                content = path.read_text(encoding="utf-8")
+                if "\x00" not in content:
+                    texts.append(content)
+            except (OSError, UnicodeError):
                 pass
     return texts, files
 
@@ -75,7 +69,8 @@ def _run_dcc(cmd: list[str], cwd: str, texts: list[str], errors: list[str], time
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
         errors.append(f"{cmd[0]}: {exc}")
         return None
-    texts.extend([result.stdout or "", result.stderr or ""])
+    if result.returncode == 0 and "--show-sass" in cmd:
+        texts.append(result.stdout or "")
     if result.returncode != 0:
         errors.append(f"{' '.join(cmd)} rc={result.returncode}")
     return result
@@ -213,22 +208,35 @@ def _dump_isa(binary_path: str, arch: str = "", kernel_path: str | None = None) 
                     f"--output={elf_out}",
                 ], td, texts, errors)
 
-        file_texts, files = _collect_texts(root)
-        texts.extend(file_texts)
+        _, files = _collect_texts(root)
+        # Prefer one dump path. show-all-fatbin repeats the same instructions;
+        # binary ELF and diagnostic/resource output must not inflate the scan.
+        file_texts, _ = _collect_texts(root / "sass")
+        file_texts = [t for t in file_texts if parse_isa(t)["instructions"]]
+        if not file_texts:
+            for folder in sorted(root.glob("elf_sass_*")):
+                found, _ = _collect_texts(folder)
+                file_texts.extend(t for t in found if parse_isa(t)["instructions"])
+        if not file_texts:
+            file_texts = [t for t in texts if parse_isa(t)["instructions"]]
+        texts = list(dict.fromkeys(file_texts))
         dcc_text = "\n".join(texts)
         save_temps_meta: dict = {"attempted": False}
-        if kernel_path and not _INSTRUCTION_RE.search(dcc_text):
+        if kernel_path and not parse_isa(dcc_text)["instructions"]:
             save_temps_text, save_temps_meta = _compile_save_temps_isa(kernel_path, arch=arch)
             if save_temps_text:
                 texts.append(save_temps_text)
 
         isa_text = "\n".join(texts)
         meta = {
+            "evidence_kind": "executed_binary_dump" if parse_isa(dcc_text)["instructions"] else
+                             "auxiliary_recompile" if parse_isa(isa_text)["instructions"] else "unavailable",
+            "scope": "module; select the actual kernel symbol before drawing per-kernel conclusions",
             "dump_files": files,
             "isa_files": [f for f in files if f.lower().endswith(".isa")],
-            "dccobjdump_instruction_lines": len(_INSTRUCTION_RE.findall(dcc_text)),
-            "instruction_lines": len(_INSTRUCTION_RE.findall(isa_text)),
-            "vmem_instruction_count": len(_VMEM_RE.findall(isa_text)),
+            "dccobjdump_instruction_lines": len(parse_isa(dcc_text)["instructions"]),
+            "instruction_lines": len(parse_isa(isa_text)["instructions"]),
+            "vmem_instruction_count": sum(bool(_VMEM_RE.search(r["mnemonic"])) for r in parse_isa(isa_text)["instructions"]),
             "dump_errors": errors,
             "save_temps": save_temps_meta,
         }
@@ -246,8 +254,10 @@ def check_method(method_id: str, isa_text: str, signatures: dict, dump_meta: dic
         result["note"] = "no_patterns_defined; inspect the appropriate source/resource/timeline evidence"
         return result
     result["patterns_checked"] = patterns
+    # Builtin declarations, comments, metadata and diagnostic logs are not ISA.
+    isa_text = "\n".join(r["text"] for r in parse_isa(isa_text)["instructions"])
     for pattern in patterns:
-        if re.search(pattern, isa_text, re.IGNORECASE):
+        if re.search(pattern, isa_text, re.IGNORECASE | re.MULTILINE):
             result["patterns_found"].append(pattern)
         else:
             result["patterns_missing"].append(pattern)
@@ -278,13 +288,19 @@ def run(state_path: str, iteration: int, signatures_path: str | None = None) -> 
         _write_result(iter_dir, result)
         return result
 
-    binary = _find_binary(kernel_path)
-    if not binary:
-        result = {"error": "binary_not_found", "kernel": kernel_path, "checks": []}
+    bench_path = Path(iter_dir) / "bench.json"
+    bench = _load_json(str(bench_path)) if bench_path.is_file() else {}
+    build = bench.get("build") or {}
+    binary = build.get("binary")
+    from experiment import file_sha256
+    if (bench.get("source_sha256") != file_sha256(kernel_path) or build.get("source_sha256") != file_sha256(kernel_path) or not binary
+            or not Path(binary).is_file() or build.get("binary_sha256") != file_sha256(binary)):
+        result = {"error": "measured_binary_missing_or_changed", "kernel": kernel_path, "checks": [],
+                  "note": "Inspect the benchmark build record; a neighboring .so is not evidence of the executed binary"}
         _write_result(iter_dir, result)
         return result
 
-    arch = state.get("env", {}).get("primary_gfx_arch", "")
+    arch = build.get("arch") or bench.get("arch") or state.get("env", {}).get("primary_gfx_arch", "")
     isa_text, err, dump_meta = _dump_isa(binary, arch=arch, kernel_path=kernel_path)
     Path(iter_dir, "isa_dump.txt").write_text(isa_text, encoding="utf-8")
     checks = []

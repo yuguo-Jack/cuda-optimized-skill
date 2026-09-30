@@ -16,6 +16,7 @@ import argparse
 import copy
 import ctypes
 import glob
+import hashlib
 import importlib.util
 import json
 import math
@@ -24,6 +25,7 @@ import re
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import torch
@@ -158,7 +160,7 @@ def infer_backend(solution_file: str, backend: str) -> str:
     return "hip"
 
 
-def compile_hip(source_file: str, output_so: str, arch: str, hipcc_bin: str, backend: str) -> None:
+def compile_hip(source_file: str, output_so: str, arch: str, hipcc_bin: str, backend: str) -> dict:
     cmd = [hipcc_bin, "-fPIC", "-shared", "-std=c++17", "-O3", f"--offload-arch={arch}"]
     if os.path.splitext(source_file)[1].lower() in {".cpp", ".cc", ".cxx"}:
         cmd.extend(["-x", "hip"])
@@ -175,6 +177,9 @@ def compile_hip(source_file: str, output_so: str, arch: str, hipcc_bin: str, bac
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore")
     if r.returncode != 0:
         raise RuntimeError("Compilation failed:\n" + (r.stderr or r.stdout or "unknown hipcc error"))
+    return {"binary": os.path.abspath(output_so), "binary_sha256": file_sha256(output_so),
+            "source_sha256": file_sha256(source_file), "arch": arch, "command": cmd,
+            "compiler": shutil.which(hipcc_bin) or hipcc_bin}
 
 
 def load_module(module_file: str, module_name: str):
@@ -214,8 +219,10 @@ def _setup_hip(solution_file: str, dims: dict, ptr_size: int, arch: str, hipcc_b
     sig_str = ", ".join(f"{'const ' if c else ''}{t} {n}" for t, n, c in params)
     print(f"[signature] solve({sig_str})\n")
 
-    so_file = os.path.splitext(solution_file)[0] + ".so"
-    compile_hip(solution_file, so_file, arch, hipcc_bin, backend)
+    build_dir = Path(solution_file).resolve().parent / ".hcu-build" / uuid.uuid4().hex
+    build_dir.mkdir(parents=True)
+    so_file = str(build_dir / "kernel.so")
+    build = compile_hip(solution_file, so_file, arch, hipcc_bin, backend)
     lib = ctypes.CDLL(os.path.abspath(so_file))
 
     for ptype, pname, _ in params:
@@ -274,6 +281,7 @@ def _setup_hip(solution_file: str, dims: dict, ptr_size: int, arch: str, hipcc_b
     total_ptr_bytes = sum(t.nelement() * t.element_size() for t in tensor_inputs.values())
     return {
         "backend": backend,
+        "build": build,
         "signature": [{"type": t, "name": n, "is_const": c} for t, n, c in params],
         "callable": lambda: lib.solve(*kernel_args),
         "tensor_inputs": tensor_inputs,
@@ -330,6 +338,18 @@ def _reset_tensor_inputs(state: dict) -> None:
             tensor.copy_(snap)
 
 
+def _input_fingerprint(state: dict) -> str:
+    digest = hashlib.sha256()
+    for name, value in sorted(state["reference_inputs"].items()):
+        if isinstance(value, torch.Tensor):
+            digest.update(json.dumps([name, str(value.dtype), list(value.shape)], sort_keys=True).encode())
+            raw = value.detach().contiguous().reshape(-1).view(torch.uint8).cpu().numpy()
+            digest.update(memoryview(raw))
+        else:
+            digest.update(json.dumps([name, value], sort_keys=True).encode())
+    return digest.hexdigest()
+
+
 def _time_iterations(fn, warmup: int, repeat: int, reset=lambda: None) -> list[float]:
     if warmup < 0 or repeat < 1:
         raise ValueError("warmup must be nonnegative and repeat positive")
@@ -368,6 +388,47 @@ def _validate_outputs(kernel_tensors: dict, ref_tensors: dict, output_specs: lis
         all_pass = all_pass and ok
         print(f"[validate] {name} ({ptype}) {'PASS' if ok else 'FAIL'} elements={kt.numel()}")
     return all_pass
+
+
+def _prepare_validation(state: dict, ref_inputs: dict, extents: dict | None) -> dict:
+    """Poison write-only logical outputs; retain padding as an exact canary.
+
+    This generic ABI cannot represent in-place outputs, aliases, or arbitrary
+    strides. Such operators need a task-specific benchmark/oracle contract.
+    """
+    extents = {} if extents is None else extents
+    names = {name for name, _ in state["output_specs"]}
+    if not isinstance(extents, dict) or set(extents) - names:
+        raise ValueError("output_extents must map output names to logical prefix lengths")
+    resolved = {}
+    for name in names:
+        tensor = state["tensor_inputs"][name]
+        count = extents.get(name, tensor.numel())
+        if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= tensor.numel():
+            raise ValueError(f"Invalid logical output extent for {name}: {count}")
+        resolved[name] = count
+        # Different sentinels prevent an unwritten integer output from passing.
+        # NaNs also fail allclose(equal_nan=False), including partial stores.
+        floating = tensor.is_floating_point() or tensor.is_complex()
+        tensor.view(-1)[:count].fill_(float("nan") if floating else 1 if tensor.dtype == torch.bool else 85)
+        ref_inputs[name].view(-1)[:count].fill_(float("nan") if floating else 0 if tensor.dtype == torch.bool else 42)
+    return resolved
+
+
+def _validate_contract(state: dict, ref_inputs: dict, extents: dict, atol: float, rtol: float) -> bool:
+    outputs = set(extents)
+    for name, pristine in state["pristine_tensors"].items():
+        offset = extents[name] if name in outputs else 0
+        expected = pristine.view(-1)[offset:]
+        if not torch.equal(state["tensor_inputs"][name].view(-1)[offset:], expected):
+            print(f"[validate] FAIL: input or output padding modified: {name}")
+            return False
+        if not torch.equal(ref_inputs[name].view(-1)[offset:], expected):
+            print(f"[validate] FAIL: reference modified input or output padding: {name}")
+            return False
+    candidate = {n: state["tensor_inputs"][n].view(-1)[:size] for n, size in extents.items()}
+    reference = {n: ref_inputs[n].view(-1)[:size] for n, size in extents.items()}
+    return _validate_outputs(candidate, reference, state["output_specs"], atol, rtol)
 
 
 def run(
@@ -413,7 +474,7 @@ def run(
     }
 
     try:
-        state = _setup_python(solution_file, dims, seed) if resolved_backend == "python" else _setup_hip(solution_file, dims, ptr_size, arch, hipcc_bin, seed if has_ref else None, resolved_backend)
+        state = _setup_python(solution_file, dims, seed) if resolved_backend == "python" else _setup_hip(solution_file, dims, ptr_size, arch, hipcc_bin, seed, resolved_backend)
     except Exception as exc:
         result["error"] = {"code": "setup_failed", "stage": "setup", "message": str(exc)}
         if has_ref:
@@ -422,6 +483,8 @@ def run(
         raise
 
     result["signature"] = state["signature"]
+    result["build"] = state.get("build")
+    result["inputs_sha256"] = _input_fingerprint(state)
     result["ptr_elems"] = state["ptr_elems"]
     result["total_ptr_bytes"] = state["total_ptr_bytes"]
 
@@ -435,14 +498,28 @@ def run(
         rtol = float(getattr(ref_mod, "rtol", rtol))
         ref_inputs = {name: clone_value(value) for name, value in state["reference_inputs"].items()}
         _reset_tensor_inputs(state)
+        extent_fn = getattr(ref_mod, "output_extents", None)
+        extents = _prepare_validation(state, ref_inputs, extent_fn(**dims) if callable(extent_fn) else extent_fn)
         state["callable"]()
         torch.cuda.synchronize()
         ref_fn(**ref_inputs)
         torch.cuda.synchronize()
-        kernel_outputs = {name: state["tensor_inputs"][name] for name, _ in state["output_specs"]}
-        ref_outputs = {name: ref_inputs[name] for name, _ in state["output_specs"]}
-        passed = _validate_outputs(kernel_outputs, ref_outputs, state["output_specs"], atol, rtol)
-        result["correctness"].update({"passed": passed, "atol": atol, "rtol": rtol, "output_tensor_count": len(state["output_specs"])})
+        passed = _validate_contract(state, ref_inputs, extents, atol, rtol)
+        if passed and any(not state["tensor_inputs"][n].is_floating_point()
+                          and not state["tensor_inputs"][n].is_complex() for n in extents):
+            # A correct integer value can equal one sentinel. A second execution
+            # with a different poison rejects partial or missing stores too.
+            _reset_tensor_inputs(state)
+            for name, count in extents.items():
+                tensor = state["tensor_inputs"][name]
+                tensor.view(-1)[:count].fill_(float("nan") if tensor.is_floating_point() or tensor.is_complex()
+                                            else 0 if tensor.dtype == torch.bool else 42)
+            state["callable"]()
+            torch.cuda.synchronize()
+            passed = _validate_contract(state, ref_inputs, extents, atol, rtol)
+        result["correctness"].update({"passed": passed, "atol": atol, "rtol": rtol,
+                                     "output_extents": extents, "output_coverage": "poisoned write-only prefix",
+                                     "output_tensor_count": len(state["output_specs"])})
         if not passed:
             _write_json(json_out, result)
             sys.exit(1)
@@ -473,6 +550,9 @@ def run(
         "gpu": gpu_name,
         "arch": arch,
         "correct": result["correctness"]["passed"],
+        "source_sha256": result["source_sha256"],
+        "inputs_sha256": result["inputs_sha256"],
+        "build": result["build"],
         "kernel_ms": result["kernel"]["average_ms"],
         "ref_ms": (result.get("reference") or {}).get("average_ms"),
         "json_out": json_out,

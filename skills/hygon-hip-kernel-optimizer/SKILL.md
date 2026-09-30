@@ -53,7 +53,7 @@ python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py -
 2. `methods.json` 按 [schema](templates/methods.schema.json)：方法 ID、改什么、为何可能有效、预期证据、精确目标证据、跳过理由。重试先前方法给 `retry_reason`。
 3. 在 `itervN/branches/b1..bK/kernel.<ext>` 写变体，同组方法一致、超参数不同；只修改用户任务范围的源码。
 4. 运行 `branch_explore.py --state RUN/state.json --iter N`，先检查正确性/稳定计时/多用例回退；失败的分支修复后再测，保留失败原因。OOM 不缩小原场景冒充成功。
-5. 低层路径变化读实际目标 ISA、资源与同步语义；`sass_check.py` 的名字为兼容保留，输出是 HCU ISA 提示。自动 grep 不算语义验证。
+5. 低层路径变化按 [指令指南](references/hcu-isa-guide.md) 读实际目标 ISA、资源与同步语义；`sass_check.py` 的名字为兼容保留，输出是 HCU ISA 提示。自动 grep 不算语义验证。
 6. 有必要做消融时，将只去掉单项方法且仍语义正确的文件放 `ablations/<id中点换成下划线>/kernel.<ext>`。多个方法相互依赖时写清归因限制。
 7. 在 close 前可单独运行 profiler/ISA/ablation 做调查，并填写 `mechanism-review.json`。close 会重测，若重新产生的 artifact 哈希改变，复核文件失配则方法保持未验证；可以下一轮再补证据，不能伪造已验证。
 
@@ -61,7 +61,7 @@ python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py -
 python <skill>/scripts/orchestrate.py close-iter --run-dir RUN --iter 1
 ```
 
-close 串行跑分支、选 champion、profile、消融、ISA、更新状态，并准备下一轮数据。通过正确性与稳定测量且更快的 kernel 可以晋级；缺少消融/机制证据的方法仍记 `unverified_methods`。已关闭迭代不可覆盖；单 run 只允许一个写入者。
+close 串行跑分支、选 champion、对当前 best 做四轮独立交替对照、profile、消融、ISA、更新状态，并准备下一轮数据。四轮正确、输入/设备/测量参数一致且收益持续超过门槛才晋级；矩阵场景逐例守住回退上限。没有新鲜对照记 unconfirmed，重复结果落入噪声记 not_improved。缺少消融/机制证据的方法仍记 `unverified_methods`。已关闭迭代不可覆盖；单 run 只允许一个写入者。
 
 ## 5. 交付
 

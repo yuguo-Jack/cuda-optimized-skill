@@ -149,7 +149,7 @@ def render(state_path: str, out_path: str) -> None:
     lines.append("")
     lines.append(f"- **Baseline time**: {_fmt_ms(baseline_ms)}")
     lines.append(f"- **Best time**: {_fmt_ms(best_ms)}")
-    lines.append(f"- **Primary workload speedup vs baseline**: {_fmt_speedup(final_speedup)}")
+    lines.append(f"- **Primary workload speedup vs baseline (historical measurements)**: {_fmt_speedup(final_speedup)}")
     if state.get("workloads"):
         lines.append(f"- **Frozen workload weighted speedup (selection metric)**: {_fmt_speedup(state.get('best_suite_score'))}")
     lines.append(f"- **Best kernel**: `{state.get('best_file')}`")
@@ -165,6 +165,15 @@ def render(state_path: str, out_path: str) -> None:
     lines.append("## Iteration Timeline")
     lines.append("")
     lines.append(_timeline_table(state))
+    lines.append("")
+    lines.append("## Independent paired confirmations")
+    lines.append("")
+    lines.append("Four alternating rounds against the then-current best; scoped repeatability, not statistical confidence.")
+    lines.append("")
+    for row in state.get("history", []):
+        check = row.get("confirmation") or {}
+        ratios = ", ".join(f"{value:.4f}x" for value in check.get("round_speedups", [])) or "unavailable"
+        lines.append(f"- Iteration {row.get('iter')}: {check.get('direction', 'unverified')}; rounds: {ratios}. {check.get('reason', '')}")
     lines.append("")
 
     lines.append("## Effective Methods")

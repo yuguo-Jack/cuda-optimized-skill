@@ -23,7 +23,8 @@ def resolve_benchmark(state, requested=None):
 
 
 def check_frozen_inputs(state):
-    for field, digest in (("baseline_file", "baseline_source_sha256"), ("ref_file", "reference_sha256")):
+    for field, digest in (("baseline_file", "baseline_source_sha256"), ("ref_file", "reference_sha256"),
+                          ("best_file", "best_source_sha256")):
         expected = state.get(digest)
         if expected and expected != file_sha256(state[field]):
             raise SystemExit(f"{field} changed since setup; start a new run and remeasure baseline")

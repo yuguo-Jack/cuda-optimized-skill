@@ -10,7 +10,7 @@
 
 ### P1 · `compute.mmac_tensor_core`
 
-HCU MMOP / MMAC matrix core utilization。CK Tile HCU GEMM/conv/attention path, source-backed HCU/AMD-named MMAC builtin with exact signature, or target-compiled inline asm; final proof is v_mmac/MMOP ISA
+HCU MMOP / MMAC matrix core utilization。CK Tile HCU GEMM/conv/attention path, source-backed HCU/AMD-named MMAC builtin with exact signature, or target-compiled inline asm; check actual v_mmac lowering, operand/layout semantics and scoped measurements
 
 - 调查入口：`SQ_INSTS_MMOP` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
 - 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
@@ -26,9 +26,9 @@ gfx938 FP8/BF8/TF32 mixed precision。compiled CK Tile low-precision path or sou
 
 ### P3 · `compute.launch_config_wave64`
 
-Launch geometry and target wave width (legacy method ID)。block sizes as multiples of 64; tune occupancy with LDS/VGPR pressure
+Launch geometry and target wave width (legacy method ID)。query target wave width and allocation granularity; tune grid coverage and launch geometry with LDS/VGPR pressure
 
-- 调查入口：`SQ_WAVES` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- **Trigger**: measured grid coverage, launch geometry, target occupancy and resource constraints; cumulative SQ_WAVES is not resident occupancy.
 - 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
 - 要求 `target_evidence`：精确 gfx、编译器/库版本、头文件或固定源码、最小探针及结果。
 
@@ -245,3 +245,7 @@ Read gfx946 tensor descriptor, im2col/layout and synchronization contracts; comp
 Check arrive/wait, phase/transaction count, barrier identity and participant lifetime against exact gfx946 compiler/runtime implementation; add race and progress tests.
 
 限定 gfx946 新特性资料范围，必须提供 target_evidence。来源文档描述支持不等于当前编译器或本机硬件已验证。
+
+## 指令与耦合方法
+
+DCU/HCU 同义；具体 MLS/DS/MMAC、WDRA、低精度、barrier 和 TLS 的适用范围读 [HCU 指令指南](hcu-isa-guide.md)。历史 wave64 方法 ID 保留，实际 wave width 以目标模式为准。耦合项并非一概禁止同用，但需在 methods.json 的 coupling_reviews 解释独立差异和验证计划；同一代码变化不能重复记收益。

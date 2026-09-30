@@ -30,6 +30,8 @@ def load_cases(path):
         seeds = c.get("seeds", [42, 123, 2026])
         if not isinstance(seeds, list) or not seeds or not all(isinstance(s, int) and not isinstance(s, bool) for s in seeds):
             raise ValueError("seeds must be a nonempty integer list")
+        if len(set(seeds)) != len(seeds):
+            raise ValueError("seeds must be unique to preserve each measurement artifact")
         size = c.get("ptr_size", 0)
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
             raise ValueError("ptr_size must be a nonnegative integer")

@@ -18,6 +18,8 @@ hygon_tmp/                      # 不提交的采集、缓存、安装备份
 
 核心规范是 [HCU 工作契约](skills/hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md)，程序产物见 [实验接口](skills/hygon-hip-kernel-optimizer/references/experiment-artifacts.md)。每个 Skill 的 SKILL.md 是给 Agent 的入口。
 
+DCU/HCU 同义，旧字段与文件名保留。[指令与数据通路指南](skills/hygon-hip-kernel-optimizer/references/hcu-isa-guide.md) 区分 gfx936/938/946 的 MLS、DS/MMAC、低精度 scale、WDRA、barrier 和 TLS，并列出原件出处与待实测边界。
+
 性能分析分别使用 [XProf/XCompute 指南](skills/hygon-hip-kernel-optimizer/references/xprof-xcompute-guide.md) 和 [hipprof 指南](skills/hygon-hip-kernel-optimizer/references/hipprof-guide.md)，命令、输出格式、指标定义与查看器按各自版本核对。
 
 ## 工作原理
@@ -25,7 +27,7 @@ hygon_tmp/                      # 不提交的采集、缓存、安装备份
 1. 用户需求与当前代码形成精度/布局/版本/性能契约。
 2. 优先查看当前源码、测试、文档和目标工具链；需要参考时可用 `hcu-knowledge-search` 查相关代码/案例和原始资料，已有证据足够则直接推进。
 3. 保留独立 oracle，验证 baseline，多规模、多 seed、tail 和真实数据分布列入矩阵。
-4. 先定位热点与瓶颈假设，再做候选修改，串行基准/回归，按明确的噪声与回退条件选择。
+4. 先定位热点与瓶颈假设，再做候选修改，串行基准/回归。筛选后，对当前 best 与候选做四轮独立交替对照；逐轮收益和每例回退条件均通过才晋级。固定阈值与四轮一致性不等于统计置信区间。
 5. 遇到 kernel 优化瓶颈时必须使用性能分析工具，优先 XProf/XCompute，也可选适用的 hipprof/DTK 工具；据采集结果决定下一项修改，保留原件、准确 kernel/dispatch、指标定义。未知计数不转成利用率。
 6. 结合源码/ISA/资源/timeline 与正确消融解释收益，缺证据的方法记待验证。最后回到真实模型/项目做端到端验收。
 7. 报告与实验原件保留在当前任务工程，说明适用范围、实际收益和未验证项。
@@ -60,6 +62,8 @@ python -X utf8 tools/install_hygon_skills.py
 - “用 `$hygon-triton-kernel-optimizer` 找这个模型的 Inductor 热点，核对生成 ISA 和端到端收益。”
 
 详细命令位于各 Skill；通用 HIP harness **只支持简单连续 flat ABI**，半精度/量化/复杂布局等用工程专用 benchmark。优化框架接受 `--benchmark`，但结果必须带真实样本、正确性与源码哈希。`--workloads` 接显式矩阵；不传只能得到单形状结论。
+
+自定义 benchmark 的独立确认还要求输入内容指纹、设备、签名、seed、warmup/repeat 等元数据；旧适配器缺字段时保持待确认，按 [实验接口](skills/hygon-hip-kernel-optimizer/references/experiment-artifacts.md) 补齐。通用 benchmark 用哨兵验证输出写覆盖，并保存每次实际编译的二进制及 SHA；ISA 检查不使用来源不明的相邻 `.so`。
 
 ## 检查
 

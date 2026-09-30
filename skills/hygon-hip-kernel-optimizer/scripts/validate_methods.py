@@ -28,11 +28,11 @@ def _load_json(path: str) -> dict:
         return json.load(f)
 
 
-def _parse_sm_arch(arch: str | None) -> int:
+def _parse_gfx_arch(arch: str | None) -> str:
     if not arch:
-        return 0
-    m = re.match(r"(?:sm_|gfx)(\d+)", arch)
-    return int(m.group(1)) if m else 0
+        return ""
+    value = arch.split(":", 1)[0].lower()
+    return value if re.fullmatch(r"gfx[0-9a-f]+", value) else ""
 
 
 def _higher_priority_ids(registry: dict, axis: str, priority: int) -> list[tuple[str, int]]:
@@ -66,7 +66,7 @@ def validate(
 
     # Detect gfx arch
     gpus = state.get("env", {}).get("gpus", [{}])
-    detected_sm = _parse_sm_arch((gpus[0].get("gfx_arch") or gpus[0].get("gcn_arch")) if gpus else None)
+    detected_arch = _parse_gfx_arch((gpus[0].get("gfx_arch") or gpus[0].get("gcn_arch")) if gpus else None)
 
     # Load roofline budget if available
     iter_num = methods_data.get("iter", 1)
@@ -135,10 +135,10 @@ def validate(
 
         # gfx numbers are identifiers, not a monotonic feature level.
         evidence = m.get("target_evidence", "")
-        if reg.get("requires_target_probe") and not evidence:
+        if reg.get("requires_target_probe") and not (isinstance(evidence, str) and evidence.strip()):
             errors.append(f"{prefix}: exact-target header/source + compile/ISA probe evidence is required")
-        if reg.get("allowed_arches") and f"gfx{detected_sm}" not in reg["allowed_arches"]:
-            errors.append(f"{prefix}: method is scoped to {reg['allowed_arches']}; observed gfx{detected_sm}")
+        if reg.get("allowed_arches") and detected_arch not in reg["allowed_arches"]:
+            errors.append(f"{prefix}: method is scoped to {reg['allowed_arches']}; observed {detected_arch or 'unknown target'}")
         prior_ids = {item.get("id") for item in state.get("selected_methods", [])}
         if mid in prior_ids and not m.get("retry_reason"):
             errors.append(f"{prefix}: repeat requires retry_reason explaining changed implementation, shape or bottleneck")
@@ -170,9 +170,14 @@ def validate(
     for pair in coupled_pairs:
         pair_ids = set(pair.get("ids", []))
         if pair_ids.issubset(all_submitted_ids):
+            reviews = methods_data.get("coupling_reviews", [])
+            if isinstance(reviews, list) and any(isinstance(r, dict) and set(r.get("ids", [])) == pair_ids
+                    and all(isinstance(r.get(k), str) and r[k].strip() for k in ("separate_deltas", "validation_plan"))
+                    for r in reviews):
+                continue
             errors.append(
                 f"Coupled pair both selected: {pair_ids}. "
-                f"Note: {pair.get('note', '')}"
+                f"Provide coupling_reviews with separate_deltas and validation_plan, or count one change once. Note: {pair.get('note', '')}"
             )
 
     return (len(errors) == 0, errors)

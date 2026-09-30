@@ -7,6 +7,9 @@ import argparse
 import json
 import re
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hygon-hip-kernel-optimizer/scripts"))
+from isa import parse as parse_isa
 
 
 EXTS = {".amdgcn", ".isa", ".s", ".asm"}
@@ -26,6 +29,17 @@ PATTERNS = {
     "ds_write": r"\bds_write",
     "v_mmac": r"\bv_mmac",
     "s_waitcnt": r"\bs_waitcnt\b",
+    "s_waitcnt_vbcnt": r"\bs_waitcnt_vbcnt\b",
+    "matrix_load": r"\bmatrix_load(?:_[a-z0-9]+)+\b",
+    "matrix_store": r"\bmatrix_store(?:_[a-z0-9]+)+\b",
+    "tensor_load": r"\btensor_load\b",
+    "v_mmac_scale": r"\bv_mmac_scale_",
+    "v_cvt_scale": r"\bv_cvt_scale_",
+    "ds_scale_copy": r"\bds_scale_copy_",
+    "s_set_vgpr_size": r"\bs_set_vgpr_size(?:_prsv)?\b",
+    "s_abarrier": r"\bs_abarrier_",
+    "s_ebarrier": r"\bs_ebarrier_",
+    "multimem": r"\bmultimem_",
 }
 
 
@@ -41,16 +55,21 @@ def scan(path: str, kernel: str = "") -> dict:
     root = Path(path)
     totals = {name: 0 for name in PATTERNS}
     files = []
+    unresolved = []
     for file in _iter_files(root):
         text = file.read_text(encoding="utf-8", errors="ignore")
-        if kernel and kernel not in file.name and kernel not in text:
+        parsed = parse_isa(text, kernel)
+        if parsed["reason"]:
+            unresolved.append({"file": str(file), "reason": parsed["reason"], "symbols": parsed["symbols"]})
             continue
-        counts = {name: len(re.findall(pattern, text)) for name, pattern in PATTERNS.items()}
+        instruction_text = "\n".join(r["text"] for r in parsed["instructions"])
+        counts = {name: len(re.findall(pattern, instruction_text)) for name, pattern in PATTERNS.items()}
         if not any(counts.values()):
             continue
         for name, value in counts.items():
             totals[name] += value
-        files.append({"file": str(file), "counts": counts})
+        files.append({"file": str(file), "counts": counts, "scope": parsed["scope"], "symbols": parsed["symbols"],
+                      "selected_symbol": parsed["selected_symbol"], "instruction_sites": len(parsed["instructions"])})
 
     buffer_ops = sum(totals[k] for k in totals if k.startswith("buffer_load") or k.startswith("buffer_store"))
     global_flat_ops = totals["global_load"] + totals["global_store"] + totals["flat_load"] + totals["flat_store"]
@@ -70,6 +89,8 @@ def scan(path: str, kernel: str = "") -> dict:
         "totals": totals,
         "classification": classification,
         "scope": "static instruction presence, not dynamic hotness or performance; LLVM IR excluded",
+        "unresolved": unresolved,
+        "limitations": "Recognized syntax only; excluded macros are not expanded. Without --kernel all symbols are included; families overlap, so totals cannot be summed as executed instructions.",
         "files": files,
     }
 

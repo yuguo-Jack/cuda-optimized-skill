@@ -56,6 +56,8 @@ python <skill>/scripts/inspect_triton_meta.py KERNEL.py --json-out meta.json
 python <skill>/scripts/scan_amdgcn.py repro/artifacts --kernel KERNEL --json-out isa_scan.json
 ```
 
+低层路径按 [HCU 指令指南](../hygon-hip-kernel-optimizer/references/hcu-isa-guide.md) 核对精确 gfx 的指令形式、布局和同步。`scan_amdgcn.py --kernel` 指实际汇编符号；匹配缺失或歧义会记录 unresolved，不能用文件名代替。
+
 元数据扫描是启发式，只解析部分格式；返回空项不证明编译器没做优化。ISA 扫描不把 LLVM IR 当最终指令，不把静态次数当动态热点。
 
 按 [策略](references/optimization_patterns.md) 检查：布局/合并、对齐、向量化、tile/warps/stages、dot 精度与转换、LDS/寄存器/occupancy、tail mask、同步、原子/归约、pipeline 和融合。需要参考时，可按 attention、稀疏 attention、MoE 的阶段和输入分布查找已有 HCU 案例。
@@ -75,5 +77,7 @@ python <skill>/scripts/scan_amdgcn.py repro/artifacts --kernel KERNEL --json-out
 ## 5. 报告与交付
 
 `make_investigation_report.py` 生成待填写草稿；依 [报告模板](references/report_template.md) 补环境/源码、实际使用的资料出处、调用链/目录、捕获完整性、正确性、实际样本、瓶颈证据、候选失败、单 kernel 与模型结果、适用/回退条件。
+
+autotune 最快候选需脱离筛选过程再次独立与基线对照，交替执行顺序，保持相同输入/seed、warmup、repeat、缓存和计时口径；保留逐轮结果，不能只报告最小值。适配 HIP 迭代器时使用其四轮确认与产物契约。
 
 footprint rate 不是 HBM bandwidth utilization；缺少 ISA/消融/归一化计数时标明机制待证。没有 HCU 运行只报告静态结果。报告与原始证据保留在当前任务工程。

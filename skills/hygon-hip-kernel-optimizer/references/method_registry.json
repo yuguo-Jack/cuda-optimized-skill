@@ -36,12 +36,10 @@
       "axis": "compute",
       "priority": 3,
       "name": "Launch geometry and target wave width (legacy method ID)",
-      "trigger_metric": "SQ_WAVES",
-      "trigger_direction": "low_is_bad",
-      "required_features": [
-        "wave64"
-      ],
-      "reference_impl": "block sizes as multiples of 64; tune occupancy with LDS/VGPR pressure",
+      "trigger_metric": "launch geometry, grid coverage and target occupancy/resource evidence",
+      "trigger_direction": "manual",
+      "required_features": [],
+      "reference_impl": "Historical method ID retained. Query actual target wave width and resource allocation granularity; sweep launch geometry within the operator contract. Do not hard-code CUDA warp32 or assume all HCU modes use wave64.",
       "requires_target_probe": true,
       "evidence_scope": "candidate strategy; verify exact target/toolchain and workload; not a compatibility or speedup promise"
     },
@@ -316,9 +314,10 @@
       "required_features": [
         "sqtt"
       ],
-      "reference_impl": "hipprof --sqtt --sqtt-type stat_stall/stat_valu",
+      "reference_impl": "Select the supported XProf/XCompute or hipprof SQTT workflow; keep each tool command, artifact and metric definition distinct.",
       "requires_target_probe": true,
-      "evidence_scope": "candidate strategy; verify exact target/toolchain and workload; not a compatibility or speedup promise"
+      "evidence_scope": "candidate strategy; verify exact target/toolchain and workload; not a compatibility or speedup promise",
+      "kind": "diagnostic"
     },
     "compute.shaobo_mx_low_precision": {
       "axis": "compute",
@@ -441,7 +440,7 @@
     "Do not trust __has_builtin alone for HCU builtin support; compile a source-backed minimal call and inspect final ISA.",
     "Do not invent HCU builtin signatures from AMD names or spreadsheet rows without a source-backed call site."
   ],
-  "scope_note": "gfx IDs are not ordered capability numbers. Historical method IDs are stable; source/probe evidence governs target applicability.",
+  "scope_note": "gfx IDs are not ordered capability numbers. Historical method IDs are stable; source/probe evidence governs target applicability. DCU and HCU are aliases, including legacy paths and fields. See hcu-isa-guide.md for evidence-scoped ISA guidance.",
   "hardware_names": {
     "gfx936": "北美洲",
     "gfx938": "南美洲",

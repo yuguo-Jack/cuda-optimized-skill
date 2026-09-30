@@ -18,6 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 from experiment import benchmark_gate, resolve_benchmark, require_open_iteration
+from paired_measurement import compare
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 KERNEL_EXTS = (".hip", ".cu", ".cpp", ".cc", ".cxx", ".py")
@@ -272,6 +273,12 @@ def cmd_close_iter(args):
             "guidance": "Codex should fix the kernel and re-run close-iter.",
         }, indent=2))
         sys.exit(2)
+
+    # Selection timings are not independent confirmation. Remeasure current
+    # best and winner in four alternating rounds using the frozen cases.
+    bench["confirmation"] = compare(state, kernel, state["best_file"], args.benchmark,
+                                     Path(iter_dir) / "confirmation", args.warmup, args.repeat)
+    Path(bench_json).write_text(json.dumps(bench, indent=2), encoding="utf-8")
 
     # Step 3g: Profile champion with the selected HCU tool
     rc = _run([

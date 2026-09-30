@@ -115,6 +115,34 @@
           }
         }
       }
+    },
+    "coupling_reviews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "ids",
+          "separate_deltas",
+          "validation_plan"
+        ],
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2
+          },
+          "separate_deltas": {
+            "type": "string",
+            "minLength": 1
+          },
+          "validation_plan": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
     }
   }
 }
