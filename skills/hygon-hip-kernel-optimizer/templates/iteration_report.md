@@ -1,123 +1,25 @@
-# Iteration {{iter}} - Analysis
+# HCU 算子优化报告
 
-**Kernel profiled (input)**: `{{best_file_before}}`
-**Time before**: {{best_ms_before}} ms
-**GPU / arch**: {{gpu_name}} / {{gfx_arch}}
+## 1. 问题、接口与代码导航
 
----
+原始需求、数学语义、输入输出/布局/stream/数值契约；工程目录→入口→分派→实际kernel；目标场景与性能指标。
 
-## Roofline Analysis (from `roofline.json`)
+## 2. 环境和知识依据
 
-| Axis | delta (gap) | Utilization | Budget |
-|------|-------------|-------------|--------|
-| Compute | {{delta_compute}} | {{compute_util_pct}}% | {{budget_compute}} |
-| Memory | {{delta_memory}} | {{memory_util_pct}}% | {{budget_memory}} |
-| Latency | {{delta_latency}} | max stall {{max_stall_pct}}% | {{budget_latency}} |
+GPU/gfx/wave、驱动/DTK、AICC或其他编译器绝对路径及版本、Torch/Triton/库SHA、父仓子模块gitlink、构建命令；知识ID/SHA/页码/函数；历史结论与本轮实测分开。
 
-**Primary bound**: {{bound}}
+## 3. 基线与测试矩阵
 
----
+baseline/reference SHA与独立性；case/seed/dtype/shape/stride/mask/路由分布；全部输出、容差、race/越界/确定性检查的实际状态；未覆盖项及原因。
 
-## Top DCU Metrics (from `dcu_top.json`)
+## 4. 瓶颈与修改
 
-### Compute
-{{compute_metrics_table}}
+准确kernel/dispatch、工具与指标公式/单位/范围、原件路径；可证伪假设；修改文件/符号/代码解释；为什么改、适用条件与预期证据。
 
-### Memory
-{{memory_metrics_table}}
+## 5. 变体、消融与结果
 
-### Latency / Stalls
-{{latency_metrics_table}}
+每个变体方法组合和超参数；真实样本/均值/中位数/p90/CV、工作负载加权/回退检查；编译/正确性/OOM失败记录。kernel-only、compile/autotune、端到端分别比较。消融是否正确、机制是否核实、仍未验证的方法。
 
----
+## 6. 结论、边界与回退
 
-## Diagnosis
-
-_Which axis is the dominant bottleneck right now? Cite specific hipprof/PMC/SQTT values. Explain how the roofline budget allocation reflects this diagnosis._
-
-> Example:
-> `SQ_INSTS_MMOP = 0` on a GEMM-like kernel means MMAC is missing. High `TCC_EA_RDREQ_sum` points at memory traffic. Barrier or wait-heavy SQTT stats push latency budget.
-
-## Chosen Methods
-
-For each method, state: (a) priority level from the catalog, (b) DCU metric or dccobjdump evidence, (c) the exact implementation delta vs. current best, and (d) expected metric shift.
-
-### {{axis_1}} - `{{method_1_id}}` (Priority: {{P_level_1}})
-- **Budget for this axis**: {{budget_axis_1}}
-- **Priority scan**: _List all higher-priority methods that were scanned and why each was skipped._
-- **Trigger evidence**: _(cite specific DCU metric / ISA evidence)_
-- **Trigger strength**: _(continuous value 0-1 if axis budget >= 2)_
-- **Method**:
-- **Delta vs current best**:
-- **Expected metric shift**:
-- **Risks / coupling**:
-
-### {{axis_2}} - `{{method_2_id}}` (Priority: {{P_level_2}})
-- **Budget for this axis**: {{budget_axis_2}}
-- **Priority scan**: _List higher-priority methods scanned and skip reasons._
-- **Trigger evidence**:
-- **Method**:
-- **Delta vs current best**:
-- **Expected metric shift**:
-- **Risks / coupling**:
-
-### {{axis_3}} - `{{method_3_id}}` (Priority: {{P_level_3}})
-_(Only if a third method is selected; omit if the relevant axis budget is 0.)_
-- **Budget for this axis**: {{budget_axis_3}}
-- **Priority scan**:
-- **Trigger evidence**:
-- **Method**:
-- **Delta vs current best**:
-- **Expected metric shift**:
-- **Risks / coupling**:
-
-## Orthogonality Check
-
-_Verify: (1) no pair is the same optimization under two names, (2) coupled pairs are counted once when they are the same code delta, (3) all methods are arch-compatible, and (4) axis distribution matches roofline budget._
-
-## Excluded Candidates
-
-_List every higher-priority method on each axis that was not selected, with the exact reason._
-
-- `compute.mmac_tensor_core` (P1) - skipped: kernel is pure elementwise, no matmul semantics
-- `memory.kernel_fusion` (P1) - skipped: already in `selected_methods` from iter 1
-- `latency.wavefront_shuffle_ds_bpermute` (P3) - skipped: exchange crosses waves, not wave-local
-
-## Branch Variants
-
-_Describe the K hyperparameter variants generated for branch-and-select._
-
-| Branch | Tile (MxNxK) | Stages | Wave/block shape | Other diff |
-|--------|--------------|--------|------------------|------------|
-| b1 | 128x128x32 | 3 | 256 threads | n/a |
-| b2 | 128x256x32 | 3 | 256 threads | n/a |
-| b3 | 256x128x32 | 4 | 512 threads | n/a |
-| b4 | 128x128x64 | 5 | 256 threads | n/a |
-
----
-
-## Result (filled after benchmarking)
-
-- **Champion branch**: b{{champion_idx}}
-- **New ms**: {{new_ms}}
-- **Speedup vs previous best**: {{speedup_vs_best_before}}
-- **Speedup vs reference**: {{speedup_vs_ref}}
-- **Validation**: {{validation_status}}
-- **Retries needed**: {{retries}}
-- **Outcome**: {{outcome}} (improved / regressed / failed_validation)
-
-### Attribution (from ablation)
-
-| Method | Ablated ms | Attribution ms | Contributed? | DCU ISA verified? |
-|--------|------------|----------------|--------------|-------------------|
-| {{m1_id}} | {{m1_ablated_ms}} | {{m1_attr_ms}} | {{m1_contributed}} | {{m1_isa}} |
-| {{m2_id}} | {{m2_ablated_ms}} | {{m2_attr_ms}} | {{m2_contributed}} | {{m2_isa}} |
-| {{m3_id}} | {{m3_ablated_ms}} | {{m3_attr_ms}} | {{m3_contributed}} | {{m3_isa}} |
-
-### Post-Hoc vs Expected
-
-_Did the metric shift match the prediction? If not, why?_
-
-_Did attribution confirm the methods expected to be effective?_
-
-_This note becomes part of the final retrospective._
+选中的实现及其支持范围，收益与噪声，热点是否转移，失败条件/回退，待硬件验证/待补工具/权限；不可将静态复核写成HCU实测。可复用案例的入库建议及应同步复核的总览/专题/案例。

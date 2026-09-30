@@ -31,6 +31,8 @@ def _copy_file(src: Path, dst_dir: Path) -> str | None:
 
 
 def _copy_tree(src: Path, dst_dir: Path) -> str | None:
+    if dst_dir.resolve() == src.resolve() or src.resolve() in dst_dir.resolve().parents:
+        raise ValueError("Artifact output cannot be inside its source cache/capture directory")
     if not src.is_dir():
         return None
     dst_dir.mkdir(parents=True, exist_ok=True)

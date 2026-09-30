@@ -12,13 +12,13 @@ from pathlib import Path
 START_RE = re.compile(r"\[(?P<kind>AUTOTUNE|SINGLE-CONFIG)\]\s+kernel=(?P<kernel>\S+)\s+configs=(?P<configs>\d+)")
 INPUT_RE = re.compile(r"^\s*(?P<name>[A-Za-z_]\w*)\s*:\s+shape=(?P<shape>\[[^\]]*\])\s+dtype=(?P<dtype>\S+)\s+stride=(?P<stride>\[[^\]]*\])")
 SCALAR_RE = re.compile(r"^\s*(?P<name>[A-Za-z_]\w*)\s*:\s+(?P<value>[-+A-Za-z0-9_./]+)\s*$")
-KV_RE = re.compile(r"^\s*(?P<key>Total tensor bytes|Best config time|Effective bandwidth|HW peak bandwidth|Bandwidth utilization)\s+:\s+(?P<value>.+?)\s*$")
+KV_RE = re.compile(r"^\s*(?P<key>Total tensor bytes|Best config time|Effective bandwidth|Footprint rate estimate|HW peak bandwidth|Bandwidth utilization|Footprint/peak ratio \(not HBM utilization\))\s+:\s+(?P<value>.+?)\s*$")
 SAVED_RE = re.compile(r"^\s*(?P<key>Kernel source saved|Inputs saved|Run standalone)\s+:\s+(?P<value>.+?)\s*$")
 TS_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+")
 
 
 def _float_prefix(value: str) -> float | None:
-    m = re.search(r"[-+]?\d+(?:\.\d+)?", value)
+    m = re.search(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?", value)
     return float(m.group(0)) if m else None
 
 

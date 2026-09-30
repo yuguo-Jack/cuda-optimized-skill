@@ -12,6 +12,7 @@ import argparse
 import ast
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +42,9 @@ def _json_loads(text: str) -> dict[str, int]:
     out: dict[str, int] = {}
     for key, value in raw.items():
         try:
-            out[str(key)] = int(value)
+            if not re.fullmatch(r"[A-Za-z_]\w*", str(key)) or isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError("dimensions require valid names and nonnegative integer values")
+            out[str(key)] = value
         except (TypeError, ValueError) as exc:
             raise SystemExit(f"--dims value for {key!r} must be int-like") from exc
     return out
@@ -204,13 +207,14 @@ def _classify(imports: list[str], functions: list[dict[str, Any]], dims: dict[st
         frameworks.append("tilelang")
 
     op = "unknown"
-    if {"M", "N", "K"}.issubset(dim_keys) or any(x in text_calls for x in ("matmul", "mm", "bmm", "tl.dot", "dot")):
+    call_leaves = {call.rsplit(".", 1)[-1].lower() for f in functions for call in f.get("calls", [])}
+    if call_leaves & {"matmul", "mm", "bmm", "dot"} or any("MatMult" in f.get("binops", []) for f in functions):
         op = "matmul"
-        reasons.append("matmul/dot call or M,N,K dims detected")
+        reasons.append("matmul/dot call or @ expression detected; dimensions alone do not prove GEMM")
     elif any(x in text_calls for x in ("softmax", "sum", "mean", "amax", "max", "norm", "layer_norm")):
         op = "reduction"
         reasons.append("reduction-like call detected")
-    elif "N" in dim_keys:
+    elif dim_keys == {"N"}:
         op = "elementwise"
         reasons.append("single flat N dimension detected")
 
@@ -256,6 +260,10 @@ def inspect_ref(ref: str, dims: dict[str, int]) -> dict[str, Any]:
         unsupported.append("chosen function appears to be a JIT kernel, not a Python oracle")
     if classification["op_kind"] == "unknown":
         unsupported.append("operation family is unknown; generated kernel may be placeholder")
+    if return_style == "inplace":
+        unsupported.append("in-place adapters and write sets require manual contract review")
+    if chosen and (len(chosen.get("return_exprs", [])) != 1 or chosen.get("subscripts")):
+        unsupported.append("control flow/indexing needs manual semantic review")
     if not tensor_args and chosen:
         unsupported.append("no tensor-like function arguments detected")
 

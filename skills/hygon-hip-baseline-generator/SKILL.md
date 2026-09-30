@@ -1,207 +1,46 @@
 ---
 name: hygon-hip-baseline-generator
-description: Generate a Hygon DCU HIP/C++ baseline kernel and correctness harness from a Torch, Triton, TileLang, Python, or CUDA/C++ reference plus shape JSON, including evidence-backed CUDA-to-HIP/DCU conversion, then hand the validated baseline to the Hygon HIP kernel optimizer. Use when the user has no initial HIP/C++ kernel, asks to start from a ref implementation, provides only ref.py and shape/dims, needs CUDA source ported to HIP/DCU, or wants automatic baseline generation before iterative DCU optimization.
+description: 从 Torch、Triton、TileLang、Python 或 CUDA 参考实现建立海光 HCU/DCU HIP 算子的独立正确性基线，梳理数值、布局和输入输出契约，生成保守脚手架并移交 HIP 优化流程。用于缺少可运行 HIP 基线、CUDA 到 HCU 移植和算子测试准备。
 ---
 
-# Hygon HIP Baseline Generator
+# Hygon HIP 基线生成
 
-## Purpose
+目标是得到符合原始语义的可验证基线和独立 reference。读取兄弟 HIP Skill 的 [共同契约](../hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md)，重点是知识查证、环境和数值/布局契约。三个 Hygon Skills 应一同安装。
 
-Create the missing baseline stage before `hygon-hip-kernel-optimizer` runs. This skill turns a reference implementation plus shape into a case directory containing:
+## 1. 查原工程与领域知识
 
-- `kernel.hip`: conservative HIP/C++ baseline exposing `extern "C" void solve(...)`;
-- `ref.py`: benchmark-compatible reference wrapper exposing `reference(...)`;
-- `baseline_manifest.json`: detected operation, signature, assumptions, and next commands;
-- optional debug logs from compile/correctness repair.
+先查看输入算子的接口、调用点、shape/dtype/stride、输出、alias/in-place、stream、边界及容差。通过已安装 `hcu-knowledge-search` 读取当前 HCU 实现和工具链资料，必要时看原 PDF、固定源码和目标头文件。
 
-It also handles CUDA-to-HIP/DCU baseline conversion when the user provides CUDA `.cu`, `.cuh`, C++ extension, or CUDA-library code instead of a Torch/Triton/TileLang/Python reference. In that mode, the output is still a correctness-first HIP baseline plus benchmark-compatible reference, but the conversion must be evidence-backed rather than a blind rename pass.
+CUDA 移植按 API、线程模型、共享内存/同步、数值类型、矩阵指令、库接口分别检查。HIPIFY 可辅助替换，但不是兼容证明。HCU rocBLAS/hipBLASLt/MIOpen/RCCL 等接口资料与 AMD 源码分清；AICC 与 DTK 编译器分清。
 
-Only start the iterative performance optimizer after this baseline passes correctness against the reference.
+选择独立 oracle：优先可读、语义完整的原 reference；Triton/TileLang/CUDA 参考必须保留，必要时另写 Torch/CPU 数学实现并与原实现对照。不要同步修改 oracle 与候选来让测试通过。
 
-Path rule: never assume `skills/...` exists under the target project. Resolve scripts from the loaded skill file:
-
-- `<baseline-skill>` is the directory containing this `SKILL.md`.
-- `<optimizer-skill>` is the sibling directory `<baseline-skill>/../hygon-hip-kernel-optimizer`.
-- Before running commands, verify these files exist: `<baseline-skill>/scripts/inspect_ref.py`, `<baseline-skill>/scripts/generate_baseline.py`, `<optimizer-skill>/scripts/preflight.py`, `<optimizer-skill>/scripts/benchmark.py`, and `<optimizer-skill>/scripts/orchestrate.py`.
-
-## Knowledge retrieval
-
-For knowledge lookup in this workflow, first read and invoke [hcu-knowledge-search](../hcu-knowledge-search/SKILL.md). Resolve `<KB_ROOT>` from that skill's `workspace.json`; use the system Python entry point:
+## 2. 使用脚手架的边界
 
 ```bash
-python -X utf8 "<KB_ROOT>/kb.py" --root "<KB_ROOT>" search "<target and exact CUDA/HIP API or symptom>"
+python <skill>/scripts/inspect_ref.py --ref original.py --dims '{"M":128,"N":256,"K":64}' --out ref_analysis.json
+python <skill>/scripts/generate_baseline.py --analysis ref_analysis.json --out-dir new_case
 ```
 
-Follow that skill's configured search mode, including Feishu when configured for hybrid search. Read the matched original sections or fixed-commit source before using a result; preserve the gfx target, DTK version, and source revision with mapping evidence. If retrieval is incomplete, report the gap and verify against the installed DTK or authoritative upstream references as directed by that skill.
+`inspect_ref` 静态读取 Python AST，不执行源文件。自动识别是提示，需要阅读正文确认。生成目录必须为空，以免覆盖已有基线。
 
-## Inputs
+产物：`ref_original.py`、`ref.py` adapter、`ref_analysis.json`、`kernel.hip`、`baseline_manifest.json`。manifest 的 `generated_unvalidated` 只代表生成成功，不是编译/正确性成功。
 
-Required:
+自动生成仅覆盖独立连续 FP32 的简单 elementwise 和 row-major GEMM。复杂 op、控制流、索引、cast、in-place、量化、半精度/双精度、多输出等必须人工实现/适配。已发现不支持时 manifest 为 `needs_manual_implementation`，kernel 带 `#error` 阻止占位 copy 被误当成正确基线。读懂并解决全部假设后才能去掉该 guard；禁止仅为编译而删除。
 
-- reference or source file: usually `.py`, containing Torch, Triton, TileLang, or mixed Python code; or CUDA/C++ source such as `.cu`, `.cuh`, `.cpp`, `.cc`, `.cxx`, or extension code that needs HIP/DCU conversion;
-- shape JSON, for example `{"N":1048576}` or `{"M":1024,"N":1024,"K":1024}`.
+检查 adapter 是否按原函数参数名调用、二维 view 是否匹配、输出是否全部写入；AST 没有推断出的 dtype/layout 不视作 FP32 兼容证明。需要复杂分配时使用项目专用 harness，不强塞进通用 flat ABI。
 
-Optional:
+## 3. 编译、正确性和交接
 
-- case output directory;
-- dtype/tolerance assumptions;
-- expected output name when the reference returns a tensor;
-- remote DCU device id for validation.
-
-If the ref file does not clearly expose a runnable Python oracle, create a wrapper around the most trustworthy path first. Triton and TileLang kernels are often implementation references rather than correctness oracles; prefer a Torch equivalent in the same file when available.
-
-If the input is CUDA source, preserve the original file and create converted HIP artifacts beside the generated case. Do not overwrite user CUDA sources. Prefer names such as `kernel_original.cu`, `kernel.hip`, `hipify_report.md`, and `cuda_to_hip_manifest.json` or include the same information in `baseline_manifest.json`.
-
-## Workflow
-
-### 1. Inspect the reference
-
-Run:
+在实际 HCU 节点/项目容器中激活正确工具链。本地 Agent 可以编辑和读结果；没有 HCU 时完成静态准备并标明未运行。
 
 ```bash
-python <baseline-skill>/scripts/inspect_ref.py \
-  --ref <ref-file> \
-  --dims '<shape-json>' \
-  --out <case-dir>/ref_analysis.json
+python <hip-skill>/scripts/preflight.py --baseline new_case/kernel.hip --ref new_case/ref.py --dims '{"M":128,"N":256,"K":64}'
+python <hip-skill>/scripts/benchmark.py new_case/kernel.hip --ref new_case/ref.py --M=128 --N=256 --K=64 --ptr-size 32768 --json-out new_case/baseline_bench.json
 ```
 
-On PowerShell, prefer `--dims-file <case-dir>/shape.json` or escape JSON quotes explicitly.
+flat ABI 每指针容量至少 max(MK,KN,MN)，上述例子为 32768。benchmark 保留原精度比较，整数精确比较；支持范围、容差、NaN/Inf/空张量策略必须来自 contract，不凭脚手架默认值决定。
 
-Read `ref_analysis.json` before writing kernel code. It identifies imports, functions, decorators, likely reference function, tensor parameters, in-place output parameters, return style, and operation family.
+补多 seed、尾块、代表规模以及必要项目单测；编译通过、静态检查与硬件正确性分开。记录环境、reference SHA、实际输入、命令、日志与失败。基线正确后交给 `hygon-hip-kernel-optimizer`，默认 3 轮/4 分支，可按任务调整，无需为默认参数停下来询问。
 
-Operation-family hints are intentionally conservative:
-
-- `matmul`: `torch.matmul`, `@`, `tl.dot`, GEMM-like TileLang calls, or dims containing `M,N,K`;
-- `elementwise`: vector-shaped refs with simple arithmetic, activations, masks, or one-output maps;
-- `reduction`: `sum`, `max`, `mean`, norm, softmax-like patterns;
-- `unknown`: requires agent-written baseline from source inspection.
-
-### 2. Convert CUDA inputs when needed
-
-When the source is CUDA/C++ rather than a direct Python/Torch/Triton/TileLang oracle, create a HIP/DCU baseline before normal scaffold/validation. Use this evidence order:
-
-1. Invoke `hcu-knowledge-search` first for HCU/DTK migration evidence, querying the exact CUDA symbols, library names, gfx target, and toolchain version. For AMD/NVIDIA comparisons and CUDA-to-HIP mappings, start at `<KB_ROOT>/knowledge/foundation/reference/vendor-gpu/README.md` and follow its HIPIFY and API-mapping references. Include cuBLAS, cuSPARSE, cuRAND, cuFFT, cuSOLVER, or CUB mappings when those APIs appear; verify upstream mappings against the target DTK rather than assuming HCU compatibility.
-2. Use ROCm HIPIFY documentation as the upstream rule source. Prefer `hipify-clang` for production or complex C++ because it parses CUDA with Clang and reports conversion failures; use `hipify-perl` only for quick/simple code. For PyTorch CUDA extensions, CMake-based PyTorch submodules, or projects with custom include rewriting, consult and follow the official `ROCm/hipify_torch` repository patterns and custom mapping support.
-3. Run an automatic hipify pass when tools are available in the target environment, keeping logs:
-   - `hipify-clang <file.cu> --cuda-path=<cuda-path> --print-stats -- <includes-and-defines>`
-   - or `python hipify_cli.py --config-json <config>` for `hipify_torch` style projects.
-   If `compile_commands.json` exists, prefer it so include paths and macros match the real build.
-4. Review every unconverted symbol, warning, include, macro, launch wrapper, library call, and device intrinsic manually. HIPIFY is a starting point, not proof of correctness.
-
-For missing or uncertain mappings, search the remote DTK/ROCm installation before deciding the API is unsupported. Some CUDA-like functions are not found by `hcu-knowledge-search` or public docs but do exist in the installed DTK headers or libraries.
-
-Use the target project's remote workflow to inspect the actual DCU environment. Search likely roots such as `/opt/dtk`, `/opt/rocm`, `/usr/include`, project-provided CK/hip headers, and active conda or module paths. Prefer `rg` when available:
-
-```bash
-rg -n "cudaFunction|cuFunction|hipFunction|rocFunction" /opt/dtk /opt/rocm /usr/include 2>/dev/null
-```
-
-If the exact CUDA name is absent, try systematic substitutions and library-family variants:
-
-- `cuda*` -> `hip*`, `cuda*` constants/enums -> `hip*`
-- `cu*` driver APIs -> `hip*` module/driver-style APIs where available
-- `cublas*` -> `hipblas*` first, then `rocblas*`
-- `cusparse*` -> `hipsparse*` first, then `rocsparse*`
-- `curand*` -> `hiprand*` first, then `rocrand*`
-- `cufft*` -> `hipfft*` first, then `rocfft*`
-- `cusolver*` -> `hipsolver*` first, then `rocsolver*`
-- `cub::` -> `hipcub::` first, then `rocprim::`
-- CUDA headers such as `cuda_runtime.h`, `cuda_fp16.h`, and `cuda_bf16.h` -> HIP/ROCm equivalents such as `hip/hip_runtime.h`, `hip/hip_fp16.h`, and available bf16 headers verified in DTK.
-
-Do not invent mappings from naming symmetry alone. A mapping is trusted only after at least one of these is true:
-
-- an original source retrieved with `hcu-knowledge-search` or a ROCm/HIPIFY table documents it;
-- `hipify-clang` or `hipify_torch` converts it and no later review contradicts it;
-- the DTK/ROCm install contains a matching declaration, wrapper, sample, or library symbol;
-- a minimal compile probe with `hipcc` succeeds on the target DCU toolchain.
-
-Record the evidence for each non-obvious mapping in the manifest or report: original CUDA symbol, chosen HIP/DCU symbol, evidence source, and any caveat. If no credible mapping exists, keep a small compatibility wrapper or rewrite the operation using supported HIP/ROCm primitives, then validate correctness before optimization.
-
-### 3. Scaffold the baseline case
-
-Run:
-
-```bash
-python <baseline-skill>/scripts/generate_baseline.py \
-  --analysis <case-dir>/ref_analysis.json \
-  --out-dir <case-dir> \
-  --op auto
-```
-
-The generator handles common flat elementwise and naive matmul baselines. For unsupported or ambiguous refs, let the script produce the wrapper and manifest, then edit `kernel.hip` manually using the analysis.
-
-Generated code is deliberately simple. It should be correct and easy to debug, not fast.
-
-### 4. Validate locally when possible, remotely when DCU is required
-
-Use the Hygon optimizer preflight and benchmark scripts:
-
-```bash
-python <optimizer-skill>/scripts/preflight.py \
-  --baseline <case-dir>/kernel.hip \
-  --ref <case-dir>/ref.py \
-  --dims '<shape-json>' \
-  --out <case-dir>/preflight.json
-
-HIP_VISIBLE_DEVICES=<device> python <optimizer-skill>/scripts/benchmark.py \
-  <case-dir>/kernel.hip \
-  --ref <case-dir>/ref.py \
-  --ptr-size <num-elements> \
-  --warmup 2 \
-  --repeat 5 \
-  --json-out <case-dir>/baseline_bench.json \
-  --N=<N>
-```
-
-For matrix shapes, pass `--M=<M> --N=<N> --K=<K>` and set `--ptr-size` large enough for the largest flat input/output tensor, normally `max(M*K, K*N, M*N)`.
-
-If validation must run on remote DCU, use the repository `remote-ssh-docker-workflow` skill. Keep generated cases in a normal case directory if they are project artifacts. Use repository-root `hygon_tmp/` only for scratch probes and temporary logs.
-
-### 5. Debug correctness before optimization
-
-Do not start performance iteration while baseline correctness is failing.
-
-Use this repair order:
-
-1. inspect `preflight.json`, `baseline_bench.json`, and benchmark stderr;
-2. confirm `solve(...)` argument names match `ref.py reference(...)`;
-3. confirm output parameters are non-const pointer args and reference writes them in-place;
-4. confirm flat tensor views match shape: elementwise `N`, matmul `A[M,K]`, `B[K,N]`, `C[M,N]`;
-5. reduce to a tiny shape and add temporary debug prints or CPU-side reference checks;
-6. only after correctness passes, remove debug code and continue.
-
-Use `references/ref_to_baseline_patterns.md` for framework-specific conversion patterns.
-
-### 6. Hand off to the optimizer
-
-After `baseline_bench.json` reports correctness passed:
-
-```bash
-python <optimizer-skill>/scripts/orchestrate.py setup \
-  --baseline <case-dir>/kernel.hip \
-  --ref <case-dir>/ref.py \
-  --dims '<shape-json>' \
-  --ptr-size <num-elements> \
-  --iterations <user-selected-iterations> \
-  --branches <branches-per-iteration>
-```
-
-The iteration count is not chosen by this skill. Ask the user if it was not supplied.
-
-## Rules
-
-- Treat reference semantics as the source of truth; baseline speed is secondary.
-- Keep generated HIP baseline boring: one thread per output element, no aggressive tiling, no inline asm, no CK Tile unless the baseline cannot be expressed simply.
-- Preserve the original reference file; generate an adapter `ref.py` instead of rewriting the user file.
-- If the original reference returns a tensor, generated `ref.py` must copy it into an output tensor so the existing benchmark can compare outputs.
-- If the original reference mutates output tensors, preserve those names in `solve(...)`.
-- For Triton/TileLang files, do not assume the decorated kernel is the oracle. Prefer a plain Torch `reference`, `torch_ref`, `ref`, `forward`, or `golden` function when present.
-- For CUDA inputs, use `hcu-knowledge-search`, HIPIFY, and installed DTK evidence to create a conservative HIP baseline before performance work. Keep original CUDA files, record mapping evidence, and compile-probe uncertain conversions.
-- Record unsupported assumptions in `baseline_manifest.json`; do not silently invent dtype, layout, broadcasting, or reduction semantics.
-- Do not use `hygon_tmp/` as a committed interface. It is scratch only.
-
-## Resources
-
-- `scripts/inspect_ref.py`: AST-based reference inspection and operation classification.
-- `scripts/generate_baseline.py`: wrapper and conservative HIP baseline scaffolding.
-- `references/ref_to_baseline_patterns.md`: practical conversion and debugging guidance for Torch, Triton, and TileLang refs.
+交接包含 contract、原参考与adapter、manifest未解决项、基线源码、编译/正确性/测速状态、工作负载矩阵、知识引用和远端运行方式。参阅 [转换与适配要点](references/ref_to_baseline_patterns.md)。

@@ -1,91 +1,27 @@
-# Triton Investigation Workflow
+# Triton 调查步骤
 
-Use this reference after loading the skill when the task is a TorchInductor Triton performance investigation on Hygon DCU.
+## 1. 模型热点与契约
 
-## 1. Profile and Capture
+原始模型→调用图→生成源码→实际 dispatch 建立对应，记录 Torch/Triton/HCU 工具链与知识来源。先用未采集运行保留端到端基线，再采系统热点和必要的单 kernel 指标。
 
-Goal: identify the hot Triton kernel and collect enough artifacts to reproduce and inspect it.
+## 2. 独立工作目录
 
-Required outputs:
+每次实验指定独立 TORCHINDUCTOR_CACHE_DIR、TRITON_CACHE_DIR、TRITON_CAPTURE_DIR；不要清全局缓存。日志/缓存路径按实际运行用户和版本查，不能猜 /tmp/torchinductor_root。
 
-- kernel name and profile rank/time share;
-- generated Graph IR or log snippet connecting Graph IR to the kernel name;
-- current timing and shape data;
-- whether autotune ran across multiple configs;
-- captured folder containing `log_profile.txt`, `autotune.log`, captured kernels, input `.pt` files, generated Python code, and Triton cache dumps.
+首次 compiled-model 执行前导入捕获补丁。它记录执行前 storage/stride/offset/alias 和源哈希；捕获会增加同步/数据复制，不能拿此轮测端到端收益。无 autotune 不等于异常，先看缓存命中、单配置及实际 dispatch。
 
-Commands:
+## 3. 复现与独立正确性
 
-```bash
-rm -rf /tmp/torchinductor_root/*
-export TORCH_LOGS="+inductor"
-export TORCHINDUCTOR_TRACE=1
-export TRITON_CAPTURE_DIR=./autotune_kernels
-python repro.py 2>&1 | tee log_profile.txt
-```
+只重放可信文件。生成 replay 保持布局与同dtype alias，重新取得当前stream handle，但仅做 autotune 时间调查。读取安装版 CachingAutotuner 确认 mutated args 是否在每次试验间恢复；另写独立 oracle，逐配置核对。
 
-Do not force `AMDGCN_USE_BUFFER_OPS=1` for the first capture unless the target stack has already passed a smoke compile with it. If a run fails with `LLVM Translation failed` or `builtin.unrealized_conversion_cast`, rerun with `AMDGCN_USE_BUFFER_OPS` unset and record the failed buffer-op probe separately.
+混合dtype storage、函数对象launcher参数、不可序列化对象出现 capture-error 时写项目最小repro，不能把一个不完整目录当已捕获。
 
-If no autotune happened for a kernel that should have multiple configs, first investigate the TorchInductor path before tuning the kernel.
+## 4. 差异与验证
 
-## 2. Check Hints and AMDGCN Instructions
+检查 current HCU 分支的 metadata/lowering、最终代码对象及资源，提出一项明确假设。buffer ops、dot、assume、warps/stages 每次均按实际工具链编译探针。失败不全局强开环境变量。
 
-Goal: determine whether Triton emitted DCU-friendly memory operations.
+baseline/variant 同 shape、数据、seed、布局、stream、恢复和测速口径，GPU 串行运行。多用例加性能回退门禁；非连续、alias、空/尾块、量化与路由分布以支持契约为准。
 
-Required outputs:
+## 5. 回到模型
 
-- pointer arguments from `triton_meta['signature']`;
-- whether pointer arguments have `tt.divisibility` and `tt.pointer_range`;
-- whether AMDGCN contains `buffer_load/store_dwordx4`, `dwordx2`, or only scalar/global/flat operations;
-- whether `AMDGCN_USE_BUFFER_OPS` was enabled.
-
-Use:
-
-```bash
-python <skill>/scripts/inspect_triton_meta.py ./autotune_kernels/<kernel>.py --json-out meta.json
-python <skill>/scripts/scan_amdgcn.py ./triton_artifacts --kernel <kernel> --json-out isa_scan.json
-```
-
-Prefer final assembly evidence over source assumptions.
-
-## 3. Tune or Reject the Triton Kernel
-
-Goal: decide whether source-level Triton changes can improve performance.
-
-Check:
-
-- Are offset inputs provably non-negative? Add `tl.assume(...)`.
-- Are shape or stride parameters provably divisible by 16? Add `tl.multiple_of(...)`.
-- Is access contiguous enough for wide loads/stores?
-- Are atomics, index-dependent gathers, or repeated loads dominating?
-- Is the kernel too simple to justify a launch?
-- Did Inductor scalarize a library operation such as GEMM or reduction into a poor fused pointwise/reduction kernel?
-
-If tuning is plausible, create variants and compare standalone timing, end-to-end timing, and AMDGCN instruction families.
-
-## 4. Avoid Low-Quality Generated Kernels
-
-Goal: stop TorchInductor from generating the bad Triton kernel for a small model region.
-
-Required outputs:
-
-- model function or layer that triggers the kernel;
-- minimal eager fallback or compile boundary;
-- end-to-end performance before/after.
-
-Use `@torch._dynamo.disable` only on the smallest region that removes the bad kernel. Confirm the rest of the model still benefits from `torch.compile`.
-
-## 5. Rewrite Model Code
-
-Goal: remove the algorithmic cause of the poor kernel.
-
-Common rewrites:
-
-- avoid tiny tensor initialization launches;
-- fuse initialization into downstream work;
-- reduce scatter/atomic operations;
-- make indexing more contiguous;
-- preserve library-backed matmul/convolution/reduction paths;
-- change shapes or layout so Inductor specializes a better kernel.
-
-Report whether the rewrite hits the performance target and whether it changes numerical behavior or model semantics.
+核对 graph break、额外转换、launch、通信/overlap 与端到端结果，必要时比较最小 eager 区域或模型重写。先证明语义保持和整体收益，再保留方案。报告引用原件、目录/符号、失败与回退，不把 standalone最快配置当整个模型收益。

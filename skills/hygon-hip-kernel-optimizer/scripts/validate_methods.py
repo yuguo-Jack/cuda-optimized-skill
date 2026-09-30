@@ -59,6 +59,10 @@ def validate(
         return False, ["Top-level 'methods' key missing"]
 
     methods_list = methods_data["methods"]
+    if not isinstance(methods_list, list) or not all(isinstance(m, dict) for m in methods_list):
+        return False, ["methods must be a list of objects"]
+    if len({m.get("id") for m in methods_list}) != len(methods_list):
+        errors.append("method IDs must be unique")
 
     # Detect gfx arch
     gpus = state.get("env", {}).get("gpus", [{}])
@@ -75,9 +79,9 @@ def validate(
 
     # Validate total count matches budget
     expected_total = sum(axis_budget.values())
-    if len(methods_list) != expected_total:
+    if not 1 <= len(methods_list) <= expected_total:
         errors.append(
-            f"Expected {expected_total} methods (budget: {axis_budget}), "
+            f"Expected 1..{expected_total} methods (advisory budget: {axis_budget}), "
             f"got {len(methods_list)}"
         )
 
@@ -91,11 +95,6 @@ def validate(
             errors.append(f"Unknown axis '{ax}' for method {m.get('id')}")
 
     for axis in ["compute", "memory", "latency"]:
-        if axis_counts[axis] != axis_budget.get(axis, 0):
-            errors.append(
-                f"Axis '{axis}': expected {axis_budget.get(axis, 0)} methods "
-                f"(from roofline budget), got {axis_counts[axis]}"
-            )
         if axis_counts[axis] > 2:
             errors.append(
                 f"Axis '{axis}': {axis_counts[axis]} methods exceeds per-axis cap of 2"
@@ -134,31 +133,15 @@ def validate(
         if reg["priority"] != priority:
             errors.append(f"{prefix}: P{priority} != registry P{reg['priority']} for '{mid}'")
 
-        # arch compatibility
-        if reg["min_sm"] > detected_sm > 0:
-            errors.append(f"{prefix}: '{mid}' requires gfx{reg['min_sm']}+ but have gfx{detected_sm}")
-
-        # already selected?
-        selected_ids = {item.get("id") for item in state.get("selected_methods", [])}
-        if mid in selected_ids:
-            errors.append(f"{prefix}: '{mid}' already in selected_methods")
-
-        # ineffective check
-        if not allow_ineffective:
-            ineff_ids = {item.get("id") for item in state.get("ineffective_methods", [])}
-            if mid in ineff_ids:
-                errors.append(
-                    f"{prefix}: '{mid}' in ineffective_methods (use --allow-ineffective "
-                    "if bottleneck profile fundamentally changed)"
-                )
-
-        # implementation_failed check
-        impl_failed_ids = {item.get("id") for item in state.get("implementation_failed_methods", [])}
-        if mid in impl_failed_ids:
-            errors.append(
-                f"{prefix}: '{mid}' previously failed DCU ISA verification. "
-                "Ensure implementation is corrected before re-selecting."
-            )
+        # gfx numbers are identifiers, not a monotonic feature level.
+        evidence = m.get("target_evidence", "")
+        if reg.get("requires_target_probe") and not evidence:
+            errors.append(f"{prefix}: exact-target header/source + compile/ISA probe evidence is required")
+        if reg.get("allowed_arches") and f"gfx{detected_sm}" not in reg["allowed_arches"]:
+            errors.append(f"{prefix}: method is scoped to {reg['allowed_arches']}; observed gfx{detected_sm}")
+        prior_ids = {item.get("id") for item in state.get("selected_methods", [])}
+        if mid in prior_ids and not m.get("retry_reason"):
+            errors.append(f"{prefix}: repeat requires retry_reason explaining changed implementation, shape or bottleneck")
 
         # skipped_higher — must account for all higher-priority on this axis
         higher = _higher_priority_ids(registry, axis, priority)

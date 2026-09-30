@@ -1,3 +1,4 @@
-display_name: Hygon HIP Baseline Generator
-short_description: Generate HIP baselines from refs.
-default_prompt: Generate a Hygon HIP baseline from my reference file and shape, validate correctness, then hand it to the Hygon optimizer.
+interface:
+  display_name: "HCU HIP Baseline"
+  short_description: "Build and validate HCU HIP baselines from references"
+  default_prompt: "Use $hygon-hip-baseline-generator with the current HCU knowledge base and validate against my target environment."

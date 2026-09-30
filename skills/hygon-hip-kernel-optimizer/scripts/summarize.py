@@ -119,6 +119,11 @@ def render(state_path: str, out_path: str) -> None:
     lines.append(f"- CK Tile include: `{env.get('ck_tile',{}).get('include_dir','-')}`")
     lines.append("")
 
+    lines.append("## Unverified method attribution")
+    lines.append("")
+    lines.append(_method_bullets(state.get("unverified_methods", [])))
+    lines.append("")
+    lines.append("Measured scope is the recorded workload and environment. Race safety and end-to-end gains require separate evidence.")
     lines.append("## Headline")
     lines.append("")
     lines.append(f"- **Baseline time**: {_fmt_ms(baseline_ms)}")

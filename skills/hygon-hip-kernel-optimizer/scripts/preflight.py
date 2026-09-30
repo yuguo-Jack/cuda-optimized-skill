@@ -47,7 +47,7 @@ def _parse_solve(source_path: str) -> list[tuple[str, str, bool]]:
             f'{source_path}: cannot find `extern "C" void solve(...)` — '
             f"benchmark.py will not be able to parse this file."
         )
-    raw = re.sub(r"/\*.*?\*/", "", m.group(1))
+    raw = re.sub(r"/\*.*?\*/", "", m.group(1), flags=re.S)
     raw = re.sub(r"//[^\n]*", "", raw)
     raw = " ".join(raw.split())
 
@@ -65,7 +65,8 @@ def _parse_solve(source_path: str) -> list[tuple[str, str, bool]]:
             key=len, reverse=True,
         ):
             base = prefix.replace("*", r"\s*\*")
-            mm = re.match(rf"({base})\s+(\w+)", clean)
+            sep = r"\s*" if prefix.endswith("*") else r"\s+"
+            mm = re.fullmatch(rf"({base}){sep}(\w+)", clean)
             if mm:
                 out.append((prefix, mm.group(2), is_const))
                 matched = True
@@ -79,7 +80,7 @@ def _parse_solve(source_path: str) -> list[tuple[str, str, bool]]:
 # Python module inspection (ref.py, Python backend .py)
 # ---------------------------------------------------------------------------
 
-def _import_without_executing_cuda(path: str, name: str):
+def _import_module(path: str, name: str):
     """Import a .py file. If the import itself has top-level HIP / torch
     calls that fail on a host without a GPU, surface a helpful error.
     """
@@ -99,7 +100,7 @@ def _import_without_executing_cuda(path: str, name: str):
 
 
 def _check_ref(ref_path: str) -> dict:
-    mod = _import_without_executing_cuda(ref_path, "_preflight_ref")
+    mod = _import_module(ref_path, "_preflight_ref")
     if not hasattr(mod, "reference"):
         raise AttributeError(f"{ref_path}: must define `reference(**kwargs)`")
     fn = getattr(mod, "reference")
@@ -119,7 +120,7 @@ def _check_ref(ref_path: str) -> dict:
 
 
 def _check_python_backend(py_path: str) -> dict:
-    mod = _import_without_executing_cuda(py_path, "_preflight_python")
+    mod = _import_module(py_path, "_preflight_python")
     missing = []
     for name in ("setup", "run_kernel"):
         if not hasattr(mod, name) or not callable(getattr(mod, name)):
@@ -178,6 +179,8 @@ def run(baseline: str, ref: str, dims: dict, strict_ref_params: bool = False) ->
                     {"type": t, "name": n, "is_const": c} for t, n, c in sig
                 ],
             }
+            if not any(t.endswith("*") and not c for t, n, c in sig):
+                raise ValueError("flat ABI requires at least one writable output pointer")
             missing = _check_dims_hip(sig, dims)
             if missing:
                 report["ok"] = False

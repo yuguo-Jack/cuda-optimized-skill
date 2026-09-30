@@ -129,9 +129,13 @@ Do not optimize this template before the iterative optimizer starts.
 
 - Run the smallest shape that exercises all boundary conditions.
 - Make sure every input tensor is `const` in `solve(...)`.
-- Make sure every output tensor is non-const and is zeroed by the benchmark before launch.
+- Make sure every output tensor is non-const and has its intended initial state restored before every launch; in-place inputs need a dedicated harness.
 - Align wrapper views with flat allocation size.
 - For broadcasting, explicitly expand in `ref.py` and write the equivalent indexing in HIP.
 - For tolerances, set `atol` and `rtol` in generated `ref.py`.
 - For dtype-sensitive refs, record unsupported dtype assumptions in `baseline_manifest.json`.
 - If the generated baseline is a placeholder, say so in the manifest and final answer.
+
+## Generated versus verified
+
+Automatic output supports simple independent contiguous FP32 only. Unknown contracts emit a blocked scaffold. Preserve the original oracle; do not change casts, scalars, layouts or tolerances just to fit the harness. Call original reference parameters by name and do not forward dimensions it does not accept. See the shared HCU workflow contract for multi-case validation and evidence handoff.

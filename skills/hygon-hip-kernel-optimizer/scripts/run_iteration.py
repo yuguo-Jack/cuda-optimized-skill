@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from experiment import benchmark_gate, run_json, resolve_benchmark
 
 
 _BUNDLED_BENCHMARK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark.py")
@@ -57,40 +58,13 @@ def _run_bench(
     ] + _ptr_size_argv(ptr_size) + _dims_argv(dims)
     print(f"[bench] {' '.join(cmd)}", file=sys.stderr)
 
-    Path(json_out).parent.mkdir(parents=True, exist_ok=True)
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore")
-    except OSError as e:
-        with open(stderr_out, "w", encoding="utf-8") as f:
-            f.write(f"Failed to exec benchmark: {e}\n")
-        return -1
-
-    with open(stderr_out, "w", encoding="utf-8") as f:
-        f.write("---STDOUT---\n")
-        f.write(r.stdout or "")
-        f.write("\n---STDERR---\n")
-        f.write(r.stderr or "")
-
-    # benchmark.py exits 1 on validation failure but still writes json-out
-    # (we rely on the correctness.passed field)
-    if not os.path.isfile(json_out):
-        # Catastrophic — write a minimal JSON for downstream consumers
-        with open(json_out, "w", encoding="utf-8") as f:
-            json.dump({
-                "correctness": {"passed": False, "checked": True},
-                "kernel": None,
-                "reference": None,
-                "error": {
-                    "code": "benchmark_crashed",
-                    "stage": "subprocess",
-                    "message": (r.stderr or "")[-2000:],
-                },
-            }, f, indent=2)
-    return r.returncode
+    result = run_json(cmd, json_out, stderr_out)
+    return 0 if benchmark_gate(result, solution)[0] else 1
 
 
 def cmd_seed_baseline(args: argparse.Namespace) -> None:
     state = _read(args.state)
+    args.benchmark = resolve_benchmark(state, args.benchmark)
     run_dir = state["run_dir"]
     out_dir = os.path.join(run_dir, "baseline")
     os.makedirs(out_dir, exist_ok=True)
@@ -121,6 +95,7 @@ def cmd_seed_baseline(args: argparse.Namespace) -> None:
 
 def cmd_benchmark(args: argparse.Namespace) -> None:
     state = _read(args.state)
+    args.benchmark = resolve_benchmark(state, args.benchmark)
     run_dir = state["run_dir"]
     iter_dir = os.path.join(run_dir, f"iterv{args.iter}")
     candidates = [os.path.join(iter_dir, f"kernel{ext}") for ext in KERNEL_EXTS]
@@ -146,7 +121,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
     summary = {
         "iter": args.iter,
         "kernel": kernel,
-        "passed": bool(res.get("correctness", {}).get("passed", False)),
+        "passed": benchmark_gate(res, kernel)[0],
         "ms": (res.get("kernel") or {}).get("average_ms"),
         "ref_ms": (res.get("reference") or {}).get("average_ms"),
         "speedup_vs_ref": res.get("speedup_vs_reference"),
@@ -155,6 +130,8 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         "stderr_log": stderr_out,
     }
     print(json.dumps(summary, indent=2))
+    if not summary["passed"]:
+        sys.exit(1)
 
 
 def main() -> None:
@@ -163,8 +140,8 @@ def main() -> None:
 
     ps = sub.add_parser("seed-baseline")
     ps.add_argument("--state", required=True)
-    ps.add_argument("--benchmark", default=_BUNDLED_BENCHMARK,
-                    help="Path to benchmark.py (default: bundled)")
+    ps.add_argument("--benchmark", default=None,
+                    help="Benchmark frozen in state, or bundled for legacy runs")
     ps.add_argument("--warmup", type=int, default=10)
     ps.add_argument("--repeat", type=int, default=20)
     ps.set_defaults(func=cmd_seed_baseline)
@@ -172,8 +149,8 @@ def main() -> None:
     pb = sub.add_parser("benchmark")
     pb.add_argument("--state", required=True)
     pb.add_argument("--iter", type=int, required=True)
-    pb.add_argument("--benchmark", default=_BUNDLED_BENCHMARK,
-                    help="Path to benchmark.py (default: bundled)")
+    pb.add_argument("--benchmark", default=None,
+                    help="Benchmark frozen in state, or bundled for legacy runs")
     pb.add_argument("--warmup", type=int, default=10)
     pb.add_argument("--repeat", type=int, default=20)
     pb.set_defaults(func=cmd_benchmark)

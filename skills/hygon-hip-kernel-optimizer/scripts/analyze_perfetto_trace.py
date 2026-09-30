@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 from pathlib import Path
 
 
@@ -43,7 +45,7 @@ def _query_rows(tp, sql: str) -> list[dict]:
 
 def analyze(paths: list[str], max_files: int) -> dict:
     try:
-        from perfetto.trace_processor import TraceProcessor
+        from perfetto.trace_processor import TraceProcessor, TraceProcessorConfig
     except Exception as exc:  # noqa: BLE001 - optional dependency
         return {
             "available": False,
@@ -51,15 +53,18 @@ def analyze(paths: list[str], max_files: int) -> dict:
             "files": [],
         }
 
+    binary = os.environ.get("PERFETTO_TRACE_PROCESSOR") or shutil.which("trace_processor_shell")
+    if not binary or not Path(binary).is_file():
+        return {"available": False, "error": "Set PERFETTO_TRACE_PROCESSOR to an installed trace_processor_shell; automatic downloads disabled", "files": []}
     files = _trace_files(paths, max_files)
     summaries = []
     for path in files:
         try:
-            tp = TraceProcessor(trace=str(path))
+            tp = TraceProcessor(trace=str(path), config=TraceProcessorConfig(bin_path=binary))
             top_slices = _query_rows(
                 tp,
                 """
-                select name, count(*) as count, coalesce(sum(dur), 0) as total_dur
+                select name, count(*) as count, coalesce(sum(case when dur >= 0 then dur else 0 end), 0) as total_dur
                 from slice
                 group by name
                 order by count desc
@@ -69,7 +74,7 @@ def analyze(paths: list[str], max_files: int) -> dict:
             stall_rows = _query_rows(
                 tp,
                 """
-                select name, count(*) as count, coalesce(sum(dur), 0) as total_dur
+                select name, count(*) as count, coalesce(sum(case when dur >= 0 then dur else 0 end), 0) as total_dur
                 from slice
                 where lower(name) like '%stall%' or lower(name) like '%wait%'
                 group by name
@@ -79,7 +84,7 @@ def analyze(paths: list[str], max_files: int) -> dict:
             )
             totals = _query_rows(
                 tp,
-                "select count(*) as slice_count, coalesce(sum(dur), 0) as total_dur from slice",
+                "select count(*) as slice_count, coalesce(sum(case when dur >= 0 then dur else 0 end), 0) as total_dur from slice",
             )
             tp.close()
             summaries.append({
@@ -93,6 +98,7 @@ def analyze(paths: list[str], max_files: int) -> dict:
 
     return {
         "available": True,
+        "scope": "Overlapping slices may overlap in time; summed duration is not wall time or utilization",
         "files": [str(p) for p in files],
         "file_count": len(files),
         "summaries": summaries,

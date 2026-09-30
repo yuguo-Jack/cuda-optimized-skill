@@ -62,7 +62,7 @@ def _detect_tool(name: str, args: list[str] | None = None) -> dict:
     args = args or ["--version"]
     rc, out, err = _run([path] + args)
     text = (out or err).strip()
-    return {"available": True, "path": path, "version": text.splitlines()[0] if text else None}
+    return {"available": True, "path": path, "returncode": rc, "version": text.splitlines()[0] if text else None}
 
 
 def _detect_hipprof() -> dict:
@@ -126,6 +126,10 @@ def collect_env() -> dict:
         "primary_gfx_arch": primary,
         "hipcc": _detect_tool("hipcc", ["--version"]),
         "hipprof": _detect_hipprof(),
+        "xprof": _detect_tool("xprof", ["--help"]),
+        "xcompute": _detect_tool("xcompute", ["--help"]),
+        "aicc": _detect_tool("aicc", ["--version"]),
+        "execution_note": "Tool presence is not target support or collection permission; verify on the selected HCU node/container/device",
         "dccobjdump": _detect_tool("dccobjdump", ["--version"]),
         "rocminfo": _detect_tool("rocminfo", []),
         "rocm_smi": _detect_rocm_smi(),

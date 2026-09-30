@@ -25,6 +25,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from experiment import benchmark_gate, run_json, resolve_benchmark
+from workload_suite import evaluate
 
 
 _BUNDLED_BENCHMARK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark.py")
@@ -72,29 +74,7 @@ def _bench_kernel(
     Path(json_out).parent.mkdir(parents=True, exist_ok=True)
     stderr_out = json_out.replace(".json", ".stderr.txt")
 
-    try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True,
-            encoding="utf-8", errors="ignore",
-        )
-    except OSError as e:
-        return {"error": str(e), "passed": False}
-
-    # Save stderr for debugging
-    with open(stderr_out, "w", encoding="utf-8") as f:
-        f.write("---STDOUT---\n")
-        f.write(r.stdout or "")
-        f.write("\n---STDERR---\n")
-        f.write(r.stderr or "")
-
-    if os.path.isfile(json_out):
-        return _load_json(json_out)
-
-    return {
-        "error": "no_json_output",
-        "stderr": (r.stderr or "")[-2000:],
-        "passed": False,
-    }
+    return run_json(cmd, json_out, stderr_out)
 
 
 def run(state_path: str, iteration: int, benchmark_py: str = None,
@@ -102,7 +82,7 @@ def run(state_path: str, iteration: int, benchmark_py: str = None,
     state = _load_json(state_path)
     run_dir = state["run_dir"]
     iter_dir = os.path.join(run_dir, f"iterv{iteration}")
-    bench_py = benchmark_py or _BUNDLED_BENCHMARK
+    bench_py = resolve_benchmark(state, benchmark_py)
     branches_dir = os.path.join(iter_dir, "branches")
     ref_file = state["ref_file"]
     dims = state.get("dims", {})
@@ -153,17 +133,26 @@ def run(state_path: str, iteration: int, benchmark_py: str = None,
             bench_py, kernel, ref_file, dims, ptr_size, json_out, warmup, repeat,
         )
 
-        passed = bool(bench_result.get("correctness", {}).get("passed", False))
+        passed, gate_reason = benchmark_gate(bench_result, kernel)
+        suite = None
+        if passed and state.get("workloads"):
+            suite = evaluate(state, kernel, bench_py, os.path.join(branch["dir"], "workloads"), warmup, repeat)
+            bench_result["workload_suite"] = suite
+            _write_json(json_out, bench_result)
+            passed = suite["passed"]
+            if not passed:
+                gate_reason = "workload correctness/stability/regression gate failed"
         ms = None
         if bench_result.get("kernel"):
             ms = bench_result["kernel"].get("average_ms")
 
         results.append({
+            "suite_score": suite.get("weighted_speedup") if suite else None,
             "branch_index": idx,
             "kernel": kernel,
             "passed": passed,
             "ms": ms,
-            "error": bench_result.get("error"),
+            "error": bench_result.get("error") or gate_reason,
         })
 
         status = "PASS" if passed else "FAIL"
@@ -184,7 +173,7 @@ def run(state_path: str, iteration: int, benchmark_py: str = None,
         print(json.dumps(output, indent=2))
         sys.exit(2)
 
-    champion = min(valid_results, key=lambda r: r["ms"])
+    champion = max(valid_results, key=lambda r: r["suite_score"]) if state.get("workloads") else min(valid_results, key=lambda r: r["ms"])
 
     # Copy champion kernel to iterv{i}/kernel.<ext>
     champ_kernel = champion["kernel"]

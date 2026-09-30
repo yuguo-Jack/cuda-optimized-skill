@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime
+import math
 import json
 import os
 import re
@@ -76,7 +78,8 @@ def _to_float(value) -> float | None:
     if not text:
         return None
     try:
-        return float(text)
+        value = float(text)
+        return value if math.isfinite(value) else None
     except ValueError:
         return None
 
@@ -134,8 +137,8 @@ def _run_hipprof(
     cmd.extend(_dims_argv(dims))
     print(f"[hipprof] {' '.join(cmd)}", file=sys.stderr)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore", env=env)
-    except OSError as exc:
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore", env=env, timeout=600)
+    except (OSError, subprocess.TimeoutExpired) as exc:
         return -1, str(exc)
     return r.returncode, (r.stdout or "") + "\n---STDERR---\n" + (r.stderr or "")
 
@@ -212,7 +215,7 @@ def _find_csv_files(root: str) -> list[str]:
     files = []
     for path in glob_walk(base):
         name = os.path.basename(path)
-        if name.endswith(".csv") and (prefix in path or "pmc" in name.lower()):
+        if name.endswith(".csv") and prefix in path:
             files.append(path)
     return sorted(files)
 
@@ -265,12 +268,13 @@ def _rank_by_axis(agg: dict[str, dict], top_n: int) -> dict[str, list]:
             value = float(item["value"])
             severity = value if item.get("higher_is_worse", True) else (100.0 - value)
             candidates.append((severity, name, value, item))
-        candidates.sort(reverse=True)
+        candidates.sort(key=lambda row: row[1])  # discovery only, incompatible units cannot be severity ranked
         for _, name, value, item in candidates[:top_n]:
             out[axis].append({
                 "name": name,
                 "value": value,
-                "unit": "",
+                "unit": "unknown",
+                "interpretation": "raw discovery aggregate; scope and denominator unverified",
                 "higher_is_worse": item.get("higher_is_worse", True),
                 "samples": item.get("samples"),
                 "source_files": item.get("source_files", []),
@@ -298,12 +302,12 @@ def main() -> None:
     p.add_argument("--state", required=True)
     p.add_argument("--iter", required=True, type=int)
     p.add_argument("--which", required=True, choices=["best_input", "kernel"])
-    p.add_argument("--benchmark", default=_BUNDLED_BENCHMARK)
+    p.add_argument("--benchmark", default=None)
     p.add_argument("--warmup", type=int, default=1)
     p.add_argument("--repeat", type=int, default=3)
     p.add_argument("--hipprof-bin", default="")
     p.add_argument("--kernel-name", default="")
-    p.add_argument("--pmc-mode", default="all", choices=["none", "pmc", "read", "write", "all"])
+    p.add_argument("--pmc-mode", default="pmc", choices=["none", "pmc", "read", "write", "all"])
     p.add_argument("--pmc-type", default="3")
     p.add_argument("--sqtt-type", default="", help="Optional SQTT collection type, e.g. '1', 'stat_stall', 'stat_valu', or 'all'")
     p.add_argument("--sqtt-output-type", default="", choices=["", "0", "1", "2"], help="Optional hipprof SQTT export type: 0=json, 1=html, 2=perfetto when supported")
@@ -313,6 +317,8 @@ def main() -> None:
     args = p.parse_args()
 
     state = _read(args.state)
+    from experiment import resolve_benchmark
+    args.benchmark = resolve_benchmark(state, args.benchmark)
     run_dir = state["run_dir"]
     iter_dir = os.path.join(run_dir, f"iterv{args.iter}")
     os.makedirs(iter_dir, exist_ok=True)
@@ -321,14 +327,19 @@ def main() -> None:
         solution = state["best_file"]
         rep_name = "best_input.hipprof"
     else:
-        solution = next((os.path.join(iter_dir, f"kernel{ext}") for ext in KERNEL_EXTS if os.path.isfile(os.path.join(iter_dir, f"kernel{ext}"))), None)
-        if not solution:
-            sys.exit(f"No iterv{args.iter}/kernel.(hip|cu|cpp|cc|cxx|py) found.")
+        selected = os.path.join(iter_dir, "branch_results.json")
+        if not os.path.isfile(selected):
+            sys.exit("Run branch selection first; a filename alone does not identify the champion")
+        solution = _read(selected).get("champion", {}).get("kernel")
+        if not solution or not os.path.isfile(solution):
+            sys.exit("Selected champion source is missing")
         rep_name = "kernel.hipprof"
 
     hipprof_info = state.get("env", {}).get("hipprof", {}) or {}
     hipprof_bin = args.hipprof_bin or hipprof_info.get("path") or shutil.which("hipprof") or "hipprof"
-    out_prefix = os.path.join(iter_dir, rep_name)
+    capture_dir = os.path.join(iter_dir, rep_name, datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+    os.makedirs(capture_dir, exist_ok=True)
+    out_prefix = os.path.join(capture_dir, "capture")
     log_path = os.path.join(iter_dir, f"{rep_name}.log")
 
     if not shutil.which(hipprof_bin) and not os.path.isfile(hipprof_bin):
@@ -343,6 +354,21 @@ def main() -> None:
         print(json.dumps(top, indent=2))
         return
 
+    try:
+        probe = subprocess.run([hipprof_bin, "-h"], capture_output=True, text=True, timeout=30)
+        help_text = (probe.stdout or "") + (probe.stderr or "")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        help_text = str(exc)
+    Path(capture_dir, "help.txt").write_text(help_text, encoding="utf-8")
+    required = [flag for _, flag, _ in _pmc_plan(args.pmc_mode, out_prefix)]
+    if args.pmc_mode != "none":
+        required.append("--pmc-type")
+    if args.sqtt_type:
+        required.extend(["--sqtt", "--sqtt-type"])
+    if any(flag not in help_text for flag in required):
+        top = {"degraded": True, "reason": "Installed hipprof help does not confirm requested flags", "compute": [], "memory": [], "latency": [], "help": str(Path(capture_dir, "help.txt"))}
+        _write_json(os.path.join(iter_dir, "dcu_top.json"), top)
+        print(json.dumps(top)); return
     logs = []
     collection_results = []
     rc_values = []
@@ -445,6 +471,8 @@ def main() -> None:
         "collections": collection_results,
         "csv_files": csv_files,
         "metric_count_collected": len(agg),
+        "metric_scope": "unverified aggregate; select exact dispatch before interpretation",
+        "all_raw_metrics": agg,
         "codeobj_analyze": codeobj,
         "sqtt_analysis": sqtt_summary,
         **by_axis,

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import glob
 import json
 import os
@@ -241,8 +242,8 @@ def check_method(method_id: str, isa_text: str, signatures: dict, dump_meta: dic
     patterns = meta.get("isa_patterns", meta.get("sass_patterns", []))
     require_any = meta.get("require_any", True)
     if not patterns:
-        result["verified"] = True
-        result["note"] = "no_patterns_defined"
+        result["inconclusive"] = True
+        result["note"] = "no_patterns_defined; inspect the appropriate source/resource/timeline evidence"
         return result
     result["patterns_checked"] = patterns
     for pattern in patterns:
@@ -254,6 +255,10 @@ def check_method(method_id: str, isa_text: str, signatures: dict, dump_meta: dic
     if not result["verified"] and method_id.startswith("memory.") and dump_meta and dump_meta.get("vmem_instruction_count", 0) == 0:
         result["inconclusive"] = True
         result["note"] = "dccobjdump produced no vector/global memory instructions; dump may be incomplete for this code object"
+    result["pattern_presence"] = result["verified"]
+    result["verified"] = False
+    result["inconclusive"] = True
+    result["note"] = "Pattern scan is supporting evidence; verify exact kernel, target and mechanism in mechanism-review.json"
     return result
 
 
@@ -265,12 +270,15 @@ def run(state_path: str, iteration: int, signatures_path: str | None = None) -> 
     signatures = _load_json(signatures_path or str(_DEFAULT_SIGNATURES)) if os.path.isfile(signatures_path or str(_DEFAULT_SIGNATURES)) else {"methods": {}}
 
     kernel_path = next((os.path.join(iter_dir, f"kernel{ext}") for ext in KERNEL_EXTS if os.path.isfile(os.path.join(iter_dir, f"kernel{ext}"))), None)
+    selected_path = Path(iter_dir) / "branch_results.json"
+    if selected_path.is_file():
+        kernel_path = (_load_json(str(selected_path)).get("champion") or {}).get("kernel") or kernel_path
     if not kernel_path:
         result = {"error": "no_kernel_found", "checks": []}
         _write_result(iter_dir, result)
         return result
     if kernel_path.endswith(".py"):
-        result = {"kernel": kernel_path, "backend": "python", "checks": [{"method_id": m.get("id", "unknown"), "verified": True, "note": "python_backend_isa_not_applicable"} for m in methods]}
+        result = {"kernel": kernel_path, "backend": "python", "checks": [{"method_id": m.get("id", "unknown"), "verified": False, "inconclusive": True, "note": "python backend requires actual generated kernel ISA/resource evidence"} for m in methods]}
         _write_result(iter_dir, result)
         return result
 
@@ -282,14 +290,17 @@ def run(state_path: str, iteration: int, signatures_path: str | None = None) -> 
 
     arch = state.get("env", {}).get("primary_gfx_arch", "")
     isa_text, err, dump_meta = _dump_isa(binary, arch=arch, kernel_path=kernel_path)
+    Path(iter_dir, "isa_dump.txt").write_text(isa_text, encoding="utf-8")
     checks = []
     if err and not isa_text:
-        checks = [{"method_id": m.get("id", "unknown"), "verified": True, "note": f"dccobjdump_unavailable: {err}"} for m in methods]
+        checks = [{"method_id": m.get("id", "unknown"), "verified": False, "inconclusive": True, "note": f"dccobjdump_unavailable: {err}"} for m in methods]
     else:
         checks = [check_method(m.get("id", "unknown"), isa_text, signatures, dump_meta) for m in methods]
     result = {
         "kernel": kernel_path,
         "binary": binary,
+        "binary_sha256": hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
+        "isa_artifact": str(Path(iter_dir, "isa_dump.txt")),
         "backend": "hip",
         "arch": arch,
         "dccobjdump_error": err,

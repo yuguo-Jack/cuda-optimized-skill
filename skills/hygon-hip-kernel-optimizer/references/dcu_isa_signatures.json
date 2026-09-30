@@ -1,6 +1,6 @@
 {
-  "$note": "Expected DCU ISA patterns per optimization method. Used by sass_check.py with dccobjdump --show-sass. Source-level builtins are candidate routes only; final verification is target ISA such as v_mmac/MMOP, ds_read_m32x*, matrix_load*, buffer/global LDS, waits, and resource usage.",
-  "$version": "1.1",
+  "$note": "Heuristic instruction discovery only. Symbol/target/build identity and semantic mechanism require separate review; missing patterns are inconclusive.",
+  "$version": "2.0",
   "methods": {
     "compute.mmac_tensor_core": {
       "isa_patterns": [
@@ -20,7 +20,7 @@
         "\\bv_mmac_[a-z0-9_]*(?:fp8|bf8|tf32)[a-z0-9_]*\\b"
       ],
       "require_any": true,
-      "note": "gfx938 low-precision conversion or HCU MMAC ISA forms. FP4 is intentionally absent."
+      "note": "Legacy FP8/BF8/TF32 strategy. gfx946 scale-aware FP4/FP6 requires its separate scoped strategy and exact compiler validation."
     },
     "compute.launch_config_wave64": {
       "isa_patterns": [],
@@ -64,7 +64,6 @@
       "require_any": true,
       "note": "Case-specific; compare dccobjdump against intended asm or target-compiled low-level code."
     },
-
     "memory.coalesced_access": {
       "isa_patterns": [
         "\\bglobal_(?:load|store)_[a-z0-9x_]+\\b",
@@ -161,7 +160,6 @@
       "require_any": true,
       "note": "Verified by source structure, fewer launches/global passes, and timing."
     },
-
     "latency.waitcnt_pipeline": {
       "isa_patterns": [
         "\\bs_waitcnt\\b.*\\b(?:vmcnt|lgkmcnt|expcnt)\\("
@@ -223,6 +221,26 @@
       "isa_patterns": [],
       "require_any": true,
       "note": "Diagnostic method; verified by hipprof SQTT artifacts."
+    },
+    "compute.shaobo_mx_low_precision": {
+      "isa_patterns": [],
+      "require_any": true,
+      "note": "Requires exact gfx946 source/instruction/resource review; do not guess builtin or instruction spelling."
+    },
+    "compute.shaobo_wdra": {
+      "isa_patterns": [],
+      "require_any": true,
+      "note": "Requires exact gfx946 source/instruction/resource review; do not guess builtin or instruction spelling."
+    },
+    "memory.shaobo_tls": {
+      "isa_patterns": [],
+      "require_any": true,
+      "note": "Requires exact gfx946 source/instruction/resource review; do not guess builtin or instruction spelling."
+    },
+    "latency.shaobo_abarrier_ebarrier": {
+      "isa_patterns": [],
+      "require_any": true,
+      "note": "Requires exact gfx946 source/instruction/resource review; do not guess builtin or instruction spelling."
     }
   }
 }

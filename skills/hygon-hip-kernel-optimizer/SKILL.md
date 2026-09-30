@@ -1,404 +1,70 @@
 ---
 name: hygon-hip-kernel-optimizer
-description: Iteratively optimize Hygon DCU HIP / CK Tile kernels against a Python reference using hipprof, DTK tools, dccobjdump ISA verification, roofline-style budgeting, branch selection, ablation attribution, and gfx936/gfx938-aware optimization references. Use when the user asks to optimize HIP kernels, Hygon DCU kernels, gfx936/gfx938 kernels, CK Tile kernels, port CUDA kernel tuning workflows to DCU, validate DCU ISA patterns, or reason about DCU-specific inline assembly and source-backed HCU/AMDGPU builtins.
+description: 在海光 HCU/DCU 上开发和优化 HIP/C++、CK Tile 算子，结合 HCU 知识检索、明确的数值/布局契约、正确性与多规模性能回归、XProf/XCompute 或 DTK hipprof 和目标 ISA 证据推进迭代。适用于已有 HIP 基线、CUDA 移植和 HCU kernel 调优；只有 Python/Triton reference 时先生成可验证基线。
 ---
 
-# Hygon HIP Kernel Iterative Optimizer
+# Hygon HIP 算子开发与优化
 
-## What this skill does
+把优化落实为可复现的代码和实验。开始时先读 [共同契约](references/hcu-workflow-contract.md) 的知识/环境/正确性部分；测速与 profiling 前读对应章节。不要把 NVIDIA 上游 Skill 的 nvcc、NCU、SASS 指令或硬件门禁直接搬到 HCU。
 
-Optimize a Hygon DCU HIP or CK Tile kernel against a Python reference by running a measured loop:
+## 1. 定义任务并检索
 
-1. validate environment and baseline/reference contract,
-2. profile the current best kernel with `hipprof`,
-3. classify compute, memory, and latency gaps into an axis budget,
-4. select optimization methods from the DCU method registry,
-5. generate K branch kernels with different implementation parameters,
-6. compile, validate, and benchmark branches,
-7. profile the champion, ablate selected methods, and verify ISA with `dccobjdump`,
-8. update state and emit a final summary.
+- 从用户需求和工程推导算子语义、支持范围、目标设备/工具链、精度和性能指标，记录到任务目录 `contract.md`。缺少的必要事实先检查工程/环境，真正阻塞再问；可独立完成的工作继续。
+- 使用已安装的 `hcu-knowledge-search`，按算子、机制、硬件、编译器拆分查；读工程指南→案例→固定源码/原件。记录知识版本与 source ID/SHA，不能把搜索片段当最终证据。
+- 查已存在的 HCU 实现与构建方式：HIP、CK Tile、HCU Cutlass、Triton/TileLang、自有库各有适用点。能直接复用当前工程接口时先复用；不强制某种 DSL，也不拿 AMD/NVIDIA 分支冒充 HCU。
+- 没有正确 HIP 基线时先调用 `hygon-hip-baseline-generator`；仅需 Triton/Inductor 调优使用 `hygon-triton-kernel-optimizer`。明确选择原因。
 
-Use deterministic scripts for environment checks, profiling, benchmarking, ablation, ISA checks, state updates, and summaries. Use agent reasoning only for method selection, code changes, and repair.
+## 2. 建立实际执行环境
 
-## Key points
-
-1. **`hipprof` is the optimization compass**: profile the baseline, current best, and candidate champion instead of choosing or crediting optimizations from source inspection and timing alone. Use regular/read/write PMC data to locate the limiting axis, code-object analysis to expose VGPR/SGPR/LDS pressure, and SQTT when aggregate counters cannot explain stalls or instruction flow. Re-profile after meaningful changes to confirm that the intended bottleneck moved and that no new regression replaced it. If `hipprof` evidence is unavailable or degraded, disclose that limitation and use timing plus ISA/resource evidence; do not present a guessed bottleneck as measured fact.
-2. **Roofline-style axis budget**: allocate compute, memory, and latency method slots from measured DCU counters and timing.
-3. **Branch-and-select**: generate several variants for the same method set, benchmark all valid branches, and keep the fastest champion.
-4. **Ablation attribution**: keep a method only when removing it measurably hurts the champion.
-5. **DCU ISA verification**: use `dccobjdump` patterns from `references/dcu_isa_signatures.json`; final proof is generated ISA, not source intent.
-6. **Source-backed builtin discipline**: HCU or AMD-named builtins are candidates only when the exact call shape is backed by source retrieved with `hcu-knowledge-search`, a compile probe, or existing project code. `__has_builtin` failure alone is not enough to reject a source-backed builtin.
-7. **CK Tile first**: prefer CK Tile for GEMM/conv/norm/MoE template work; do not port CUTLASS assumptions directly.
-8. **Deep search on ambiguity**: for unclear hardware errors, unexplained performance regressions, or compiler/tool behavior that does not match expectation, invoke `hcu-knowledge-search` and inspect the retrieved original documents and source-backed reference projects before guessing. Web search is allowed when retrieved evidence is insufficient.
-
-## Knowledge retrieval
-
-For knowledge lookup in this workflow, first read and invoke [hcu-knowledge-search](../hcu-knowledge-search/SKILL.md). Resolve `<KB_ROOT>` from that skill's `workspace.json`; use the system Python entry point:
+Agent 可本地启动。按项目远端配置/远端工作 Skill 选择 SSH、容器、挂载和 SDK 激活；以下命令运行于真正构建/测试的 HCU 环境。
 
 ```bash
-python -X utf8 "<KB_ROOT>/kb.py" --root "<KB_ROOT>" search "<gfx target and exact builtin, instruction or performance symptom>"
+python <skill>/scripts/check_env.py --out env.json
+python <skill>/scripts/preflight.py --baseline kernel.hip --ref ref.py --dims '{"N":1048576}' --out preflight.json
 ```
 
-Follow that skill's configured search mode, including Feishu when configured for hybrid search. Read the matched original sections or fixed-commit source before using a result; preserve the gfx target, DTK version, and source revision with implementation evidence. Follow its project guides and source navigation for deeper investigation. If retrieval is incomplete, report the gap and continue with target probes or authoritative references as directed by that skill.
+确认准确 gfx（936/938/946 等）、编译器、库提交、wave width、设备可用性。AICC 与 DTK 自带编译器分别记录。硬件缺失不妨碍静态开发，但不能写成已经跑过 HCU。
 
-## Inputs
+普通 flat ABI 需要 `extern "C" void solve(...)` 和 reference 中同名参数的 `reference(...)`；非 const 指针为输出。它只支持独立连续简单类型；半精度/量化、非连续/alias/in-place、多 stream 和通信应使用项目专用 `--benchmark`，不能悄悄简化契约。专用结果须符合 [实验产物](references/experiment-artifacts.md) 的验证门禁。
 
-Have these before starting:
-
-- baseline kernel file: `.hip`, `.cu`, `.cpp`, `.cc`, `.cxx`, or `.py`
-- Python reference file exposing `reference(**kwargs)`
-- dimension JSON such as `{"N":1048576}` or `{"M":4096,"N":4096,"K":4096}`
-
-If the user only provides a reference file and shape, first use the sibling `hygon-hip-baseline-generator` skill to generate and correctness-validate `kernel.hip` plus the benchmark-compatible `ref.py`. Do not begin optimization iterations until that generated baseline passes preflight and benchmark correctness.
-
-Optional:
-
-- iterations, default `3`
-- `--ncu-num`, retained as the top-K DCU metric count for CUDA skill compatibility
-- branches per iteration, default `4`
-- `--ptr-size` when benchmark allocation needs an explicit element count
-- warmup and repeat counts for benchmark stability
-
-If a required input is missing and cannot be inferred, ask once briefly.
-
-## Environment
-
-Run DCU validation through the project remote workflow when the target DCU is remote. The current workflow enters the compute node directly after loading DTK/modules; it does not use Docker. Keep source edits local and sync them before remote execution.
-
-`hygon_tmp/` is only a temporary scratch area for ad-hoc probes, smoke-test cases, generated traces, pulled logs, and other validation artifacts. Do not make fixed filenames under `hygon_tmp/` part of the skill contract, and do not treat any generated run there as a project source asset.
-
-Required or expected tools:
-
-- `hipcc`
-- `hipprof`
-- `dccobjdump`
-- `rocminfo`
-- `rocm-smi`
-- Python 3.10+ with the project benchmark dependencies
-- CK Tile headers for CK Tile kernels
-- optional DTK analysis tools under `/opt/dtk`, including PMC/SQTT-related tools when available
-
-Probe the environment first:
+## 3. 冻结基线与回归矩阵
 
 ```bash
-python <skill>/scripts/check_env.py --out ./env.json
+python <skill>/scripts/benchmark.py kernel.hip --ref ref.py --N=1048576 --ptr-size 1048576 --json-out baseline_bench.json
+python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py --dims '{"N":1048576}' --ptr-size 1048576 --workloads workloads.json --profiler auto --iterations 3 --branches 4
 ```
 
-The probe records gfx target, DTK tools, `hipprof` availability, `dccobjdump`, CK Tile include discovery, and degraded profiling flags. If counters are unavailable, continue with timing, source inspection, SQTT when useful, code-object resource analysis, and ISA evidence, but tell the user that profiling is degraded.
+- 默认迭代预算 3、分支最多 4；用户有明确预算则遵从。不要为默认预算反复询问。
+- `--workloads` 用 [模板](templates/workloads.example.json) 按真实任务改写；覆盖多规模、多 seed 和边界。没有该选项仅主 shape，不能交付为“全面验证”。
+- 静态 preflight、编译、数值、race safety、性能和端到端收益是独立状态。只通过编译或只有时间不算正确。
+- 模型 reference、baseline 与环境冻结后不随候选变化。benchmark 改动也要重测基线。
 
-## Fast path commands
+## 4. 定位瓶颈并实验
 
-Use `orchestrate.py` for normal runs:
+读 state、原始 bench、dcu_top、roofline、知识证据。`roofline.json` 的 null 是未知；预算是建议，不能据此宣布 compute/memory bound 或 near-peak。
+
+优先 XProf/XCompute（`--profiler auto` 发现 XProf 时使用），可显式选 hipprof。自动采集只提供原件与发现信息；按准确 dispatch、单位和定义解释。参阅 [指标与工具](references/dcu_metrics_guide.md)。不能用累计 waves 推导驻留，也不能用 waitcnt 数量推导依赖等待比例。
+
+1. 用 [策略目录](references/optimization_catalog.md) 和 registry 选 1..3 项，不凑数；每轴最多 2 项，跳过更高优先项写具体理由。
+2. `methods.json` 按 [schema](templates/methods.schema.json)：方法 ID、改什么、为何可能有效、预期证据、精确目标证据、跳过理由。重试先前方法给 `retry_reason`。
+3. 在 `itervN/branches/b1..bK/kernel.<ext>` 写变体，同组方法一致、超参数不同；只修改用户任务范围的源码。
+4. 运行 `branch_explore.py --state RUN/state.json --iter N`，先检查正确性/稳定计时/多用例回退；失败的分支修复后再测，保留失败原因。OOM 不缩小原场景冒充成功。
+5. 低层路径变化读实际目标 ISA、资源与同步语义；`sass_check.py` 的名字为兼容保留，输出是 HCU ISA 提示。自动 grep 不算语义验证。
+6. 有必要做消融时，将只去掉单项方法且仍语义正确的文件放 `ablations/<id中点换成下划线>/kernel.<ext>`。多个方法相互依赖时写清归因限制。
+7. 在 close 前可单独运行 profiler/ISA/ablation 做调查，并填写 `mechanism-review.json`。close 会重测，若重新产生的 artifact 哈希改变，复核文件失配则方法保持未验证；可以下一轮再补证据，不能伪造已验证。
 
 ```bash
-python <skill>/scripts/orchestrate.py setup \
-  --baseline ./kernel.hip \
-  --ref ./ref.py \
-  --iterations 2 \
-  --branches 2 \
-  --ptr-size 1048576 \
-  --dims '{"N":1048576}'
-
-python <skill>/scripts/orchestrate.py open-iter \
-  --run-dir ./run_YYYYMMDD_HHMMSS \
-  --iter 1
-
-# Agent writes iterv1/methods.json, analysis.md, and branch kernels.
-
-python <skill>/scripts/orchestrate.py close-iter \
-  --run-dir ./run_YYYYMMDD_HHMMSS \
-  --iter 1
-
-python <skill>/scripts/orchestrate.py finalize \
-  --run-dir ./run_YYYYMMDD_HHMMSS
+python <skill>/scripts/orchestrate.py close-iter --run-dir RUN --iter 1
 ```
 
-`setup` runs environment/preflight/state initialization and seeds the baseline. `open-iter` profiles the current best and writes `roofline.json`. `close-iter` validates methods, explores branches, profiles the champion, ablates, runs ISA checks, and updates state. `finalize` writes `summary.md`.
+close 串行跑分支、选 champion、profile、消融、ISA、更新状态，并准备下一轮数据。通过正确性与稳定测量且更快的 kernel 可以晋级；缺少消融/机制证据的方法仍记 `unverified_methods`。已关闭迭代不可覆盖；单 run 只允许一个写入者。
 
-## Detailed loop
-
-### Step 0: preflight
-
-Use:
+## 5. 交付
 
 ```bash
-python <skill>/scripts/preflight.py \
-  --baseline ./kernel.hip \
-  --ref ./ref.py \
-  --dims '{"N":1048576}'
+python <skill>/scripts/orchestrate.py finalize --run-dir RUN
 ```
 
-Surface contract failures directly. Do not begin optimization if the reference cannot run or the baseline cannot be compiled/benchmarked.
+用 [报告模板](templates/iteration_report.md) 补全程序不能自动推出的解释：代码目录/接口与调用链、热点、修改机制、适用范围、正确性矩阵、真实样本、端到端收益、失败/回退、知识与源码引用。未跑项目测试、race 检查或 HCU 硬件验证明确列出。迭代预算耗尽、目标达到或收益落入噪声时总结，不无限试错。
 
-### Step 1: initialize and seed baseline
-
-Normal path:
-
-```bash
-python <skill>/scripts/orchestrate.py setup --baseline ... --ref ... --dims ...
-```
-
-Manual path:
-
-```bash
-python <skill>/scripts/state.py init --baseline ./kernel.hip --ref ./ref.py --dims '{"N":1048576}' --env ./env.json
-python <skill>/scripts/run_iteration.py seed-baseline --state ./run_*/state.json
-```
-
-The run folder is `run_YYYYMMDD_HHMMSS/` beside the baseline and contains `state.json`, copied baseline artifacts, and benchmark results.
-
-### Step 2: profile current best and budget methods
-
-Use:
-
-```bash
-python <skill>/scripts/profile_hipprof.py \
-  --state ./run_*/state.json \
-  --iter 1 \
-  --which best_input \
-  --pmc-mode all
-
-python <skill>/scripts/roofline.py \
-  --state ./run_*/state.json \
-  --iter 1
-```
-
-Read:
-
-- `iterv{i}/dcu_top.json`
-- `iterv{i}/roofline.json`
-- `state.json`
-- current `best_file`
-
-If all gaps are near peak, stop early and summarize. Otherwise use the `axis_budget` to decide how many methods to select per axis.
-
-If the optimizer has completed **three consecutive iterations** without a material additional improvement over the previous best, trigger an SQTT/tooling triage before selecting more source changes. "Material" normally means exceeding the configured noise threshold in `state.json` (default 2%) and being explainable by profiler/ISA evidence, not just a single noisy timing sample. The triage should:
-
-1. run `profile_hipprof.py` on the current best or latest champion with `--pmc-mode none --sqtt-type 1 --sqtt-output-type 0 --sqtt-data-dir <itervN>/sqtt_json/`;
-2. analyze artifacts with `scripts/analyze_sqtt.py`;
-3. if `perfetto` is available locally or remotely, analyze representative `thread_trace_*.json` files with `scripts/analyze_perfetto_trace.py`;
-4. use the SQTT/Perfetto evidence to decide whether the next methods should target waitcnt placement, issue stalls, branch divergence, LDS/bank behavior, cache/global memory pressure, or whether the kernel is already near the practical ceiling.
-
-You may run SQTT earlier for ambiguous hardware errors or unexplained regressions, but do not make it a mandatory every-iteration cost.
-
-### Step 3: select methods
-
-Read these references in order, loading only the needed parts:
-
-1. `references/optimization_catalog.md` for method intent, triggers, skip rules, and combining rules.
-2. `references/method_registry.json` for machine-validated method ids, axes, priorities, requirements, and expected ISA signatures.
-3. `references/dcu_metrics_guide.md` for metric-to-cause mapping and hipprof/PMC interpretation.
-4. `references/dcu_isa_signatures.json` for final dccobjdump pattern names.
-
-Selection rule:
-
-1. For each axis with positive budget, scan methods by priority.
-2. Skip methods already tried unless the bottleneck has changed materially.
-3. Skip methods blocked by target architecture, datatype, layout, or previous implementation failure.
-4. Prefer methods with direct evidence in `dcu_top.json`, `roofline.json`, or source inspection.
-5. Select exactly `sum(axis_budget)` methods unless no valid method exists; if fewer are available, explain every missing slot in `analysis.md`.
-6. Keep selected methods mutually compatible. Avoid choosing two methods that are just the same pipeline or tiling change in different words.
-
-Write:
-
-- `iterv{i}/methods.json` matching `templates/methods.schema.json`
-- `iterv{i}/analysis.md` following `templates/iteration_report.md`
-
-Validate before generating branches:
-
-```bash
-python <skill>/scripts/validate_methods.py \
-  --methods ./run_*/iterv1/methods.json \
-  --state ./run_*/state.json
-```
-
-### Step 4: generate branch kernels
-
-Generate K branches under `iterv{i}/branches/b1..bK/`. All branches should implement the same selected method set, but vary implementation details:
-
-- tile sizes and vector width,
-- wave/block mapping,
-- LDS layout and bank-conflict strategy,
-- pipeline stage count,
-- CK Tile policy names and template parameters,
-- direct load/store path versus LDS staging,
-- inline asm or builtin form when compiler output must be forced.
-
-For GEMM/conv/norm/MoE-style kernels, prefer CK Tile strategies and known fast paths such as `TLS`, `MLS`, `WASP`, `cshuffle`, `wavelet`, `persistent`, `split-k`, `preshuffle`, and DS-read matrix variants when the operation shape fits.
-
-### Step 5: branch explore and repair
-
-Use:
-
-```bash
-python <skill>/scripts/branch_explore.py \
-  --state ./run_*/state.json \
-  --iter 1
-```
-
-or let `orchestrate.py close-iter` run it. If all branches fail, inspect branch `bench.json`, `bench.stderr.txt`, compiler logs, and validation errors. Repair the branch sources and rerun. Do not mark a method ineffective when the branch never compiled or never passed correctness.
-
-### Step 6: profile champion, ablate, verify ISA
-
-Use:
-
-```bash
-python <skill>/scripts/profile_hipprof.py \
-  --state ./run_*/state.json \
-  --iter 1 \
-  --which kernel
-
-python <skill>/scripts/ablate.py \
-  --state ./run_*/state.json \
-  --iter 1
-
-python <skill>/scripts/sass_check.py \
-  --state ./run_*/state.json \
-  --iter 1
-```
-
-`sass_check.py` is named for CUDA compatibility, but on this skill it runs DCU ISA verification with `dccobjdump` and DCU signature patterns.
-
-### Step 7: update state and summarize
-
-Use:
-
-```bash
-python <skill>/scripts/state.py update \
-  --state ./run_*/state.json \
-  --iter 1 \
-  --kernel ./run_*/iterv1/kernel.hip \
-  --bench ./run_*/iterv1/bench.json \
-  --methods-json ./run_*/iterv1/methods.json \
-  --attribution ./run_*/iterv1/attribution.json \
-  --sass-check ./run_*/iterv1/isa_check.json
-
-python <skill>/scripts/summarize.py \
-  --state ./run_*/state.json \
-  --out ./run_*/summary.md
-```
-
-State rules:
-
-- Add every attempted method to `selected_methods`.
-- Add a method to `effective_methods` only when attribution is positive beyond noise and expected ISA evidence is present.
-- Add a method to `ineffective_methods` when ISA evidence is present but attribution is not positive.
-- Add a method to `implementation_failed_methods` when the code compiled but expected ISA evidence is missing from a relevant dump.
-- If a branch is faster but ISA evidence for a claimed method is missing, keep the faster kernel if correct, but record that method as implementation-failed.
-
-## Hygon-specific hard rules
-
-- Treat wavefront size as 64. Recheck every CUDA warp-size assumption.
-- Use CK Tile instead of CUTLASS for DCU template kernels.
-- Use `hipprof --pmc --pmc-type 3` for regular PMC-style data when available. Use SQTT/stat-stall tooling when PMC cannot explain stalls and the environment supports it.
-- Use `hipprof --pmc-read --pmc-type 3` and `hipprof --pmc-write --pmc-type 3` in addition to regular `--pmc` when memory-read/write behavior matters. The bundled profiler defaults to `--pmc-mode all` and merges those CSVs into `dcu_top.json`.
-- Use `hipprof --codeobj-analyze <elf-or-so-file>` after compilation to inspect VGPR/SGPR/LDS pressure. Treat high register pressure as a first-class signal for register control, occupancy, and latency decisions.
-- Use SQTT for ambiguous stalls or instruction-flow questions, and automatically consider it after three consecutive no-material-improvement iterations: `hipprof --sqtt --sqtt-type 1`, `stat_stall`, `stat_valu`, or `all` depending on trace size. Prefer `--sqtt-output-type 0` for JSON and `--sqtt-data-dir <dir>/` when traces are large. Analyze generated `thread_trace_*.json` with `scripts/analyze_sqtt.py`; when the Python `perfetto` package is available, use `scripts/analyze_perfetto_trace.py` for PerfettoSQL summaries. Keep large temporary traces under `hygon_tmp/` when they are diagnostic probes rather than run artifacts.
-- SQTT export may require `llvm-objdump` in `PATH` because `hipprof` calls it internally while creating trace JSON. This is not a replacement for `dccobjdump`: the optimizer's DCU ISA verification and pattern checks must still use DTK `dccobjdump`.
-- Use `dccobjdump --inputs=<binary> --show-sass --show-instruction-encoding --separate-functions` plus resource/symbol dumps when instruction, register, LDS, or occupancy evidence is needed.
-- If `dccobjdump` fails or produces no instruction lines, `scripts/sass_check.py` falls back to compiling the kernel source with `hipcc -save-temps=obj` and reads the generated device `.s` files. Treat this as a recovery path for compiler-lowered ISA text, not as a replacement for a successful final code-object dump.
-- Treat dump files with no relevant vector/global/matrix instructions as inconclusive, not immediate implementation failure.
-- When a hardware-related error message, profiler symptom, compiler lowering choice, waitcnt hazard, or performance degradation is unclear, invoke `hcu-knowledge-search` to find matching reference projects and read their fixed-commit kernels implementing the same pattern. If retrieved HCU evidence is insufficient, follow the skill's vendor-reference navigation and search the web for ROCm/AMD/CK Tile/HIP material; treat it as analogy until Hygon compilation and ISA verification confirm it.
-- For memory methods, look for DCU global/buffer/flat load/store families, vector widths, LDS paths, coalescing symptoms, and `buffer_load_*_lds` or `raw_buffer_load_lds` when staging through LDS.
-- For matrix or tensor paths, remember Hygon tensorcore-related instructions diverge from AMD naming. Use AMD/ROCm/MFMA material only as analogy unless `dccobjdump` proves the final Hygon `v_mmac` or matrix instruction.
-- Do not introduce FP4 strategies; current Hygon DCU target does not expose an FP4 hardware path for this workflow.
-- For gfx938, source-backed `__builtin_hcu_*` conversion, MMAC, matrix-load, and DS-read helpers may be used only with exact signatures from original sources retrieved with `hcu-knowledge-search` or existing source examples. Compile-probe before relying on them.
-- For gfx936, AMD-named `__builtin_amdgcn_*` MMAC forms and inline asm patterns may be candidates only when source-backed or probe-backed, then verified by final ISA.
-- Do not invent builtin names from AMD documents, spreadsheet rows, or mnemonic guesses.
-- If compiler scheduling or lowering blocks an optimization, use inline asm as a last resort and add the required `s_waitcnt`, `s_barrier`, and hazard handling.
-- For global-to-LDS and LDS-to-compute pipelines, check `s_waitcnt vmcnt(0)` for global-load consumers and `s_waitcnt lgkmcnt(0)` for LDS/scalar consumers.
-- For known matrix/LDS patterns, useful final-ISA families include `ds_read_m32x16_b16`, `ds_read_m32x16_b16_alt`, `ds_read_m32x32_b8`, `ds_read_m32x64_b4`, `ds_read_m32x8_b32`, `ds_permute_b32`, `ds_bpermute_b32`, `matrix_load`, `v_mmac`, `v_pk_*`, VOP3R/VOP3P, and resource wait instructions. Use the JSON signatures for exact matching.
-
-## Builtin and asm verification workflow
-
-When a method needs a builtin or inline asm:
-
-1. Invoke `hcu-knowledge-search` first for the exact gfx target, builtin name, call signature, and source example; read the original declaration or fixed-commit call site.
-2. If uncertain, create or update a minimal probe under a task-specific scratch directory such as `hygon_tmp/<probe-name>/`.
-3. Run the probe remotely with the target `--offload-arch`, using the actual probe path you just created, for example:
-
-```bash
-python3 <probe-path> --arch gfx938
-```
-
-4. Remove unsupported call forms from the method implementation or mark them unavailable for that target.
-5. Verify the final optimized kernel with `dccobjdump`; compile success alone is not enough.
-
-Use this hierarchy for evidence:
-
-1. benchmark correctness and timing,
-2. `hipprof`/PMC/SQTT bottleneck evidence,
-3. source-backed compile probe for builtin or asm availability,
-4. final `dccobjdump` ISA and resource evidence.
-
-## Ambiguous hardware or performance behavior
-
-When the optimizer hits unclear DCU behavior, do not stop at generic GPU advice. Continue investigation in this order:
-
-1. Invoke `hcu-knowledge-search` for the exact gfx target, tool output, mnemonic, builtin, compiler diagnostic, profiler counter, or CK Tile path.
-2. Follow its project guides and fixed-commit source retrieval to inspect matched reference projects. Copy only patterns whose call signatures, target guards, layout contracts, and wait rules are visible in source.
-3. If retrieved HCU evidence is insufficient, follow the skill's vendor-reference navigation and search the web for ROCm, AMD GPU, HIP, LLVM AMDGPU, or CK Tile references. Mark those findings as analogies until Hygon `hipcc` and `dccobjdump` confirm them.
-4. Build a minimal compile or runtime probe under a task-specific scratch directory in repository-root `hygon_tmp/`. Keep probe inputs, source, logs, PMC read/write outputs, SQTT JSON/HTML/stat files, code-object analysis logs, dumps, and summaries there, but do not reference those scratch filenames as stable workflow entry points.
-5. Feed confirmed findings back into the branch implementation, method notes, or reference files. Remove or quarantine unsupported assumptions.
-
-Use this path for unclear errors, unexpected slowdowns, profiler/tool contradictions, unsupported intrinsic questions, codegen surprises, and suspected waitcnt/LDS/MMAC hazards.
-
-## Failure modes
-
-- `hipprof` writes degraded or empty metrics: continue with timing and ISA evidence, but disclose degraded profiling.
-- Hardware-specific errors or unclear performance regressions: invoke `hcu-knowledge-search`, read the matched original documents and fixed-commit reference projects, optionally use web sources as analogies, then create a minimal probe in `hygon_tmp/` before changing the main kernel.
-- `dccobjdump` cannot find a binary or relevant function: inspect compile artifacts and symbol names before declaring a method failed.
-- Expected ISA pattern is absent from a relevant dump: mark the method implementation-failed, even if the branch is fast.
-- All branches fail correctness or compilation: repair source and retry; do not update method attribution from failed branches.
-- Champion speedup comes only from hyperparameters: record methods with low attribution as ineffective even if the kernel is faster.
-- Builtin exists in AMD material but not DCU source/probe: do not use it as a DCU claim.
-- `__has_builtin` reports missing for source-backed HCU builtins: treat that probe as inconclusive and compile the exact call shape instead.
-- Remote DCU access is unavailable: prepare local scripts/probes under `hygon_tmp/` and ask the user to run them remotely, then process returned logs.
-
-## References
-
-Load references only when needed:
-
-- `references/optimization_catalog.md`: human-readable optimization catalog, triggers, skip rules, combining guidance, and DCU-specific strategies.
-- `references/method_registry.json`: structured method ids, priorities, requirements, signatures, and validation metadata.
-- `references/dcu_metrics_guide.md`: hipprof/PMC/SQTT metrics, bottleneck interpretation, and tool usage notes.
-- `references/dcu_isa_signatures.json`: dccobjdump pattern groups for DCU ISA verification.
-- `examples/walkthrough.md`: full walkthrough for debugging or demonstrating the workflow.
-
-## Output contract
-
-Each run creates:
-
-```text
-<baseline-dir>/run_YYYYMMDD_HHMMSS/
-|-- env.json
-|-- state.json
-|-- baseline/
-|   |-- <baseline copy>
-|   `-- bench.json
-|-- iterv1/
-|   |-- analysis.md
-|   |-- methods.json
-|   |-- dcu_top.json
-|   |-- roofline.json
-|   |-- best_input.hipprof.csv
-|   |-- best_input.hipprof.log
-|   |-- best_input.hipprof.codeobj_analyze.log
-|   |-- best_input.hipprof.sqtt_analysis.json
-|   |-- kernel.<ext>
-|   |-- kernel.hipprof.csv
-|   |-- kernel.hipprof.log
-|   |-- kernel.hipprof.codeobj_analyze.log
-|   |-- kernel.hipprof.sqtt_analysis.json
-|   |-- bench.json
-|   |-- attribution.json
-|   |-- isa_check.json
-|   `-- branches/
-|       |-- b1/
-|       |-- b2/
-|       `-- ...
-|-- iterv2/
-`-- summary.md
-```
-
-The final user-facing answer should report best speedup, champion path, effective methods, implementation-failed methods, profiling/ISA caveats, and any remote validation that could not be run.
+有可复用结果时向 `hcu-knowledge-update` 提供案例草稿和原始证据；入库需遵守用户授权，并同步工程总览/专题/案例。保持 Skills 流程与知识内容分工。

@@ -39,7 +39,7 @@ def test_sass_target_symbol_scope():
 
 
 def test_new_strategy_metadata():
-    registry = json.loads((ROOT / "references/method_registry.json").read_text())
+    registry = json.loads((ROOT / "references/method_registry.json").read_text(encoding="utf-8"))
     for method in ["compute.structured_sparsity_2to4", "memory.kv_cache_layout", "latency.grouped_gemm_scheduler"]:
         meta = registry["methods"][method]
         assert meta["workload_archetypes"]

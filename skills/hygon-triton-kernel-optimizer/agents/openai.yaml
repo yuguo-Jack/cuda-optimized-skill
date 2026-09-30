@@ -1,0 +1,4 @@
+interface:
+  display_name: "HCU Triton Optimizer"
+  short_description: "Investigate HCU Triton kernels and model performance"
+  default_prompt: "Use $hygon-triton-kernel-optimizer with the current HCU knowledge base and validate against my target environment."

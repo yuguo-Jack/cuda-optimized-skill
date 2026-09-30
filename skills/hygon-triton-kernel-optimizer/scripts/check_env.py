@@ -50,6 +50,7 @@ def _torch_info() -> dict:
         info.update({
             "available": True,
             "version": getattr(torch, "__version__", None),
+            "hip": getattr(torch.version, "hip", None),
             "cuda_available": bool(torch.cuda.is_available()),
             "device_count": int(torch.cuda.device_count()) if torch.cuda.is_available() else 0,
             "devices": [],
@@ -111,6 +112,9 @@ def collect() -> dict:
         "primary_arch": primary_arch,
         "rocminfo_arches": rocminfo_arches,
         "tools": {
+            "xprof": _tool("xprof", ["--help"]),
+            "xcompute": _tool("xcompute", ["--help"]),
+            "aicc": _tool("aicc", ["--version"]),
             "hipcc": _tool("hipcc", ["--version"]),
             "hipprof": _tool("hipprof", ["-h"]),
             "dccobjdump": _tool("dccobjdump", ["--version"]),
@@ -133,7 +137,7 @@ def collect() -> dict:
         env["warnings"].append("torch.cuda is not available; run capture/benchmark on the DCU host.")
     if not primary_arch:
         env["warnings"].append("No gfx arch detected; run on the Hygon DCU host for capture and benchmark.")
-    if primary_arch and primary_arch not in {"gfx936", "gfx938"}:
+    if primary_arch and primary_arch not in {"gfx936", "gfx938", "gfx946"}:
         env["warnings"].append(f"Unexpected gfx arch for this workflow: {primary_arch}")
     return env
 

@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from experiment import benchmark_gate, resolve_benchmark
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 KERNEL_EXTS = (".hip", ".cu", ".cpp", ".cc", ".cxx", ".py")
@@ -30,6 +31,10 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
 def _read(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _resolve_benchmark(args, state):
+    args.benchmark = resolve_benchmark(state, args.benchmark)
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +70,9 @@ def cmd_setup(args):
         "--branches", str(args.branches),
         "--dims", args.dims,
         "--env", env_json,
+        "--profiler", args.profiler,
+        "--workloads", args.workloads,
+        "--benchmark", os.path.abspath(args.benchmark),
         "--noise-threshold-pct", str(args.noise_threshold_pct),
         "--ptr-size", str(args.ptr_size),
     ], capture_output=True)
@@ -103,7 +111,7 @@ def cmd_setup(args):
 
     # 3a for iter 1: profile best_input
     rc = _run([
-        sys.executable, str(SCRIPT_DIR / "profile_hipprof.py"),
+        sys.executable, str(SCRIPT_DIR / "profile_hcu.py"),
         "--state", state_path,
         "--iter", "1",
         "--which", "best_input",
@@ -152,10 +160,11 @@ def cmd_open_iter(args):
         sys.exit(f"state.json missing: {state_path}")
 
     state = _read(state_path)
+    _resolve_benchmark(args, state)
 
     # Profile best_input for this iter
     rc = _run([
-        sys.executable, str(SCRIPT_DIR / "profile_hipprof.py"),
+        sys.executable, str(SCRIPT_DIR / "profile_hcu.py"),
         "--state", state_path,
         "--iter", str(args.iter),
         "--which", "best_input",
@@ -209,10 +218,17 @@ def cmd_close_iter(args):
         sys.exit(f"state.json missing: {state_path}")
 
     state = _read(state_path)
+    _resolve_benchmark(args, state)
+    if any(h.get("iter") == args.iter for h in state.get("history", [])):
+        sys.exit("Iteration already closed; use a new iteration to preserve its evidence")
     iter_dir = os.path.join(args.run_dir, f"iterv{args.iter}")
     methods_json = os.path.join(iter_dir, "methods.json")
     if not os.path.isfile(methods_json):
         sys.exit(f"methods.json missing at {methods_json}")
+    # Reject invalid/unsupported method plans before spending GPU time.
+    if _run([sys.executable, str(SCRIPT_DIR / "validate_methods.py"),
+             "--methods", methods_json, "--state", state_path]).returncode:
+        sys.exit("Method plan rejected; review target evidence and constraints")
 
     # Step 3e: Branch explore — compile + benchmark all branches
     branch_result = _run([
@@ -236,22 +252,15 @@ def cmd_close_iter(args):
     if branch_result.returncode != 0:
         sys.exit(f"branch_explore failed rc={branch_result.returncode}")
 
-    # Find champion kernel
-    kernel = None
-    for ext in KERNEL_EXTS:
-        candidate = os.path.join(iter_dir, f"kernel{ext}")
-        if os.path.isfile(candidate):
-            kernel = candidate
-            break
-    if not kernel:
-        sys.exit(f"No champion kernel found after branch_explore")
-
+    # Use the selected path, not an older kernel with a different extension.
+    selected = _read(os.path.join(iter_dir, "branch_results.json"))
+    kernel = selected["champion"]["kernel"]
     bench_json = os.path.join(iter_dir, "bench.json")
     if not os.path.isfile(bench_json):
         sys.exit(f"bench.json missing for champion")
 
     bench = _read(bench_json)
-    passed = bool(bench.get("correctness", {}).get("passed", False))
+    passed, _ = benchmark_gate(bench, kernel)
 
     if not passed:
         print(json.dumps({
@@ -264,7 +273,7 @@ def cmd_close_iter(args):
 
     # Step 3g: Profile champion with hipprof
     rc = _run([
-        sys.executable, str(SCRIPT_DIR / "profile_hipprof.py"),
+        sys.executable, str(SCRIPT_DIR / "profile_hcu.py"),
         "--state", state_path,
         "--iter", str(args.iter),
         "--which", "kernel",
@@ -277,6 +286,7 @@ def cmd_close_iter(args):
     # Step 3h: Ablation attribution (optional — runs if ablation kernels exist)
     attribution_path = os.path.join(iter_dir, "attribution.json")
     ablation_dir = os.path.join(iter_dir, "ablations")
+    Path(attribution_path).unlink(missing_ok=True)
     if os.path.isdir(ablation_dir):
         _run([
             sys.executable, str(SCRIPT_DIR / "ablate.py"),
@@ -287,6 +297,7 @@ def cmd_close_iter(args):
 
     # Step 3i: DCU ISA verification
     sass_check_path = os.path.join(iter_dir, "isa_check.json")
+    Path(sass_check_path).unlink(missing_ok=True)
     _run([
         sys.executable, str(SCRIPT_DIR / "sass_check.py"),
         "--state", state_path,
@@ -312,22 +323,13 @@ def cmd_close_iter(args):
     if rc != 0:
         sys.exit("state update failed")
 
-    state = _read(state_path)
-    hipprof_output = os.path.join(iter_dir, "kernel.hipprof")
-    if os.path.abspath(state.get("best_file", "")) == os.path.abspath(kernel):
-        _run([
-            sys.executable, str(SCRIPT_DIR / "state.py"), "set-best-hipprof-output",
-            "--state", state_path,
-            "--hipprof-output", hipprof_output,
-        ])
-
     # Open next iteration if needed
     state = _read(state_path)
     next_iter = args.iter + 1
     if next_iter <= state["iterations_total"]:
         # Profile best_input for next iter + roofline
         _run([
-            sys.executable, str(SCRIPT_DIR / "profile_hipprof.py"),
+            sys.executable, str(SCRIPT_DIR / "profile_hcu.py"),
             "--state", state_path,
             "--iter", str(next_iter),
             "--which", "best_input",
@@ -395,6 +397,8 @@ def main():
     ps.add_argument("--dims", required=True, help="JSON dict of name->int")
     ps.add_argument("--noise-threshold-pct", type=float, default=2.0)
     ps.add_argument("--ptr-size", type=int, default=0)
+    ps.add_argument("--workloads", default="", help="Explicit workload cases JSON")
+    ps.add_argument("--profiler", choices=["auto", "xprof", "hipprof", "none"], default="auto")
     ps.add_argument("--env-out", type=str, default="")
     ps.add_argument("--warmup", type=int, default=10)
     ps.add_argument("--repeat", type=int, default=20)
@@ -403,13 +407,13 @@ def main():
     po = sub.add_parser("open-iter")
     po.add_argument("--run-dir", required=True)
     po.add_argument("--iter", type=int, required=True)
-    po.add_argument("--benchmark", default=_default_bench)
+    po.add_argument("--benchmark", default=None, help="Defaults to the frozen setup benchmark")
     po.set_defaults(func=cmd_open_iter)
 
     pc = sub.add_parser("close-iter")
     pc.add_argument("--run-dir", required=True)
     pc.add_argument("--iter", type=int, required=True)
-    pc.add_argument("--benchmark", default=_default_bench)
+    pc.add_argument("--benchmark", default=None, help="Defaults to the frozen setup benchmark")
     pc.add_argument("--warmup", type=int, default=10)
     pc.add_argument("--repeat", type=int, default=20)
     pc.add_argument("--retries", type=int, default=0)

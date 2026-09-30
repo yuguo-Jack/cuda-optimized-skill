@@ -1,237 +1,247 @@
-# Hygon HIP Optimization Catalog
+# HCU 优化策略目录
 
-Use this catalog with `dcu_top.json`, `roofline.json`, `state.json`, `isa_check.json`, and the current best kernel. Scan each axis from P1 downward. Do not skip a higher-priority method unless its skip condition applies, the method was already tried, the architecture is incompatible, the required feature is unavailable, or profiler/ISA evidence does not trigger it.
+本目录是候选策略，不是兼容或收益清单。以 HCU-Knowledge 当前工程与目标工具链为准。优先读 [共同契约](hcu-workflow-contract.md)；每轮 1..3 项，每轴最多 2 项，不为预算凑数。
 
-Important boundary: AMD ROCm and CK Tile guidance is useful because Hygon DCU is close to AMD-style HIP/GPU programming, but Hygon tensorcore paths have diverged. For matrix-core methods, treat Hygon `MMOP` / `v_mmac_*` and compiled HCU CK Tile examples as authoritative. AMD `MFMA` names are only analogies unless the Hygon toolchain emits the matching HCU/MMAC ISA in `dccobjdump`.
+## 选择方法
 
-Evidence levels:
+先确定热点、数值/布局契约和目标；找到当前 HCU 实现/例子，最小编译与正确性验证后才改低层路径。gfx 不能按大小推导兼容，少伯新特性限定 gfx946。FP4/FP8/INT4等分别按硬件和编译器证据决定，不能用存储位数证明原生矩阵指令。
 
-- Final proof is target ISA from `dccobjdump`: `v_mmac_*`, `MMOP`, `ds_read_m32x*`, `matrix_load*`, `buffer/global ... lds`, wait counters, and resource usage.
-- Use [hcu-knowledge-search](../../hcu-knowledge-search/SKILL.md) to retrieve original builtin declarations and fixed-commit source examples. These are valid implementation candidates only when copied with their exact source-level signature and target guard. A generic `__has_builtin` probe is not enough to reject them unless it compiles the exact source-backed call shape for the target architecture.
-- Do not invent builtin names from AMD or spreadsheet rows. Start from the cited Hygon example, compile the minimal kernel, then inspect the emitted ISA.
+## compute
 
-Also: do not add FP4 strategies for Hygon DCU unless future hardware/toolchain evidence appears. Existing Hygon material covers FP8/BF8/TF32/FP16/BF16/INT8/INT4-style paths, not FP4 hardware acceleration.
+### P1 · `compute.mmac_tensor_core`
 
-## Global Selection Rules
+HCU MMOP / MMAC matrix core utilization。CK Tile HCU GEMM/conv/attention path, source-backed HCU/AMD-named MMAC builtin with exact signature, or target-compiled inline asm; final proof is v_mmac/MMOP ISA
 
-1. Prefer an existing CK Tile or HCU example path before writing a custom low-level kernel.
-2. Change one tuning dimension per branch: geometry, vector width, LDS layout, pipeline, scheduler, epilogue, or precision.
-3. For `gfx936/gfx938`, assume wavefront size 64 and re-check every CUDA warp32 heuristic.
-4. For HCU/MMAC paths, validate the whole data path: global load -> LDS/tile staging -> matrix read -> MMAC -> epilogue.
-5. A source builtin is not proof. Confirm final ISA with `dccobjdump`, then confirm speed with benchmark and `hipprof`.
-6. A method with no relevant ISA because the dump is incomplete should be marked inconclusive, not failed, if correctness and timing still support the branch.
+- 调查入口：`SQ_INSTS_MMOP` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+- 要求 `target_evidence`：精确 gfx、编译器/库版本、头文件或固定源码、最小探针及结果。
 
-## Compute Axis
+### P2 · `compute.mixed_precision_fp8_bf8`
 
-### P1: `compute.mmac_tensor_core` - HCU MMOP / MMAC Matrix Core
+gfx938 FP8/BF8/TF32 mixed precision。compiled CK Tile low-precision path or source-backed gfx938 FP8/BF8 conversion/MMAC forms from paged_attention_938.cu when tolerance permits
 
-- Trigger: GEMM, convolution, attention, MoE, or batched matmul semantics exist but `SQ_INSTS_MMOP` is low, runtime is compute-bound, or `dccobjdump` shows only VALU/FMA instead of `v_mmac_*`.
-- Skip: elementwise/reduction-only kernels, unsupported datatype, or the current best already clearly uses the right HCU MMAC path.
-- Implement:
-  - Prefer CK Tile/HCU examples for GEMM, conv, grouped GEMM, fused conv, and MoE.
-  - For custom code, use verified CK Tile/HCU examples first; only use hand-written asm after a minimal compile probe.
-  - Source-backed MMAC candidates include AMD-named gfx936 microbench builtins (`__builtin_amdgcn_mmac_f32_16x16x8f32`, `__builtin_amdgcn_mmac_f32_16x16x8tf32`, `__builtin_amdgcn_mmac_f32_16x16x16f16`, `__builtin_amdgcn_mmac_i32_16x16x32i8`) and gfx938 HCU FP8/BF8 builtins in `paged_attention_938.cu`.
-  - Do not accept AMD MFMA-oriented builtin or mnemonic names as proof; verify Hygon lowering instead of assuming equivalence.
-- Verify:
-  - `dccobjdump` shows `v_mmac_*` or the expected HCU MMOP form.
-  - LDS/matrix-read layout matches the MMAC operand contract.
-  - Timing and compute utilization improve.
+- 调查入口：`SQ_INSTS_VALU_F32` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+- 要求 `target_evidence`：精确 gfx、编译器/库版本、头文件或固定源码、最小探针及结果。
 
-### P2: `compute.mixed_precision_fp8_bf8` - FP8/BF8/TF32 Hygon Low-Precision Path
+### P3 · `compute.launch_config_wave64`
 
-- Trigger: `gfx938`, tolerant accuracy, FP32/VALU dominates, or memory bandwidth is dominated by FP16/BF16 tensors that could be stored as FP8/BF8.
-- Skip: strict FP32/FP64 accuracy, unsupported target, absent scale metadata, or no reference tolerance update.
-- Implement:
-  - Prefer a compiled CK Tile low-precision path when available.
-  - For hand-coded gfx938 FP8/BF8, copy the exact `paged_attention_938.cu` forms: `__builtin_hcu_cvt_f32_fp8(val, false, 0, lane)`, `__builtin_hcu_cvt_f32_bf8(val, false, 0, lane)`, `__builtin_hcu_cvt_pk_fp8_f32(v1, v2, val, high)`, `__builtin_hcu_cvt_pk_bf8_f32(v1, v2, val, high)`, `__builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(reg_a, reg_b, reg_c, false, false)`, and `__builtin_hcu_mmac_f32_16x16x32_bf8_bf8_lit_lts(...)`.
-  - Validate with a source-backed compile probe and `dccobjdump`; the generic `__has_builtin` result is not decisive.
-  - Use TF32 conversion modes only when the numerical policy is explicit.
-- Verify:
-  - `dccobjdump` shows `fp8`, `bf8`, `tf32`, conversion, pack, or low-precision MMAC forms.
-  - `atol/rtol` is justified in `analysis.md`.
-  - Do not use FP4: Hygon DCU has no confirmed FP4 hardware path in the current target environment.
+Launch geometry and target wave width (legacy method ID)。block sizes as multiples of 64; tune occupancy with LDS/VGPR pressure
 
-### P3: `compute.launch_config_wave64` - Wave64 Launch Geometry
+- 调查入口：`SQ_WAVES` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+- 要求 `target_evidence`：精确 gfx、编译器/库版本、头文件或固定源码、最小探针及结果。
 
-- Trigger: low `SQ_WAVES`, low CU activity, small grid, block size not a multiple of 64, or uneven tail work.
-- Skip: occupancy is adequate and the kernel is limited by memory traffic or a specialized pipeline.
-- Implement: tune block sizes such as 64/128/256/512, keep full waves active, and use `__launch_bounds__` when it helps register allocation.
-- Verify: benchmark improves and profiler shows better waves/CU activity without VGPR/LDS pressure regression.
+### P4 · `compute.thread_coarsening`
 
-### P4: `compute.thread_coarsening` - Thread Coarsening / Register Tile
+Thread coarsening / register tile。per-thread multiple elements, register tiles, fixed-loop unroll
 
-- Trigger: one element per thread, repeated address arithmetic, low arithmetic per byte, or small per-thread work.
-- Skip: VGPR spills, occupancy collapse, or memory access becomes non-coalesced.
-- Implement: process 2-8 elements per thread, use register tiles, manually scalarize tiny arrays, and unroll fixed loops.
-- Verify: instruction count or global requests drop, no spill/regression appears, benchmark improves.
+- 调查入口：`SQ_BUSY_CYCLES` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
 
-### P5: `compute.register_pressure_control` - VGPR/SGPR Pressure Control
+### P5 · `compute.register_pressure_control`
 
-- Trigger: low occupancy caused by registers, `hipcc --resource-usage` or `dccobjdump` resource dump shows high VGPR/SGPR use, or local arrays spill.
-- Skip: kernel is already pipeline-saturated at low occupancy, especially a healthy MMAC kernel.
-- Implement: scalarize arrays, reduce live ranges, split long expressions, move rarely reused temporary storage to LDS, tune `__launch_bounds__`.
-- Verify: resource usage drops or occupancy improves without extra memory traffic.
+VGPR/SGPR pressure control。scalarize local arrays, reduce live ranges, tune __launch_bounds__, avoid spills
 
-### P6: `compute.fast_math_intrinsics` - Fast Math / Special Function Replacement
+- 调查入口：`VGPR|SGPR|OCCUPANCY` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
 
-- Trigger: transcendental/division/sqrt operations dominate and tolerance allows approximate forms.
-- Skip: strict numerical requirements, integer-exact code, or SFU is not bottleneck.
-- Implement: use HIP fast math intrinsics, reciprocal/multiply replacements, or precomputed constants.
-- Verify: correctness tolerance is explicit and profiler shows lower special-function pressure or runtime.
+### P6 · `compute.fast_math_intrinsics`
 
-### P7: `compute.inline_asm_builtin` - Inline ASM / Low-Level Escape Hatch
+Fast math / intrinsic replacement。HIP fast math intrinsics or reciprocal/multiply transforms with explicit tolerance
 
-- Trigger: source-level HIP/CK Tile change cannot express the intended path, and `dccobjdump` proves the compiler emits a weak sequence.
-- Skip: an existing CK Tile/HCU path or already-proven low-level path can express the same optimization.
-- Implement: use a small `asm volatile` block only after compiling a minimal probe. Keep constraints and clobbers minimal and documented.
-- Verify: `dccobjdump` shows the intended mnemonic, wait counters are correct, and a small correctness test passes.
+- 调查入口：`SFU|DIV|SQRT|TRANS` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
 
-## Memory Axis
+### P7 · `compute.inline_asm_builtin`
 
-### P1: `memory.coalesced_access` - Coalesced Global Memory Access
+Inline asm / low-level escape hatch。small asm volatile or source-backed builtin only after higher-level paths fail and a minimal target compile probe passes
 
-- Trigger: adjacent lanes access strided/scattered memory, TCC/TCP request counters are high, or effective bandwidth is low.
-- Skip: lane-to-address mapping is already contiguous and aligned.
-- Implement: remap thread indices, use SoA or packed layouts for hot fields, and align fastest-changing dimension with adjacent wave lanes.
-- Verify: lower request pressure and faster benchmark.
+- 调查入口：`dccobjdump` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+- 要求 `target_evidence`：精确 gfx、编译器/库版本、头文件或固定源码、最小探针及结果。
 
-### P2: `memory.vectorized_global_access` - Vectorized Global Load/Store
+## memory
 
-- Trigger: bandwidth-bound streaming kernel emits scalar loads/stores for contiguous aligned data.
-- Skip: alignment is unsafe, vector tails dominate, or compiler already emits packed memory ops.
-- Implement: use `float2`/`float4`, packed integer vector types, or CK Tile vector load traits. Keep scalar tail path correct.
-- Verify: `dccobjdump` shows `global_load_dwordx2/x4`, `buffer_load_dwordx*`, or equivalent packed forms.
+### P1 · `memory.coalesced_access`
 
-### P3: `memory.aligned_layout_transform` - Layout / Stride Transform for Access Locality
+Coalesced global memory access。contiguous wavefront lanes; SoA or hot-dimension-contiguous layout
 
-- Trigger: logical layout forces poor memory order, KV/cache/conv tensor layout does not match the hot kernel, or extra transpose kernels dominate.
-- Skip: transformed tensor is single-use and transform cost exceeds savings.
-- Implement: choose cache/tensor strides that make hot dimensions contiguous, use aligned allocation/strides, and prefer direct target layout writes.
-- Verify: fewer layout conversions, better coalescing, and end-to-end timing improves.
+- 调查入口：`TD_COALESCABLE_WAVEFRONT_sum` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
 
-### P4: `memory.lds_tiling` - LDS Tiling and Data Reuse
+### P2 · `memory.vectorized_global_access`
 
-- Trigger: reusable data is repeatedly loaded from global memory, or arithmetic intensity can rise by staging tiles.
-- Skip: pure streaming elementwise kernels with little reuse.
-- Implement: stage tiles into `__shared__`/LDS, use cooperative loads, synchronize only where needed, compute from LDS/registers.
-- Verify: `ds_read`/`ds_write` appears and global request count drops.
+Vectorized global load/store。aligned float2/float4 or packed global load/store operations
 
-### P5: `memory.global_to_lds_async` - Direct Global-to-LDS / Buffer-Load-LDS Path
+- 调查入口：`TCC_EA_RDREQ_sum` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
 
-- Trigger: matrix/tile kernels stage global data through VGPRs before LDS, causing register pressure or instruction overhead.
-- Skip: simple scalar kernel, unsupported target, or CK Tile loader already emits the intended path.
-- Implement: prefer Hygon/CK Tile loader paths such as TLS/MLS/WASP. For custom code, `ds_read_m32x16_b16_buffer_load_dword.cpp` provides a source-backed `__builtin_amdgcn_raw_buffer_load_lds(...)` wrapper with an address-space(3) LDS destination and descriptor metadata.
-- Validate that exact wrapper with target compilation before using it in a new kernel; do not rely on `__has_builtin`.
-- Verify: `dccobjdump` shows `buffer_load_* ... lds` or another compiled direct-to-LDS staging form, and VGPR pressure does not increase.
+### P3 · `memory.aligned_layout_transform`
 
-### P6: `memory.matrix_load_mls` - CK Tile MLS / Tile Staging
+Layout / stride transform for locality。hot-dimension-contiguous layout, aligned strides, direct target-layout writes
 
-- Trigger: GEMM/attention/conv tile wants matrix-formatted data and scalar LDS/global staging is expensive.
-- Skip: non-matrix data layout or unsupported header/toolchain path.
-- Implement:
-  - Prefer CK Tile/HCU MLS examples that compile in the target DTK.
-  - Source-backed standalone examples include `__builtin_hcu_matrix_load_32x16_b16(rscr, address_space(3) short*, offset, t, r, sw, flags)` plus `__builtin_hcu_ds_read_matrix_trans_format_u16(...)`, and `__builtin_hcu_matrix_load_b8(addr, 128, 0, 1, 0, 0, 0, 0)`.
-  - Use descriptor filter/zero-pad modes for boundary tiles only when the selected compiled path exposes them.
-  - Treat flags such as `t`, `r`, `sw`, `glc`, `slc` as ISA fields when they appear in compiled code or tool output.
-- Verify: `matrix_load*`, MLS, or an equivalent compiled staging pattern appears and correctness holds on edge tiles.
+- 调查入口：`TCC_EA_RDREQ_sum` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
 
-### P7: `memory.ds_read_matrix_layout` - DS Matrix Read Layout Contract
+### P4 · `memory.lds_tiling`
 
-- Trigger: MMAC operands are in LDS but loaded with scalar LDS operations or wrong matrix layout.
-- Skip: no matrix core use, or CK Tile already emits the right matrix-read path.
-- Implement: use the compiled inline-asm forms `ds_read_m32x16_b16`, `ds_read_m32x16_b16_alt`, or `ds_read_m32x32_b8`. For int4 or b32 paths, the gfx936 manual also documents `DS_READ_M32X64_B4` and `DS_READ_M32X8_B32`; treat them as architecture patterns that still need a minimal compile probe before use.
-- Verify: `ds_read_m*` or HCU matrix-format read appears, and numerical mapping validates on small unique-value tensors.
+LDS tiling and data reuse。global -> LDS -> register tiling
 
-### P8: `memory.lds_bank_conflict` - LDS Bank Conflict Reduction / Swizzle
+- 调查入口：`TCC_EA_RDREQ_sum` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+- 要求 `target_evidence`：精确 gfx、编译器/库版本、头文件或固定源码、最小探针及结果。
 
-- Trigger: `SQ_LDS_BANK_CONFLICT`, SQTT stalls, or matrix-read layout is conflict-heavy.
-- Skip: no LDS or conflicts are already low.
-- Implement: pad or swizzle LDS layout, use XOR/Morton-style mapping, and align the swizzle with the selected matrix-read form.
-- Verify: bank-conflict counters drop, `ds_read*`/`ds_write*` pattern remains valid, benchmark improves.
+### P5 · `memory.global_to_lds_async`
 
-### P9: `memory.cache_policy_glc_slc` - Cache Policy / Coherency Modifier Tuning
+Direct global-to-LDS / async buffer load。CK Tile loader, buffer_load_* lds, or source-backed __builtin_amdgcn_raw_buffer_load_lds wrapper with address_space(3) LDS destination
 
-- Trigger: streaming traffic pollutes cache, synchronization flags require visibility, or L2-oriented path is intentional.
-- Skip: cache reuse is high and default policy already works.
-- Implement: use `glc`/`slc` flags or CK/HCU cache modifier hooks only when profiler and correctness need them.
-- Verify: `dccobjdump` shows `glc`/`slc` on the intended memory ops and timing/correctness improve.
+- 调查入口：`VGPR|TCC_EA_RDREQ|dccobjdump` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+- 要求 `target_evidence`：精确 gfx、编译器/库版本、头文件或固定源码、最小探针及结果。
 
-### P10: `memory.ck_tile_named_pipeline` - CK Tile Named Pipeline Selection
+### P6 · `memory.matrix_load_mls`
 
-- Trigger: operator maps to CK Tile/HCU examples and named paths exist: TLS, MLS, WASP, cshuffle, wavelet, persistent, split-k, preshuffle, dsreadm.
-- Skip: CK Tile headers unavailable, operator shape unsupported, or one named path is already proven best.
-- Implement: instantiate one named variant per branch and keep the rest unchanged.
-- Verify: `IsSupportedArgument` passes, benchmark selects a winner, and ISA evidence matches the path.
+CK Tile MLS / tile staging。Use the exact-target matrix-load/MLS implementation and descriptor contract. gfx936/gfx938 sources have MLS forms; Shaobo gfx946 extensions are a separate feature scope.
 
-### P11: `memory.epilogue_fusion` - Epilogue / Post-Op Fusion
+- 调查入口：`TCP_TCC_READ_REQ_LATENCY_sum` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+- 要求 `target_evidence`：精确 gfx、编译器/库版本、头文件或固定源码、最小探针及结果。
 
-- Trigger: GEMM/conv/norm output is immediately followed by bias, add, activation, quantization, residual, or store transform.
-- Skip: fusion increases register pressure enough to regress, or output is reused by multiple consumers.
-- Implement: fuse post-op into CK Tile epilogue or custom store path; avoid extra global round trip.
-- Verify: one fewer kernel or less global traffic, same final result, faster end-to-end time.
+### P7 · `memory.ds_read_matrix_layout`
 
-## Latency Axis
+DS matrix-read layout contract。compiled inline asm ds_read_m32x16_b16, ds_read_m32x16_b16_alt, or ds_read_m32x32_b8; source-probe ds_read_m32x64_b4 / ds_read_m32x8_b32 before use
 
-### P1: `latency.waitcnt_pipeline` - Waitcnt-Aware Software Pipeline
+- 调查入口：`dccobjdump` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+- 要求 `target_evidence`：精确 gfx、编译器/库版本、头文件或固定源码、最小探针及结果。
 
-- Trigger: load/compute serialization, SQTT wait bubbles, or visible `s_waitcnt` placement before every small operation.
-- Skip: no independent work exists to overlap.
-- Implement: double-buffer LDS/register tiles, move waits closer to consumers, and use `s_waitcnt vmcnt(0)` for global consumers and `s_waitcnt lgkmcnt(0)` for LDS/scalar/matrix consumers.
-- Verify: `s_waitcnt` is present and better placed; runtime improves.
+### P8 · `memory.lds_bank_conflict`
 
-### P2: `latency.reduce_barrier` - Reduce Barriers and Sync Scope
+LDS bank-conflict reduction / swizzle。padding, XOR/Morton swizzle, matrix-read-aware LDS layout
 
-- Trigger: many `__syncthreads()`/`s_barrier` instructions or barrier stalls.
-- Skip: each barrier protects true cross-wave LDS dependency.
-- Implement: remove redundant block-wide barriers, use wave-local paths, split phases, or rely on waitcnt where legal.
-- Verify: barrier count/stall share drops and correctness remains stable.
+- 调查入口：`SQ_LDS_BANK_CONFLICT` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+- 要求 `target_evidence`：精确 gfx、编译器/库版本、头文件或固定源码、最小探针及结果。
 
-### P3: `latency.wavefront_shuffle_ds_bpermute` - Wavefront Exchange / Reduction
+### P9 · `memory.cache_policy_glc_slc`
 
-- Trigger: wave-local exchange or reduction uses LDS plus full-block sync.
-- Skip: data crosses waves or needs workgroup visibility.
-- Implement: use HIP shuffle/ballot/cooperative groups, `ds_permute_b32`, `ds_bpermute_b32`, or explicit wave64 reduction.
-- Verify: DS permute/shuffle pattern or fewer barriers, and wave64 correctness is tested.
+Cache policy / coherency modifiers。glc/slc flags in Hygon/AMD buffer/global memory operations when justified
 
-### P4: `latency.ilp_unroll` - ILP, Loop Unrolling, and Schedule Fill
+- 调查入口：`CACHE|TCC|SYNC` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+- 要求 `target_evidence`：精确 gfx、编译器/库版本、头文件或固定源码、最小探针及结果。
 
-- Trigger: loops are short/fixed, instruction pipeline has idle gaps, or address arithmetic dominates.
-- Skip: unroll increases VGPR pressure, code size, or cache pressure too much.
-- Implement: `#pragma unroll`, manual unroll for fixed sizes, interleave independent arithmetic/address operations with loads.
-- Verify: runtime improves and resource usage remains acceptable.
+### P10 · `memory.ck_tile_named_pipeline`
 
-### P5: `latency.persistent_scheduler` - Persistent Scheduler / Work Queue
+CK Tile named pipeline selection。Choose only pipelines present and guarded for this exact HCU target; names alone do not prove feature availability
 
-- Trigger: small or irregular grids, grouped GEMM/MoE tail effects, or underfilled CU occupancy.
-- Skip: grid already saturates CUs evenly or persistent loop harms fairness.
-- Implement: CK Tile persistent/grouped GEMM scheduler or simple work-queue loop.
-- Verify: CU activity and timing improve; no atomic/work-queue overhead dominates.
+- 调查入口：`pipeline` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+- 要求 `target_evidence`：精确 gfx、编译器/库版本、头文件或固定源码、最小探针及结果。
 
-### P6: `latency.split_k_streamk` - Split-K / Stream-K Parallelism
+### P11 · `memory.epilogue_fusion`
 
-- Trigger: K dimension is large, M/N is skinny, blocks are too few, or decode/prefill workload underutilizes CUs.
-- Skip: atomic/reduction cost dominates or numerical accumulation order is too sensitive.
-- Implement: split K into partial sums, use tree or counting-based reduction, and tune split factor against CU count.
-- Verify: more CUs active and total time improves including combine/reduction.
+Epilogue / post-op fusion。fuse bias/add/activation/quant/store transform into epilogue
 
-### P7: `latency.salu_valu_phase_balance` - SALU/VALU Phase Balance
+- 调查入口：`KERNEL_LAUNCH|TCC_EA_WRREQ` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
 
-- Trigger: scalar address/control work creates bubbles around vector/MMAC phases.
-- Skip: address work is tiny or compiler already schedules well.
-- Implement: precompute scalar indices, hoist invariant address math, fill empty scheduling phases with useful SALU/VALU work.
-- Verify: SQTT/PMC stall mix improves or instruction schedule is visibly better.
+## latency
 
-### P8: `latency.sqtt_stall_triage` - SQTT Stall Triage
+### P1 · `latency.waitcnt_pipeline`
 
-- Trigger: PMC/timing cannot explain a regression or `dcu_top.json` is degraded.
-- Skip: simple benchmark and PMC evidence already identify the bottleneck.
-- Run: `hipprof --sqtt --sqtt-type stat_stall --kernel-name <kernel> ...` for narrow stall data, or `--sqtt-type 1` for `stat,wave,issue,stat_stall,stat_valu`. Then summarize `thread_trace_*.json` with `scripts/analyze_sqtt.py`.
-- Verify: SQTT/Perfetto artifacts exist, `sqtt_analysis.json` identifies waitcnt/branch/instruction-family evidence, and the next real method is chosen from the observed stall type.
+Waitcnt-aware software pipeline。overlap global/LDS loads with compute; s_waitcnt vmcnt/lgkmcnt near consumers
 
-## Operator-Specific Shortcuts
+- 调查入口：`STALL|WAIT|LATENCY` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
 
-- GEMM / batched GEMM / grouped GEMM: start with CK Tile or HCU GEMM examples, then tune tile geometry, cshuffle/wavelet, persistent, split-k, preshuffle, and epilogue fusion.
-- Attention / paged attention: prioritize KV/cache layout, vectorized cache operations, split-K for decode, online softmax reduction, LDS/matrix-load staging, and FP8/BF8 only with explicit scaling.
-- Convolution: use CK Tile/HCU conv descriptors; tune layout, filter/spatial mapping, MLS/WASP/TLS loader, cshuffle/wavelet, and fused bias/add/activation.
-- Norm/reduction: tune vector width, wave64 reductions, one-pass vs multi-pass, hidden-size specialization, and dynamic quant epilogue.
-- MoE: tune sorting/routing, block_m, grouped GEMM shape, local-token filtering, quant path, split-k or atomic accumulation, and epilogue fusion.
+### P2 · `latency.reduce_barrier`
+
+Reduce barriers and sync scope。remove unnecessary __syncthreads; use wave-level patterns when legal
+
+- 调查入口：`BARRIER|S_BARRIER` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+
+### P3 · `latency.wavefront_shuffle_ds_bpermute`
+
+Wavefront exchange/reduction via shuffle or DS permute。ds_permute_b32 / ds_bpermute_b32 or HIP shuffle/cooperative groups
+
+- 调查入口：`LDS|BARRIER|REDUCE` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+- 要求 `target_evidence`：精确 gfx、编译器/库版本、头文件或固定源码、最小探针及结果。
+
+### P4 · `latency.ilp_unroll`
+
+ILP, loop unrolling, and schedule fill。pragma/manual unroll, interleave independent arithmetic and address work
+
+- 调查入口：`STALL|ISSUE|LOOP` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+
+### P5 · `latency.persistent_scheduler`
+
+Persistent or work-queue scheduler。CK Tile persistent/grouped GEMM or custom work queue
+
+- 调查入口：`SQ_WAVES` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+- 要求 `target_evidence`：精确 gfx、编译器/库版本、头文件或固定源码、最小探针及结果。
+
+### P6 · `latency.split_k_streamk`
+
+Split-K / Stream-K parallelism。split K into partial sums, tune combine/reduction, stream-K for skinny/irregular shapes
+
+- 调查入口：`SQ_WAVES|CU_ACTIVITY` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+
+### P7 · `latency.salu_valu_phase_balance`
+
+SALU/VALU phase balance。hoist scalar address math, precompute invariants, fill empty scheduling phases
+
+- 调查入口：`SALU|VALU|STALL` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+
+### P8 · `latency.sqtt_stall_triage`
+
+SQTT stall triage。hipprof --sqtt --sqtt-type stat_stall/stat_valu
+
+- 调查入口：`hipprof --sqtt` 是候选名称，需核对当前工具的定义、单位和 dispatch；不是自动触发阈值。
+- 验证：独立 oracle、多用例未采集测速；按方法查看源码、准确 kernel 的 ISA/资源、定义明确的计数器或 timeline。缺少证据记未验证。
+- 要求 `target_evidence`：精确 gfx、编译器/库版本、头文件或固定源码、最小探针及结果。
+
+## 典型算子路线
+
+- GEMM：访问布局→padding/tail→寄存器预取/LDS复用→MMAC与epilogue；检查stage增加的VGPR/LDS成本。
+- Attention/稀疏attention：prefill/decode、KV布局、mask/softmax数值、block稀疏调度、reduction与split策略分开验证。
+- MoE：router/sort、token分布、grouped GEMM、quant/scale、combine、EP通信分开计时；空expert、skew、capacity是关键边界。
+- Reduction/norm：小网格、跨wave合并、累加精度、同步和tail；不要盲目追求更高occupancy。
+- 通算融合：共享内存生命周期、生产/消费同步、跨rank顺序、通信完成语义，必须保留真实多进程测试。
+
+方法有效性只对应已测形状/环境；一次变快不能替整个方法族作通用结论。
+
+## 少伯新增能力的专项候选
+
+北美洲/南美洲资料和 CK 代码已有 MLS 命名/实现，不能误称 MLS 仅在少伯存在。少伯新资料里的 store、BPS、descriptor 编码等扩展须单独查证。参考知识页 `mls-wdra-generation-boundaries` 与 CK 工程指南。
+
+### `compute.shaobo_mx_low_precision` — 少伯 MX 低精度路径
+
+gfx946 instructions describe FP4/FP6 and scale-aware conversion/matrix paths; verify exact format, scale packing, accumulation and compiler support; never infer this for gfx936/gfx938.
+
+限定 gfx946 新特性资料范围，必须提供 target_evidence。来源文档描述支持不等于当前编译器或本机硬件已验证。
+
+### `compute.shaobo_wdra` — 少伯 producer/consumer VGPR 分配
+
+WDRA redistributes a fixed thread-group register budget; investigate spills and role balance, not an assumed increase in initial occupancy. Read synchronization/descriptor restrictions before probing.
+
+限定 gfx946 新特性资料范围，必须提供 target_evidence。来源文档描述支持不等于当前编译器或本机硬件已验证。
+
+### `memory.shaobo_tls` — 少伯 Tensor Load/Store 描述符路径
+
+Read gfx946 tensor descriptor, im2col/layout and synchronization contracts; compare a correct ordinary loader and preserve exact descriptor/shape bounds.
+
+限定 gfx946 新特性资料范围，必须提供 target_evidence。来源文档描述支持不等于当前编译器或本机硬件已验证。
+
+### `latency.shaobo_abarrier_ebarrier` — 少伯异步/扩展 barrier
+
+Check arrive/wait, phase/transaction count, barrier identity and participant lifetime against exact gfx946 compiler/runtime implementation; add race and progress tests.
+
+限定 gfx946 新特性资料范围，必须提供 target_evidence。来源文档描述支持不等于当前编译器或本机硬件已验证。

@@ -37,6 +37,8 @@ def add_scale_kernel(x, y, out, n_elements, alpha: tl.constexpr, BLOCK: tl.const
 
 
 def run(n: int, dtype: str, warmup: int, repeat: int) -> dict:
+    if n <= 0 or warmup < 0 or repeat <= 0:
+        raise ValueError("n/repeat must be positive; warmup nonnegative")
     torch_dtype = getattr(torch, dtype)
     x = torch.randn(n, device="cuda", dtype=torch_dtype)
     y = torch.randn(n, device="cuda", dtype=torch_dtype)
@@ -48,11 +50,15 @@ def run(n: int, dtype: str, warmup: int, repeat: int) -> dict:
 
     for _ in range(warmup):
         launch()
+    launch()
     torch.cuda.synchronize()
+    torch.testing.assert_close(out, x + y, equal_nan=False)
     ms = triton.testing.do_bench(launch, warmup=0, rep=repeat)
     total_bytes = (x.numel() * x.element_size()) * 3
     gbps = total_bytes / (float(ms) / 1e3) / 1e9
     return {
+        "correctness": {"checked": True, "passed": True},
+        "timing_scope": "triton.testing.do_bench; repeat is milliseconds, not sample count",
         "n": n,
         "dtype": dtype,
         "amdgcn_use_buffer_ops": os.environ.get("AMDGCN_USE_BUFFER_OPS"),
@@ -67,7 +73,7 @@ def main() -> None:
     parser.add_argument("--n", type=int, default=1 << 20)
     parser.add_argument("--dtype", default="float32")
     parser.add_argument("--warmup", type=int, default=10)
-    parser.add_argument("--repeat", type=int, default=50)
+    parser.add_argument("--repeat", type=int, default=50, help="do_bench measurement duration in milliseconds")
     parser.add_argument("--json-out", default="")
     parser.add_argument("--keep-buffer-ops", action="store_true", help="Do not clear AMDGCN_USE_BUFFER_OPS before compiling this raw Triton template")
     args = parser.parse_args()

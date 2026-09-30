@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 
-EXTS = {".amdgcn", ".isa", ".s", ".asm", ".ll"}
+EXTS = {".amdgcn", ".isa", ".s", ".asm"}
 PATTERNS = {
     "buffer_load_dwordx4": r"\bbuffer_load_dwordx4\b",
     "buffer_load_dwordx2": r"\bbuffer_load_dwordx2\b",
@@ -30,9 +30,11 @@ PATTERNS = {
 
 
 def _iter_files(root: Path) -> list[Path]:
+    def eligible(path: Path) -> bool:
+        return path.suffix.lower() != ".ll" and (path.suffix.lower() in EXTS or "amdgcn" in path.name.lower())
     if root.is_file():
-        return [root]
-    return [p for p in root.rglob("*") if p.is_file() and (p.suffix in EXTS or "amdgcn" in p.name.lower())]
+        return [root] if eligible(root) else []
+    return [p for p in root.rglob("*") if p.is_file() and eligible(p)]
 
 
 def scan(path: str, kernel: str = "") -> dict:
@@ -67,6 +69,7 @@ def scan(path: str, kernel: str = "") -> dict:
         "files_scanned": len(files),
         "totals": totals,
         "classification": classification,
+        "scope": "static instruction presence, not dynamic hotness or performance; LLVM IR excluded",
         "files": files,
     }
 

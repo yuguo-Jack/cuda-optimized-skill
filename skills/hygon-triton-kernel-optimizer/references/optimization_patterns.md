@@ -1,67 +1,24 @@
-# Triton Optimization Patterns for Hygon DCU
+# HCU Triton 候选优化
 
-## Buffer Operations
+所有候选以最新 HCU 知识、当前工程和精确目标验证为准；无统一 gfx 数值继承规则。以下是调查路线，不能保证收益。
 
-For memory-bound Triton kernels on DCU, first try to enable high-quality buffer operations.
+| 方向 | 为什么可能有用 | 必须核实 |
+| --- | --- | --- |
+| 连续访问/布局与向量化 | 减少访问和地址开销 | 对齐、mask/tail、真实ISA、traffic/时间 |
+| tile/num_warps/num_stages | 改变并行度、寄存器、LDS、流水 | 实际wave width、资源、驻留与网格覆盖 |
+| dot/MMAC 路径 | 减少标量矩阵工作 | HCU编译器支持、数据布局、精度/scale、最终指令 |
+| pipeline与预取 | 减少等待空泡 | 数据生命周期、同步、stage引入的VGPR/LDS成本 |
+| fusion/epilogue | 减少launch和中间存储 | 寄存器压力、重算、端到端与所有消费者 |
+| reduction/atomic重组 | 减少冲突与串行 | 顺序/确定性、索引范围、数值、稀疏/偏斜分布 |
+| attention分块/分派 | 调整prefill/decode/稀疏/长短序列路径 | causal/mask、KV cache布局、softmax数值、整模型 |
+| MoE grouped调度 | 改善小expert或不均衡 | router/sort/scale/GEMM/combine各阶段及EP通信 |
 
-Checklist:
+## 编译提示
 
-- Probe `AMDGCN_USE_BUFFER_OPS=1`; keep it only if the target stack compiles the kernel family under investigation.
-- Inspect `triton_meta['signature']` and identify pointer arguments (`*fp32`, `*bf16`, `*i64`, etc.).
-- Check `tt.pointer_range` and `tt.divisibility` metadata.
-- Add `tl.assume(ptr.to(tl.int64) >= 0)` when a pointer participates in offset calculation and non-negativity is guaranteed.
-- Add `tl.assume(param >= 0)` for scalar shape/stride parameters used in offset calculation when non-negativity is guaranteed.
-- Add `tl.multiple_of(param, 16)` only when the real value is known to be divisible by 16.
+`tl.assume`、`tl.multiple_of`、metadata 的 divisibility/range 必须由实际输入契约证明，对不满足条件的输入有正确分派/回退。指针整数表示不能随意推导正数约束。metadata parser只覆盖部分格式，缺失解析结果应回生成源码。
 
-Do not add assumptions unless the contract is true for all model inputs under the compiled shape specialization.
+不默认设置 AMDGCN_USE_BUFFER_OPS。每个环境对真实 kernel 家族做 unset/显式启用两路探针，保留失败日志。buffer/global/flat 和 dwordx2/x4 名字本身不判快慢：查看实际load/store路径、寄存器、访存层级与测量。
 
-On `torch 2.9.0` / `triton 3.3.0` / `gfx938`, pointer-to-int assumptions such as `tl.assume(ptr.to(tl.int64) >= 0)`, and even some scalar `tl.assume(...)` forms under `AMDGCN_USE_BUFFER_OPS=1`, have been observed to fail LLVM translation in a simple standalone kernel. Treat every new assumption form as experimental: compile-probe it on the target stack before using it in a real patch. If it fails, keep `tl.multiple_of(...)`, metadata fixes, or alternative address expressions instead of forcing the assumption.
+## 模型层调整
 
-Also separate Inductor-generated kernels from hand-written raw Triton templates. On the validated stack, a simple raw `@triton.autotune` vector kernel failed under `AMDGCN_USE_BUFFER_OPS=1` even after removing assumptions. Use `scripts/triton_benchmark_template.py` without buffer ops for a stable timing harness, and use generated Inductor kernels plus AMDGCN dumps when validating buffer-op conversion.
-
-## Wider Loads and Stores
-
-Prefer patterns that allow `buffer_load_dwordx4` or `buffer_store_dwordx4`.
-
-Signals that wide memory operations are unlikely:
-
-- offsets use `//`, `%`, indirect index loads, or data-dependent gathers;
-- masks fragment what should be contiguous lanes;
-- stores are atomic;
-- block shape is too small or launch geometry creates poor coalescing;
-- alignment or divisibility cannot be proven.
-
-## Example Hint Patch
-
-```python
-@triton.jit
-def kernel(value, stride_m, stride_n, out, dim: tl.constexpr, BLOCK: tl.constexpr):
-    tl.assume(value.to(tl.int64) >= 0)
-    tl.assume(out.to(tl.int64) >= 0)
-    tl.assume(stride_m >= 0)
-    stride_n = tl.multiple_of(stride_n, 16)
-    # original body...
-```
-
-Then rerun standalone and inspect AMDGCN. A faster runtime without expected instruction changes may still be useful, but do not claim the hint worked through buffer-op conversion unless assembly confirms it.
-
-## Low-Value Triton Kernels
-
-Reject or avoid generated Triton kernels when:
-
-- the body only zeros or copies a small tensor;
-- launch overhead dominates;
-- `tl.atomic_add` or scattered stores dominate and cannot be reorganized;
-- index formulas make most lanes read repeated or non-contiguous addresses;
-- a library operation was scalarized into a fused pointwise/reduction form;
-- autotune configs are nearly identical and all far below bandwidth roofline for structural reasons.
-
-## Model-Level Fixes
-
-Use model changes when the generated code is algorithmically poor:
-
-- move zero initialization into the consumer;
-- batch several tiny operations together;
-- replace scatter-heavy code with gather or segmented reductions when semantics allow;
-- keep matrix multiplication and normalization on library-backed paths;
-- disable `torch.compile` only around the specific region that triggers the bad kernel.
+小tensor初始化、scatter/atomic、融合后scalarized GEMM都是调查入口。比较初始化融合、批处理、gather/分段归约、库分派和最小compile边界；不能看到某种kernel就强制fallback。模型重写保留语义，并重新验证训练/推理必要的正反向与端到端性能。

@@ -12,11 +12,11 @@ import sys
 from pathlib import Path
 
 
-FIELD_RE = re.compile(r"^\s*(?P<key>Total tensor bytes|Best config time|Effective bandwidth|HW peak bandwidth|Bandwidth utilization)\s+:\s+(?P<value>.+?)\s*$", re.M)
+FIELD_RE = re.compile(r"^\s*(?P<key>Total tensor bytes|Best config time|Footprint rate estimate|HW peak bandwidth|Footprint/peak ratio \(not HBM utilization\))\s+:\s+(?P<value>.+?)\s*$", re.M)
 
 
 def _float_prefix(value: str) -> float | None:
-    m = re.search(r"[-+]?\d+(?:\.\d+)?", value)
+    m = re.search(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?", value)
     return float(m.group(0)) if m else None
 
 
@@ -41,25 +41,29 @@ def main() -> None:
     args = parser.parse_args()
 
     env = os.environ.copy()
-    env.setdefault("AMDGCN_USE_BUFFER_OPS", "1")
     for item in args.env:
         if "=" not in item:
             raise SystemExit(f"--env must be KEY=VALUE, got {item!r}")
         key, value = item.split("=", 1)
         env[key] = value
 
-    proc = subprocess.run(
-        [sys.executable, str(Path(args.kernel_py).resolve())],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="ignore",
-        timeout=args.timeout,
-        env=env,
-    )
+    if args.timeout <= 0:
+        parser.error("--timeout must be positive")
+    command = [sys.executable, str(Path(args.kernel_py).resolve())]
+    try:
+        proc = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=args.timeout, env=env)
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout or ""
+        stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr or ""
+        proc = subprocess.CompletedProcess(command, 124, stdout, stderr + "\nCaptured kernel timed out")
+    except OSError as exc:
+        proc = subprocess.CompletedProcess(command, 1, "", str(exc))
     metrics = parse_output((proc.stdout or "") + "\n" + (proc.stderr or ""))
     result = {
         "kernel_py": str(Path(args.kernel_py).resolve()),
+        "correctness": "not_checked",
+        "measurement_scope": "autotune diagnostics, not validated optimization evidence",
         "returncode": proc.returncode,
         "metrics": metrics,
         "stdout": proc.stdout,
@@ -72,7 +76,7 @@ def main() -> None:
     print(json.dumps({
         "returncode": proc.returncode,
         "best_ms": metrics.get("best_config_time_value"),
-        "effective_bandwidth_gbps": metrics.get("effective_bandwidth_value"),
+        "footprint_rate_gbps": metrics.get("footprint_rate_estimate_value"),
         "json_out": args.json_out or None,
     }, indent=2))
     if proc.returncode != 0:

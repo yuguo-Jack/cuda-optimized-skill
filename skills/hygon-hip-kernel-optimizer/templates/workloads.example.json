@@ -1,0 +1,46 @@
+{
+  "cases": [
+    {
+      "id": "tiny",
+      "dims": {
+        "N": 129
+      },
+      "ptr_size": 129,
+      "seeds": [
+        42,
+        123,
+        2026
+      ],
+      "weight": 1,
+      "max_regression_pct": 5
+    },
+    {
+      "id": "typical",
+      "dims": {
+        "N": 1048576
+      },
+      "ptr_size": 1048576,
+      "seeds": [
+        42,
+        123,
+        2026
+      ],
+      "weight": 3,
+      "max_regression_pct": 5
+    },
+    {
+      "id": "tail",
+      "dims": {
+        "N": 1048593
+      },
+      "ptr_size": 1048593,
+      "seeds": [
+        42,
+        123,
+        2026
+      ],
+      "weight": 1,
+      "max_regression_pct": 5
+    }
+  ]
+}

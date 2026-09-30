@@ -69,8 +69,8 @@ def _sanitize_expr(expr: str, tensor_args: list[str], dims: dict[str, int]) -> s
     if not expr:
         return None
     text = expr.strip()
-    text = re.sub(r"\.float\(\)", "", text)
-    text = re.sub(r"\.to\([^)]*\)", "", text)
+    if ".float(" in text or ".to(" in text or "//" in text:
+        return None  # casts/floor division are semantic, not spelling changes
     for name in tensor_args:
         text = re.sub(rf"\b{re.escape(name)}\b(?!\s*\[)", f"{name}[i]", text)
     for dim in dims:
@@ -113,15 +113,15 @@ def _adapter_py(analysis: dict[str, Any], output_name: str, op_kind: str, origin
     if return_style == "inplace" and output_args:
         ref_args = list(dict.fromkeys(tensor_args + dim_args))
         public_args = ref_args
-        call_args = ", ".join(ref_args)
+        call_args = ", ".join(f"{name}={name}" for name in chosen.get("args", ref_args))
         body = f"    return _orig.{fn_name}({call_args})"
     else:
         inputs = [a for a in tensor_args if a not in output_args]
         if not inputs:
             inputs = tensor_args
         public_args = inputs + [output_name] + dim_args
-        call_inputs = inputs + dim_args
-        call_args = ", ".join(call_inputs)
+        call_inputs = list(chosen.get("args", inputs + dim_args))
+        call_args = ", ".join(f"{name}={name}" for name in call_inputs)
         if op_kind == "matmul" and {"M", "N", "K"}.issubset(dims) and len(inputs) >= 2:
             a, b = inputs[:2]
             view_lines = [
@@ -129,7 +129,7 @@ def _adapter_py(analysis: dict[str, Any], output_name: str, op_kind: str, origin
                 f"    {b}_v = {b}[:K * N].view(K, N)",
             ]
             call_map = {a: f"{a}_v", b: f"{b}_v"}
-            call_args = ", ".join(call_map.get(x, x) for x in call_inputs)
+            call_args = ", ".join(f"{x}={call_map.get(x, x)}" for x in call_inputs)
             body = "\n".join(view_lines + [
                 f"    result = _orig.{fn_name}({call_args})",
                 f"    {output_name}[:M * N].view(M, N).copy_(result.view(M, N))",
@@ -271,6 +271,8 @@ extern "C" void solve({signature}) {{
 def generate(analysis_path: str, out_dir: str, op: str, output_name: str) -> dict[str, Any]:
     analysis = _load_json(analysis_path)
     out = Path(out_dir)
+    if out.exists() and any(out.iterdir()):
+        raise SystemExit("Output directory must be empty; preserve previous baselines and references")
     out.mkdir(parents=True, exist_ok=True)
     op_kind = analysis.get("classification", {}).get("op_kind", "unknown") if op == "auto" else op
     ref_file = analysis.get("ref_file")
@@ -290,6 +292,8 @@ def generate(analysis_path: str, out_dir: str, op: str, output_name: str) -> dic
         kernel, extra = _elementwise_kernel(analysis, output_name)
         unsupported.append(f"op_kind={op_kind!r} is not directly supported; generated placeholder elementwise baseline")
     unsupported.extend(extra)
+    if unsupported:
+        kernel = '#error "Unresolved baseline contract: read baseline_manifest.json and repair before benchmarking"\n' + kernel
     _write(out / "kernel.hip", kernel)
 
     dims = analysis.get("dims") or {}
@@ -311,6 +315,9 @@ def generate(analysis_path: str, out_dir: str, op: str, output_name: str) -> dic
         "ref": str((out / "ref.py").resolve()),
         "original_ref": str((out / original_name).resolve()),
         "op_kind": op_kind,
+        "status": "needs_manual_implementation" if unsupported else "generated_unvalidated",
+        "correctness": "not_run",
+        "supported_contract": "independent contiguous FP32 tensors; simple elementwise or row-major GEMM only",
         "dims": dims,
         "ptr_size_hint": ptr_size_hint,
         "unsupported_assumptions": sorted(set(unsupported)),

@@ -1,0 +1,4 @@
+interface:
+  display_name: "HCU HIP Optimizer"
+  short_description: "Optimize HCU HIP kernels with measured evidence"
+  default_prompt: "Use $hygon-hip-kernel-optimizer with the current HCU knowledge base and validate against my target environment."

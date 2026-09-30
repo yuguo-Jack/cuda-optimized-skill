@@ -40,11 +40,14 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import math
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from experiment import benchmark_gate, positive, file_sha256
+from workload_suite import load_cases
 
 
 # ---------------------------------------------------------------------------
@@ -102,12 +105,19 @@ def cmd_init(args: argparse.Namespace) -> None:
         "best_metric_ms": None,
         "best_hipprof_output": None,
         "env": env,
+        "profiler": args.profiler,
+        "benchmark_file": os.path.abspath(args.benchmark),
+        "benchmark_sha256": file_sha256(args.benchmark),
         "iterations_total": int(args.iterations),
         "ncu_num": int(args.ncu_num),
         "branches": int(args.branches),
         "noise_threshold_pct": float(args.noise_threshold_pct),
         "ptr_size": int(args.ptr_size),
         "dims": dims,
+        "schema_version": 3,
+        "workloads": load_cases(args.workloads) if args.workloads else [],
+        "best_suite_score": 1.0,
+        "unverified_methods": [],
         "selected_methods": [],
         "effective_methods": [],
         "ineffective_methods": [],
@@ -148,7 +158,11 @@ def _merge_unique(bag: list[dict], new_items: list[dict]) -> list[dict]:
 
 def cmd_update(args: argparse.Namespace) -> None:
     state = _read(args.state)
+    if any(h.get("iter") == args.iter for h in state.get("history", [])):
+        sys.exit("Iteration already closed; create a new iteration rather than overwrite its evidence")
     bench = _read(args.bench)
+    if state.get("reference_sha256") != file_sha256(state["ref_file"]):
+        sys.exit("Reference changed since baseline; start a new run")
     methods = _read(args.methods_json)
 
     if not isinstance(methods, dict) or "methods" not in methods:
@@ -176,7 +190,11 @@ def cmd_update(args: argparse.Namespace) -> None:
             sys.stderr.write(rv.stderr or "")
             sys.exit(1)
 
-    validation_passed = bool(bench.get("correctness", {}).get("passed", True))
+    validation_passed, validation_reason = benchmark_gate(bench, args.kernel)
+    if not validation_passed:
+        sys.exit(f"Candidate rejected: {validation_reason}")
+    if bench.get("reference_sha256") not in (None, state.get("reference_sha256")):
+        sys.exit("Candidate measured against a different reference")
     new_ms = None
     ref_ms = None
     if bench.get("kernel"):
@@ -188,7 +206,7 @@ def cmd_update(args: argparse.Namespace) -> None:
     attribution_data = {}
     if args.attribution and os.path.isfile(args.attribution):
         attr = _read(args.attribution)
-        for a in attr.get("attributions", []):
+        for a in attr.get("attributions", []) if attr.get("champion_source_sha256") == file_sha256(args.kernel) else []:
             attribution_data[a["method_id"]] = a
 
     sass_data = {}
@@ -197,17 +215,39 @@ def cmd_update(args: argparse.Namespace) -> None:
         for c in sass.get("checks", []):
             sass_data[c["method_id"]] = c
 
+    review_path = Path(state["run_dir"]) / f"iterv{args.iter}" / "mechanism-review.json"
+    if review_path.is_file():
+        review = _read(str(review_path))
+        if review.get("source_sha256") == file_sha256(args.kernel):
+            for item in review.get("methods", []):
+                evidence_path = Path(item.get("artifact", ""))
+                if not evidence_path.is_absolute():
+                    evidence_path = review_path.parent / evidence_path
+                if (item.get("status") == "verified" and item.get("explanation")
+                        and evidence_path.is_file() and item.get("artifact_sha256") == file_sha256(evidence_path)):
+                    sass_data[item["id"]] = {"verified": True, "note": item["explanation"]}
+
     # Decide improvement
     best_before = state.get("best_metric_ms")
     threshold = 1.0 - (state.get("noise_threshold_pct", 2.0) / 100.0)
     improved = False
     speedup_vs_best_before = None
-    if validation_passed and new_ms and new_ms > 0:
+    if validation_passed and positive(new_ms):
         if best_before is None:
             improved = True
         else:
             speedup_vs_best_before = best_before / new_ms
             improved = new_ms < best_before * threshold
+
+    suite = bench.get("workload_suite") or {}
+    if state.get("workloads"):
+        validation_passed = validation_passed and suite.get("passed") is True
+        if not validation_passed:
+            sys.exit("Candidate did not pass the frozen workload suite")
+        score = suite.get("weighted_speedup")
+        improved = validation_passed and positive(score) and score > state.get("best_suite_score", 1) / threshold
+        if improved:
+            state["best_suite_score"] = score
 
     # Annotate each method
     for m in methods_list:
@@ -223,36 +263,23 @@ def cmd_update(args: argparse.Namespace) -> None:
         attr_info = attribution_data.get(mid, {})
         sass_info = sass_data.get(mid, {})
 
-        sass_verified = sass_info.get("verified", True)  # Default True if no check
-        contributed = attr_info.get("contributed", None)
-        attr_ms = attr_info.get("attribution_ms", None)
-
         m_entry = dict(m)
-
-        if sass_info.get("inconclusive"):
-            m_entry["note"] = sass_info.get("note", "DCU ISA check inconclusive")
-            if validation_passed and improved:
-                state["effective_methods"].append(m_entry)
-            else:
-                state["ineffective_methods"].append(m_entry)
-        elif not sass_verified:
-            # ISA signature missing — implementation failed
-            m_entry["note"] = f"DCU ISA patterns not found: {sass_info.get('patterns_missing', [])}"
-            state["implementation_failed_methods"].append(m_entry)
-        elif contributed is True or contributed is None:
-            # Contributed (or no ablation data — assume effective if overall improved)
-            if validation_passed and improved:
-                if attr_ms is not None:
-                    m_entry["attribution_ms"] = attr_ms
-                if speedup_vs_best_before is not None:
-                    m_entry["speedup_vs_best_before"] = speedup_vs_best_before
-                state["effective_methods"].append(m_entry)
-            elif validation_passed:
-                state["ineffective_methods"].append(m_entry)
-        elif contributed is False:
-            # Attribution says it didn't help
-            m_entry["note"] = f"attribution_ms={attr_ms}"
-            state["ineffective_methods"].append(m_entry)
+        attr_ms = attr_info.get("attribution_ms")
+        mechanism_verified = (sass_info.get("verified") is True
+                              and not sass_info.get("inconclusive"))
+        # Regex presence is supporting evidence, never a semantic verdict.
+        if not validation_passed:
+            m_entry["note"] = validation_reason
+            state.setdefault("unverified_methods", []).append(m_entry)
+        elif (attr_info.get("validation_passed") is True
+              and isinstance(attr_ms, (int, float)) and math.isfinite(attr_ms) and mechanism_verified):
+            m_entry["attribution_ms"] = attr_ms
+            m_entry["note"] = "Validated ablation on this workload; interactions and other shapes remain scoped"
+            bag = "effective_methods" if attr_info.get("contributed") is True else "ineffective_methods"
+            state[bag].append(m_entry)
+        else:
+            m_entry["note"] = "Missing valid ablation or scoped mechanism evidence; overall speedup is not individual attribution"
+            state.setdefault("unverified_methods", []).append(m_entry)
 
     # Update best
     if validation_passed and improved:
@@ -296,6 +323,9 @@ def cmd_update(args: argparse.Namespace) -> None:
         "speedup_vs_ref": (ref_ms / new_ms) if (ref_ms and new_ms and new_ms > 0) else None,
         "speedup_vs_best_before": speedup_vs_best_before,
         "validation_passed": validation_passed,
+        "validation_reason": validation_reason,
+        "source_sha256": file_sha256(args.kernel),
+        "workload_suite": suite,
         "status": status,
         "retries": int(args.retries),
     })
@@ -329,12 +359,15 @@ def cmd_set_best_hipprof(args: argparse.Namespace) -> None:
 def cmd_set_baseline_metric(args: argparse.Namespace) -> None:
     state = _read(args.state)
     bench = _read(args.bench)
-    if not bench.get("correctness", {}).get("passed", True):
-        sys.exit("Baseline failed correctness validation — cannot proceed.")
+    valid, reason = benchmark_gate(bench, state["baseline_file"])
+    if not valid:
+        sys.exit(f"Baseline rejected: {reason}")
     ms = bench.get("kernel", {}).get("average_ms")
-    if ms is None:
+    if not positive(ms):
         sys.exit("Baseline bench has no kernel timing.")
     state["best_metric_ms"] = ms
+    state["baseline_source_sha256"] = file_sha256(state["baseline_file"])
+    state["reference_sha256"] = file_sha256(state["ref_file"])
     _write(args.state, state)
     print(json.dumps({"baseline_ms": ms}, indent=2))
 
@@ -359,6 +392,9 @@ def main() -> None:
     pi.add_argument("--ncu-num", type=int, default=5)
     pi.add_argument("--branches", type=int, default=4)
     pi.add_argument("--dims", type=str, default="{}", help="JSON dict of dim name -> int")
+    pi.add_argument("--workloads", default="", help="Explicit cases JSON; contents frozen in state")
+    pi.add_argument("--benchmark", default=str(Path(__file__).with_name("benchmark.py")))
+    pi.add_argument("--profiler", choices=["auto", "xprof", "hipprof", "none"], default="auto")
     pi.add_argument("--env", type=str, default="")
     pi.add_argument("--noise-threshold-pct", type=float, default=2.0)
     pi.add_argument("--ptr-size", type=int, default=0)

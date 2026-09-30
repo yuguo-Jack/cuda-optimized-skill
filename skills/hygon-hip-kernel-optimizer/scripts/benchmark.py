@@ -18,6 +18,7 @@ import ctypes
 import glob
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -26,6 +27,7 @@ import sys
 from pathlib import Path
 
 import torch
+from experiment import file_sha256, timing_stats
 
 
 SUPPORTED_TYPES = {
@@ -44,7 +46,7 @@ SUPPORTED_TYPES = {
     "unsigned int": ctypes.c_uint,
     "unsigned short": ctypes.c_ushort,
     "unsigned char": ctypes.c_ubyte,
-    "char": ctypes.c_char,
+    "char": ctypes.c_byte,
     "short": ctypes.c_short,
 }
 
@@ -92,7 +94,8 @@ def parse_solve_signature(source_file: str) -> list[tuple[str, str, bool]]:
         clean = re.sub(r"\s+", " ", token.replace("const", "").strip())
         for key in sorted(SUPPORTED_TYPES, key=len, reverse=True):
             base = key.replace("*", r"\s*\*")
-            m = re.match(rf"({base})\s+(\w+)", clean)
+            sep = r"\s*" if key.endswith("*") else r"\s+"
+            m = re.fullmatch(rf"({base}){sep}(\w+)", clean)
             if m:
                 params.append((key, m.group(2), is_const))
                 break
@@ -116,7 +119,7 @@ def detect_arch(device_index: int | None = None) -> str:
             return m.group(1)
     except (OSError, subprocess.TimeoutExpired):
         pass
-    return "gfx938"
+    raise RuntimeError("Cannot determine the selected HCU target; provide --arch after checking the device")
 
 
 def find_ck_tile_include_dir() -> str:
@@ -199,11 +202,15 @@ def _determine_ptr_elems(int_values: list[int], ptr_size_override: int) -> int:
     else:
         sv = sorted(int_values, reverse=True)
         ptr_elems = sv[0] * sv[1]
-    return min(ptr_elems, 256 * 1024 * 1024)
+    if ptr_elems <= 0 or ptr_elems > 256 * 1024 * 1024:
+        raise ValueError("Invalid or oversized allocation: use an explicit, documented workload; never truncate dimensions")
+    return ptr_elems
 
 
 def _setup_hip(solution_file: str, dims: dict, ptr_size: int, arch: str, hipcc_bin: str, seed: int | None, backend: str) -> dict:
     params = parse_solve_signature(solution_file)
+    if ptr_size <= 0:
+        raise ValueError("HIP flat ABI requires --ptr-size: specify the maximum required extent across all pointers")
     sig_str = ", ".join(f"{'const ' if c else ''}{t} {n}" for t, n, c in params)
     print(f"[signature] solve({sig_str})\n")
 
@@ -215,8 +222,18 @@ def _setup_hip(solution_file: str, dims: dict, ptr_size: int, arch: str, hipcc_b
         if ptype in INT_TYPES and pname not in dims:
             raise ValueError(f"Missing dimension: --{pname}=<value>")
 
+    extra_dims = set(dims) - {name for t, name, c in params if t in INT_TYPES}
+    if extra_dims:
+        raise ValueError(f"Unknown dimension(s): {sorted(extra_dims)}")
     int_vals = [int(dims[pname]) for ptype, pname, _ in params if ptype in INT_TYPES]
     ptr_elems = _determine_ptr_elems(int_vals, ptr_size)
+    # Three copies are retained: candidate, pristine and reference. Account for
+    # additional validation/timing clones conservatively before allocating.
+    allocation_bytes = sum(torch.empty((), dtype=DTYPE_MAP[t]).element_size() * ptr_elems
+                           for t, _, _ in params if t in DTYPE_MAP)
+    free_bytes, _ = torch.cuda.mem_get_info()
+    if allocation_bytes * 6 > free_bytes * .8:
+        raise MemoryError("Estimated benchmark working set exceeds 80% of free memory; no automatic shape reduction")
     if seed is not None:
         torch.manual_seed(seed)
 
@@ -243,6 +260,11 @@ def _setup_hip(solution_file: str, dims: dict, ptr_size: int, arch: str, hipcc_b
         else:
             ctype = SUPPORTED_TYPES[ptype]
             val = int(dims[pname])
+            bits = ctypes.sizeof(ctype) * 8
+            unsigned = ptype.startswith("unsigned") or ptype == "size_t"
+            lo, hi = (0, 2**bits - 1) if unsigned else (-(2**(bits-1)), 2**(bits-1)-1)
+            if not lo <= val <= hi:
+                raise ValueError(f"Scalar {pname}={val} overflows {ptype}")
             reference_inputs[pname] = val
             kernel_args.append(ctype(val))
             argtypes.append(ctype)
@@ -272,9 +294,12 @@ def _setup_python(solution_file: str, dims: dict, seed: int | None) -> dict:
         raise TypeError("setup() must return {'inputs': dict, 'outputs': list}")
     inputs = prepared["inputs"]
     outputs = set(prepared.get("outputs", []))
-    for name in outputs:
-        inputs[name].zero_()
+    if not outputs or any(name not in inputs or not isinstance(inputs[name], torch.Tensor) for name in outputs):
+        raise ValueError("setup must explicitly name one or more tensor outputs")
     tensor_inputs = {k: v for k, v in inputs.items() if isinstance(v, torch.Tensor)}
+    storages = [v.untyped_storage().data_ptr() for v in tensor_inputs.values() if v.numel()]
+    if len(storages) != len(set(storages)) or any(not v.is_contiguous() for v in tensor_inputs.values()):
+        raise ValueError("Generic harness supports independent contiguous inputs; use a task-specific harness for aliases/strides")
     reference_inputs = {k: clone_value(v) for k, v in inputs.items()}
     pristine_tensors = {k: v.clone() for k, v in tensor_inputs.items()}
     output_specs = [(name, str(inputs[name].dtype).replace("torch.", "")) for name in outputs]
@@ -305,37 +330,43 @@ def _reset_tensor_inputs(state: dict) -> None:
             tensor.copy_(snap)
 
 
-def _time_iterations(fn, warmup: int, repeat: int) -> list[float]:
+def _time_iterations(fn, warmup: int, repeat: int, reset=lambda: None) -> list[float]:
+    if warmup < 0 or repeat < 1:
+        raise ValueError("warmup must be nonnegative and repeat positive")
     for _ in range(warmup):
+        reset()
         fn()
     torch.cuda.synchronize()
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
+    times = []
     for _ in range(repeat):
+        reset()
+        torch.cuda.synchronize()
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
         fn()
-    end.record()
-    torch.cuda.synchronize()
-    avg_ms = start.elapsed_time(end) / repeat
-    return [avg_ms] * repeat
+        end.record()
+        torch.cuda.synchronize()
+        times.append(start.elapsed_time(end))
+    return times
 
 
 def _stats(times: list[float]) -> dict:
-    ordered = sorted(times)
-    avg = sum(times) / len(times)
-    return {"average_ms": avg, "median_ms": ordered[len(ordered) // 2], "min_ms": min(times), "max_ms": max(times)}
+    return timing_stats(times)
 
 
 def _validate_outputs(kernel_tensors: dict, ref_tensors: dict, output_specs: list[tuple[str, str]], atol: float, rtol: float) -> bool:
+    if not output_specs or not all(math.isfinite(t) and t >= 0 for t in (atol, rtol)):
+        return False
     all_pass = True
     for name, ptype in output_specs:
-        kt = kernel_tensors[name].float()
-        rt = ref_tensors[name].float()
-        ok = torch.allclose(kt, rt, atol=atol, rtol=rtol)
+        kt, rt = kernel_tensors[name], ref_tensors[name]
+        if kt.shape != rt.shape or kt.dtype != rt.dtype:
+            return False
+        floating = kt.is_floating_point() or kt.is_complex()
+        ok = torch.allclose(kt, rt, atol=atol, rtol=rtol, equal_nan=False) if floating else torch.equal(kt, rt)
         all_pass = all_pass and ok
-        max_diff = (kt - rt).abs().max().item()
-        mean_diff = (kt - rt).abs().mean().item()
-        print(f"[validate] {name} ({ptype}) {'PASS' if ok else 'FAIL'} max={max_diff:.6e} mean={mean_diff:.6e}")
+        print(f"[validate] {name} ({ptype}) {'PASS' if ok else 'FAIL'} elements={kt.numel()}")
     return all_pass
 
 
@@ -359,6 +390,9 @@ def run(
     gpu_index = torch.cuda.current_device()
     gpu_name = torch.cuda.get_device_name(gpu_index)
     result = {
+        "source_sha256": file_sha256(solution_file),
+        "reference_sha256": file_sha256(ref_file) if has_ref else None,
+        "validation_scope": "single shape/seed; race safety not checked; explicit workload suite required for wider claims",
         "solution_file": os.path.abspath(solution_file),
         "backend": resolved_backend,
         "ref_file": os.path.abspath(ref_file) if has_ref else "",
@@ -416,18 +450,22 @@ def run(
     times_ref = None
     if has_ref and ref_fn is not None:
         ref_bench_inputs = {name: clone_value(value) for name, value in state["reference_inputs"].items()}
-        times_ref = _time_iterations(lambda: ref_fn(**ref_bench_inputs), warmup, repeat)
+        def reset_ref():
+            for name, value in state["reference_inputs"].items():
+                if isinstance(value, torch.Tensor):
+                    ref_bench_inputs[name].copy_(value)
+        times_ref = _time_iterations(lambda: ref_fn(**ref_bench_inputs), warmup, repeat, reset_ref)
 
     _reset_tensor_inputs(state)
-    times_kernel = _time_iterations(state["callable"], warmup, repeat)
+    times_kernel = _time_iterations(state["callable"], warmup, repeat, lambda: _reset_tensor_inputs(state))
     result["kernel"] = _stats(times_kernel)
     if result["kernel"]["average_ms"] > 0:
-        result["kernel"]["bandwidth_gbps_rough"] = state["total_ptr_bytes"] / (result["kernel"]["average_ms"] / 1000) / 1e9
+        result["kernel"]["allocation_bytes_per_second_not_hbm"] = state["total_ptr_bytes"] / (result["kernel"]["average_ms"] / 1000)
 
     if times_ref is not None:
         result["reference"] = _stats(times_ref)
         if result["reference"]["average_ms"] > 0:
-            result["reference"]["bandwidth_gbps_rough"] = state["total_ptr_bytes"] / (result["reference"]["average_ms"] / 1000) / 1e9
+            result["reference"]["allocation_bytes_per_second_not_hbm"] = state["total_ptr_bytes"] / (result["reference"]["average_ms"] / 1000)
         result["speedup_vs_reference"] = result["reference"]["average_ms"] / result["kernel"]["average_ms"]
 
     print(json.dumps({
@@ -465,11 +503,22 @@ def main() -> None:
             key, val = item[2:].split("=", 1)
             dims[key] = int(val)
         else:
-            print(f"Warning: ignoring unknown arg `{item}`", file=sys.stderr)
+            parser.error(f"unknown argument {item!r}; dimensions use --NAME=INTEGER")
 
-    torch.cuda.set_device(args.gpu)
-    arch = args.arch or detect_arch(args.gpu)
-    run(args.solution_file, args.ref, dims, args.warmup, args.repeat, args.ptr_size, arch, args.atol, args.rtol, args.seed, args.json_out, args.hipcc_bin, args.backend)
+    try:
+        if not getattr(torch.version, "hip", None):
+            raise RuntimeError("This is not a HIP PyTorch runtime; run hardware validation on the HCU target")
+        torch.cuda.set_device(args.gpu)
+        arch = args.arch or detect_arch(args.gpu)
+        if not re.fullmatch(r"gfx[0-9a-fA-F]+", arch):
+            raise ValueError("--arch must be an exact gfx target")
+        # The flat HIP ABI launches on the default stream; keep events and
+        # reference work on that stream. Other stream contracts need adapters.
+        with torch.cuda.stream(torch.cuda.default_stream(args.gpu)):
+            run(args.solution_file, args.ref, dims, args.warmup, args.repeat, args.ptr_size, arch, args.atol, args.rtol, args.seed, args.json_out, args.hipcc_bin, args.backend)
+    except Exception as exc:
+        _write_json(args.json_out, {"error": str(exc), "correctness": {"checked": False, "passed": False}, "kernel": None})
+        raise SystemExit(str(exc)) from exc
 
 
 if __name__ == "__main__":

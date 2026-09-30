@@ -22,6 +22,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from experiment import benchmark_gate, positive, run_json, resolve_benchmark
 
 
 _BUNDLED_BENCHMARK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark.py")
@@ -62,25 +63,14 @@ def _bench_kernel(
 
     Path(json_out).parent.mkdir(parents=True, exist_ok=True)
 
-    try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True,
-            encoding="utf-8", errors="ignore",
-        )
-    except OSError as e:
-        print(f"[ablate] benchmark failed: {e}", file=sys.stderr)
-        return None
-
-    if os.path.isfile(json_out):
-        return _load_json(json_out)
-    return None
+    return run_json(cmd, json_out, str(Path(json_out).with_suffix(".log")))
 
 
 def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
     state = _load_json(state_path)
     run_dir = state["run_dir"]
     iter_dir = os.path.join(run_dir, f"iterv{iteration}")
-    bench_py = benchmark_py or _BUNDLED_BENCHMARK
+    bench_py = resolve_benchmark(state, benchmark_py)
 
     # Load champion timing
     champion_bench = os.path.join(iter_dir, "bench.json")
@@ -88,8 +78,8 @@ def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
         sys.exit(f"Champion bench.json not found at {champion_bench}")
     champion_data = _load_json(champion_bench)
     champion_ms = (champion_data.get("kernel") or {}).get("average_ms")
-    if champion_ms is None:
-        sys.exit("Champion has no timing data")
+    if not benchmark_gate(champion_data)[0]:
+        sys.exit("Champion lacks valid correctness/timing evidence")
 
     # Load methods
     methods_path = os.path.join(iter_dir, "methods.json")
@@ -119,15 +109,15 @@ def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
                 break
 
         if ablated_kernel is None:
-            # No ablated kernel provided; skip and assume neutral.
+            # No ablated kernel: attribution remains unknown.
             attributions.append({
                 "method_id": mid,
                 "ablated_kernel": None,
                 "ablated_ms": None,
                 "champion_ms": champion_ms,
-                "attribution_ms": 0.0,
-                "attribution_pct": 0.0,
-                "contributed": False,
+                "attribution_ms": None,
+                "attribution_pct": None,
+                "contributed": None,
                 "note": "no_ablated_kernel_provided",
             })
             continue
@@ -138,8 +128,8 @@ def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
             bench_py, ablated_kernel, ref_file, dims, ptr_size, ablated_json_out,
         )
 
-        if result is None or not result.get("correctness", {}).get("passed", False):
-            # Ablated kernel failed validation; method is likely essential.
+        if result is None or not benchmark_gate(result, ablated_kernel)[0]:
+            # Invalid ablation cannot establish performance contribution.
             attributions.append({
                 "method_id": mid,
                 "ablated_kernel": ablated_kernel,
@@ -147,21 +137,21 @@ def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
                 "champion_ms": champion_ms,
                 "attribution_ms": None,
                 "attribution_pct": None,
-                "contributed": True,
-                "note": "ablated_kernel_failed_validation_method_essential",
+                "contributed": None,
+                "note": "invalid_ablation_not_performance_evidence",
             })
             continue
 
         ablated_ms = (result.get("kernel") or {}).get("average_ms")
-        if ablated_ms is None:
+        if not positive(ablated_ms):
             attributions.append({
                 "method_id": mid,
                 "ablated_kernel": ablated_kernel,
                 "ablated_ms": None,
                 "champion_ms": champion_ms,
-                "attribution_ms": 0.0,
-                "attribution_pct": 0.0,
-                "contributed": False,
+                "attribution_ms": None,
+                "attribution_pct": None,
+                "contributed": None,
                 "note": "no_timing_in_ablated_bench",
             })
             continue
@@ -179,10 +169,12 @@ def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
             "attribution_ms": round(attr_ms, 4),
             "attribution_pct": round(attr_pct, 2),
             "contributed": contributed,
+            "validation_passed": True,
         })
 
     output = {
         "iter": iteration,
+        "champion_source_sha256": champion_data.get("source_sha256"),
         "champion_ms": round(champion_ms, 4),
         "noise_threshold_pct": noise_threshold,
         "attributions": attributions,
