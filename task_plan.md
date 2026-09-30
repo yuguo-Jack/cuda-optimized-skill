@@ -53,4 +53,4 @@
 1. 查阅原件/源码并记录精确适用边界 — complete
 2. 修订指令/策略参考与相关脚本，补齐科学实验约束 — complete
 3. 回归、整体 review、安装副本核验 — complete
-4. 同步 Codex 并提交推送，确认远端一致 — in_progress
+4. 同步 Codex 并提交推送，确认远端一致 — complete
