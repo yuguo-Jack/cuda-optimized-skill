@@ -5,11 +5,11 @@ description: 从 Torch、Triton、TileLang、Python 或 CUDA 参考实现建立�
 
 # Hygon HIP 基线生成
 
-目标是得到符合原始语义的可验证基线和独立 reference。读取兄弟 HIP Skill 的 [共同契约](../hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md)，重点是知识查证、环境和数值/布局契约。三个 Hygon Skills 应一同安装。
+目标是得到符合原始语义的可验证基线和独立 reference。读取兄弟 HIP Skill 的 [共同契约](../hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md)，重点是环境和数值/布局契约。三个 Hygon Skills 应一同安装。
 
-## 1. 查原工程与领域知识
+## 1. 查原工程与输入契约
 
-先查看输入算子的接口、调用点、shape/dtype/stride、输出、alias/in-place、stream、边界及容差。通过已安装 `hcu-knowledge-search` 读取当前 HCU 实现和工具链资料，必要时看原 PDF、固定源码和目标头文件。
+先查看输入算子的接口、调用点、shape/dtype/stride、输出、alias/in-place、stream、边界及容差，优先使用用户材料、当前源码/测试/文档与目标头文件。需要参考代码案例或补充领域事实时，可按需查询 HCU-Knowledge；查询不是必经步骤，也不要求安装知识库。
 
 CUDA 移植按 API、线程模型、共享内存/同步、数值类型、矩阵指令、库接口分别检查。HIPIFY 可辅助替换，但不是兼容证明。HCU rocBLAS/hipBLASLt/MIOpen/RCCL 等接口资料与 AMD 源码分清；AICC 与 DTK 编译器分清。
 
@@ -43,4 +43,4 @@ flat ABI 每指针容量至少 max(MK,KN,MN)，上述例子为 32768。benchmark
 
 补多 seed、尾块、代表规模以及必要项目单测；编译通过、静态检查与硬件正确性分开。记录环境、reference SHA、实际输入、命令、日志与失败。基线正确后交给 `hygon-hip-kernel-optimizer`，默认 3 轮/4 分支，可按任务调整，无需为默认参数停下来询问。
 
-交接包含 contract、原参考与adapter、manifest未解决项、基线源码、编译/正确性/测速状态、工作负载矩阵、知识引用和远端运行方式。参阅 [转换与适配要点](references/ref_to_baseline_patterns.md)。
+交接包含 contract、原参考与adapter、manifest未解决项、基线源码、编译/正确性/测速状态、工作负载矩阵、实际使用的资料引用和远端运行方式，保存在当前任务工程。参阅 [转换与适配要点](references/ref_to_baseline_patterns.md)。

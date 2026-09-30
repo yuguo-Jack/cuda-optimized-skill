@@ -1,16 +1,16 @@
 ---
 name: hygon-hip-kernel-optimizer
-description: 在海光 HCU/DCU 上开发和优化 HIP/C++、CK Tile 算子，结合 HCU 知识检索、明确的数值/布局契约、正确性与多规模性能回归、XProf/XCompute 或 DTK hipprof 和目标 ISA 证据推进迭代。适用于已有 HIP 基线、CUDA 移植和 HCU kernel 调优；只有 Python/Triton reference 时先生成可验证基线。
+description: 在海光 HCU/DCU 上开发和优化 HIP/C++、CK Tile 算子，通过明确的数值/布局契约、正确性与多规模性能回归、XProf/XCompute 或 DTK hipprof 和目标 ISA 证据推进迭代。适用于已有 HIP 基线、CUDA 移植和 HCU kernel 调优；只有 Python/Triton reference 时先生成可验证基线。
 ---
 
 # Hygon HIP 算子开发与优化
 
-把优化落实为可复现的代码和实验。开始时先读 [共同契约](references/hcu-workflow-contract.md) 的知识/环境/正确性部分；测速与 profiling 前读对应章节。不要把 NVIDIA 上游 Skill 的 nvcc、NCU、SASS 指令或硬件门禁直接搬到 HCU。
+把优化落实为可复现的代码和实验。开始时先读 [共同契约](references/hcu-workflow-contract.md) 的环境/正确性部分；查证、测速与 profiling 时按需读对应章节。不要把 NVIDIA 上游 Skill 的 nvcc、NCU、SASS 指令或硬件门禁直接搬到 HCU。
 
-## 1. 定义任务并检索
+## 1. 定义任务与查证
 
 - 从用户需求和工程推导算子语义、支持范围、目标设备/工具链、精度和性能指标，记录到任务目录 `contract.md`。缺少的必要事实先检查工程/环境，真正阻塞再问；可独立完成的工作继续。
-- 使用已安装的 `hcu-knowledge-search`，按算子、机制、硬件、编译器拆分查；读工程指南→案例→固定源码/原件。记录知识版本与 source ID/SHA，不能把搜索片段当最终证据。
+- 优先查看用户材料、当前源码/测试/文档与目标环境。需要参考代码案例或补充领域事实时，可按需使用 `hcu-knowledge-search`，阅读相关指南/案例及固定源码/原件并记录出处。查询不是必经步骤，未安装或不可用不阻塞已有证据足够的工作。
 - 查已存在的 HCU 实现与构建方式：HIP、CK Tile、HCU Cutlass、Triton/TileLang、自有库各有适用点。能直接复用当前工程接口时先复用；不强制某种 DSL，也不拿 AMD/NVIDIA 分支冒充 HCU。
 - 没有正确 HIP 基线时先调用 `hygon-hip-baseline-generator`；仅需 Triton/Inductor 调优使用 `hygon-triton-kernel-optimizer`。明确选择原因。
 
@@ -41,7 +41,7 @@ python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py -
 
 ## 4. 定位瓶颈并实验
 
-读 state、原始 bench、dcu_top、roofline、知识证据。`roofline.json` 的 null 是未知；预算是建议，不能据此宣布 compute/memory bound 或 near-peak。
+读 state、原始 bench、dcu_top、roofline 和实际使用的参考证据。`roofline.json` 的 null 是未知；预算是建议，不能据此宣布 compute/memory bound 或 near-peak。
 
 优先 XProf/XCompute（`--profiler auto` 发现 XProf 时使用），可显式选 hipprof。自动采集只提供原件与发现信息；按准确 dispatch、单位和定义解释。参阅 [指标与工具](references/dcu_metrics_guide.md)。不能用累计 waves 推导驻留，也不能用 waitcnt 数量推导依赖等待比例。
 
@@ -65,6 +65,6 @@ close 串行跑分支、选 champion、profile、消融、ISA、更新状态，�
 python <skill>/scripts/orchestrate.py finalize --run-dir RUN
 ```
 
-用 [报告模板](templates/iteration_report.md) 补全程序不能自动推出的解释：代码目录/接口与调用链、热点、修改机制、适用范围、正确性矩阵、真实样本、端到端收益、失败/回退、知识与源码引用。未跑项目测试、race 检查或 HCU 硬件验证明确列出。迭代预算耗尽、目标达到或收益落入噪声时总结，不无限试错。
+用 [报告模板](templates/iteration_report.md) 补全程序不能自动推出的解释：代码目录/接口与调用链、热点、修改机制、适用范围、正确性矩阵、真实样本、端到端收益、失败/回退、实际使用的资料与源码引用。未跑项目测试、race 检查或 HCU 硬件验证明确列出。迭代预算耗尽、目标达到或收益落入噪声时总结，不无限试错。
 
-有可复用结果时向 `hcu-knowledge-update` 提供案例草稿和原始证据；入库需遵守用户授权，并同步工程总览/专题/案例。保持 Skills 流程与知识内容分工。
+报告与原始证据保留在当前任务工程。

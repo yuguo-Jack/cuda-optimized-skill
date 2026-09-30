@@ -1,6 +1,6 @@
 # HCU 指标与采集指南
 
-先读 [共同契约](hcu-workflow-contract.md) 第 5 节，并用 `hcu-knowledge-search` 查 `xprof-xcompute-workflow` 和当前 DTK 工具原手册。命令必须用目标版本 `--help` 核对，不互换 XProf、hipprof、rocprof 的选项。
+先读 [共同契约](hcu-workflow-contract.md) 第 5 节，命令以目标版本的 `--help` 和工具手册为准。资料不足时可用 `hcu-knowledge-search` 查 `xprof-xcompute-workflow` 等参考。不互换 XProf、hipprof、rocprof 的选项。
 
 ## 首选 XProf → XCompute
 

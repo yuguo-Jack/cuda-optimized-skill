@@ -1,6 +1,6 @@
 # HCU 算子开发与优化 Skills
 
-本工程的 Hygon 扩展包含三个可安装的 Skill：从参考实现建立正确基线、优化 HIP/CK Tile kernel、调查和优化 Triton/Inductor kernel。领域事实从 HCU-Knowledge 检索，代码和实验在实际目标环境验证。
+本工程的 Hygon 扩展包含三个可安装的 Skill：从参考实现建立正确基线、优化 HIP/CK Tile kernel、调查和优化 Triton/Inductor kernel。以当前工程和目标环境为依据，需要参考代码案例或补充领域资料时可查询 HCU-Knowledge，代码和实验在实际目标环境验证。
 
 ## 组织
 
@@ -21,12 +21,12 @@ hygon_tmp/                      # 不提交的采集、缓存、安装备份
 ## 工作原理
 
 1. 用户需求与当前代码形成精度/布局/版本/性能契约。
-2. `hcu-knowledge-search` 查工程总览→专题/案例→原件和固定源码；同用途来源按活跃 HCU 分支选择，硬件功能不按 gfx 数字大小继承。
+2. 优先查看当前源码、测试、文档和目标工具链；需要参考时可用 `hcu-knowledge-search` 查相关代码/案例和原始资料，已有证据足够则直接推进。
 3. 保留独立 oracle，验证 baseline，多规模、多 seed、tail 和真实数据分布列入矩阵。
 4. 先定位热点与瓶颈假设，再做候选修改，串行基准/回归，按明确的噪声与回退条件选择。
 5. 优先 XProf/XCompute，也可选 hipprof；保留原件、准确 kernel/dispatch、指标定义。未知计数不转成利用率。
 6. 结合源码/ISA/资源/timeline 与正确消融解释收益，缺证据的方法记待验证。最后回到真实模型/项目做端到端验收。
-7. 可复用案例交知识更新 Skill，连同总览、专题、源码版本一起维护。
+7. 报告与实验原件保留在当前任务工程，说明适用范围、实际收益和未验证项。
 
 ## 安装
 
@@ -39,7 +39,7 @@ python -X utf8 tools/install_hygon_skills.py
 
 默认目标为 `$CODEX_HOME/skills`（未设置时是用户目录 `.codex/skills`），可以 `--skills-dir PATH`。先保存旧文件到本仓 `hygon_tmp/skill-backups/TIMESTAMP`，再复制和核对 SHA256。不会修改别的 Skill，也不随安装执行远端代码。当前会话若已经载入旧 Skill，下一任务/新会话再加载新入口。
 
-另外按 HCU-Knowledge 的安装说明安装并绑定 `hcu-knowledge-search`；需要入库时配合 `hcu-knowledge-update`。无需安装本工程为 Python 包，不依赖 MCP 或向量检索模型。
+`hcu-knowledge-search` 是可选参考工具；没有配置知识库也可以使用这三个 Skill。无需安装本工程为 Python 包，不依赖 MCP 或向量检索模型。
 
 ### 依赖与环境
 
@@ -53,7 +53,7 @@ python -X utf8 tools/install_hygon_skills.py
 
 在 Codex 中直接说明算子、源码/参考文件、输入/精度与远端环境，例如：
 
-- “用 `$hygon-hip-baseline-generator` 把这个 reference 建成 HCU 正确性基线，先查当前知识。”
+- “用 `$hygon-hip-baseline-generator` 把这个 reference 建成 HCU 正确性基线。”
 - “用 `$hygon-hip-kernel-optimizer` 优化这个 kernel，覆盖这组 shapes，保持 BF16 数值规则。”
 - “用 `$hygon-triton-kernel-optimizer` 找这个模型的 Inductor 热点，核对生成 ISA 和端到端收益。”
 

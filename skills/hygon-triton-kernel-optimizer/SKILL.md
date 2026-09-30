@@ -1,11 +1,11 @@
 ---
 name: hygon-triton-kernel-optimizer
-description: 分析和优化海光 HCU/DCU 上手写 Triton 或 TorchInductor 生成算子，结合 HCU 知识库、热点追踪、autotune 输入捕获、目标 AMDGCN/ISA、数值与多规模回归以及端到端验证。适用于 Triton kernel 调优、编译器 lowering 排查、attention/MoE 与模型局部优化。
+description: 分析和优化海光 HCU/DCU 上手写 Triton 或 TorchInductor 生成算子，结合热点追踪、autotune 输入捕获、目标 AMDGCN/ISA、数值与多规模回归以及端到端验证。适用于 Triton kernel 调优、编译器 lowering 排查、attention/MoE 与模型局部优化。
 ---
 
 # Hygon Triton 算子优化
 
-读取兄弟 HIP Skill 的 [共同契约](../hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md)。使用已安装 `hcu-knowledge-search` 查当前 Triton 工程、算子案例、硬件/编译器与工具资料；知识入口→专题/案例→固定源码/原件。不要只依赖本 Skill 的旧版本经验。
+读取兄弟 HIP Skill 的 [共同契约](../hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md)。优先使用用户材料、当前源码/测试/文档与目标环境。需要参考代码案例或补充领域事实时，可按需通过 `hcu-knowledge-search` 查询相关工程、专题/案例及固定源码/原件；查询不是必经步骤，也不要求安装知识库。
 
 ## 1. 明确场景与环境
 
@@ -54,7 +54,7 @@ python <skill>/scripts/scan_amdgcn.py repro/artifacts --kernel KERNEL --json-out
 
 元数据扫描是启发式，只解析部分格式；返回空项不证明编译器没做优化。ISA 扫描不把 LLVM IR 当最终指令，不把静态次数当动态热点。
 
-按 [策略](references/optimization_patterns.md) 检查：布局/合并、对齐、向量化、tile/warps/stages、dot 精度与转换、LDS/寄存器/occupancy、tail mask、同步、原子/归约、pipeline 和融合。attention、稀疏 attention、MoE 分阶段/输入分布检索当前 HCU 案例。
+按 [策略](references/optimization_patterns.md) 检查：布局/合并、对齐、向量化、tile/warps/stages、dot 精度与转换、LDS/寄存器/occupancy、tail mask、同步、原子/归约、pipeline 和融合。需要参考时，可按 attention、稀疏 attention、MoE 的阶段和输入分布查找已有 HCU 案例。
 
 - `tl.assume` / `multiple_of` 只能陈述所有受支持输入都成立的事实；给出数学/调用契约依据，再编译探针与负面边界测试。不要从指针“看起来为正”推导合法转换。
 - buffer/global/flat 或宽向量指令只提供机制证据，不能按名字宣判快慢。查看目标 ISA、资源、计数器、实际时间。
@@ -67,8 +67,8 @@ python <skill>/scripts/scan_amdgcn.py repro/artifacts --kernel KERNEL --json-out
 
 `triton_benchmark_template.py` 仅提供 add-scale 教学基准且先做正确性检查；`--repeat` 是 `do_bench` 的毫秒预算。复制到任务后必须按契约替换输入、oracle和指标，不能当任意算子通用验证器。
 
-## 5. 报告与知识交接
+## 5. 报告与交付
 
-`make_investigation_report.py` 生成待填写草稿；依 [报告模板](references/report_template.md) 补环境/源码、知识出处、调用链/目录、捕获完整性、正确性、实际样本、瓶颈证据、候选失败、单 kernel 与模型结果、适用/回退条件。
+`make_investigation_report.py` 生成待填写草稿；依 [报告模板](references/report_template.md) 补环境/源码、实际使用的资料出处、调用链/目录、捕获完整性、正确性、实际样本、瓶颈证据、候选失败、单 kernel 与模型结果、适用/回退条件。
 
-footprint rate 不是 HBM bandwidth utilization；缺少 ISA/消融/归一化计数时标明机制待证。没有 HCU 运行只报告静态结果。可复用案例交 `hcu-knowledge-update` 更新工程总览、专题、案例与适用版本，不私自扩大权限或覆盖旧证据。
+footprint rate 不是 HBM bandwidth utilization；缺少 ISA/消融/归一化计数时标明机制待证。没有 HCU 运行只报告静态结果。报告与原始证据保留在当前任务工程。

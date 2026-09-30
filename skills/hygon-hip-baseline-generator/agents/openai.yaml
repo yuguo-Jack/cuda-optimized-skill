@@ -1,4 +1,4 @@
 interface:
   display_name: "HCU HIP Baseline"
   short_description: "Build and validate HCU HIP baselines from references"
-  default_prompt: "Use $hygon-hip-baseline-generator with the current HCU knowledge base and validate against my target environment."
+  default_prompt: "Use $hygon-hip-baseline-generator to build a correct HCU baseline from my reference and validate it in my target environment."

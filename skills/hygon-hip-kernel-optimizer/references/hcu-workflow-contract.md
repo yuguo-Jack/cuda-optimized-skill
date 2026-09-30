@@ -1,18 +1,21 @@
 # HCU 算子开发与优化：共同契约
 
-baseline、HIP/CK Tile、Triton 三个 Skill 共用本规范。按问题读取相应章节；知识库保存领域事实，Skill 保存查证与实验流程。二者独立更新，不能把本文件中的候选策略当作硬件兼容表。
+baseline、HIP/CK Tile、Triton 三个 Skill 共用本规范。按问题读取相应章节；Skill 负责开发与实验流程，HCU-Knowledge 是可选参考来源。未安装或未查询知识库也可完成开发优化；不能把本文件中的候选策略当作硬件兼容表。
 
-## 1. 知识查询与来源
+## 1. 证据来源与按需知识查询
 
-1. 找到已安装的 `hcu-knowledge-search/SKILL.md`，读取其 `workspace.json` 得到 `<KB_ROOT>`；通常在 `$CODEX_HOME/skills`，未设置时为用户目录 `.codex/skills`。从本仓使用时，该 Skill 不在本仓 `skills/` 内，不能依赖一个不存在的相对路径。也可在当前知识工程中直接运行 `kb.py`。未绑定时按知识库安装说明绑定，不猜旧机器目录。
-2. 使用系统 Python：`python -X utf8 "<KB_ROOT>/kb.py" --root "<KB_ROOT>" search "精确算子/符号/现象" --limit 12`。遵守 workspace 默认搜索模式；hybrid 同时包含本地和飞书。保留搜索状态，不能把在线失败当没有相关资料。飞书 `needs_refresh` 不等于失效，以实际 user API 结果区分认证、权限、网络问题。
+优先读取用户提供的材料、当前工程源码/测试/文档、目标环境的头文件、工具帮助和实验结果。已有证据足够时直接推进，不为完成流程而查询知识库。需要查找可复用代码/优化案例、补充领域事实或解决证据冲突时，可以按需查询 HCU-Knowledge；不要求每次任务或每轮迭代都查询。
+
+以下检索步骤仅在决定使用知识库时适用：
+
+1. 如果已配置 `hcu-knowledge-search`，按其说明查询；未安装、未绑定或不可访问时继续利用其他可用证据。只有任务所必需的事实确实无法查明时才说明缺口。
+2. 按精确算子、符号或现象检索。保留搜索状态，不能把在线失败当没有相关资料；认证或访问问题按搜索 Skill 处理。
 3. 复杂问题拆开查：算子/调用链、数据布局、硬件特性、编译器、工具指标、类似案例。先工程 `local/overview/engineering-guide.md`，再 topics/cases 和源码。用 `cases` 与案例索引查算子、手段、硬件和输入规模；未命中不等于不支持。
 4. `read` 读全文，`original` 看原 PDF/指令表/图，`read-code` 固定源码提交。父仓子模块按 gitlink 固定子提交。记录 ID、SHA、路径/页码、适用条件；pending 仍可查，但兼容性待证。源码、PR review、文档描述和本次实测分开记录。
-5. 阅读当前仓库的来源选择说明。同用途且同步时优先 HYGON-AI GitHub；内部 GitLab 有实质领先则用内部活跃 HCU 分支。新 CI 时间不等于新实现；默认分支可能落后。DeepGEMM 通用发版方向与 MegaMoE 方向分别判断。
-6. HCU rocBLAS、hipBLASLt、MIOpen、RCCL 的不可见源码不能用 AMD 上游代替。NVIDIA/AMD 官方资料仅作标明厂商的对比参考；同名 API 或相邻 gfx 编号不证明兼容。
-7. 新实验有复用价值时提供案例草稿，交 `hcu-knowledge-update` 按授权更新原件、固定源码、工程总览、专题和案例的一致性。不要直接改索引数据库，或把旧 hygon-extend 案例整体复制进新知识。
 
-建议检索入口：`xprof-xcompute-workflow`、`hcu-performance-workflow`、AICC engineering-guide、CK Tile example/cases、FlashAttention、DeepGEMM、BoltOPs、Triton 的当前工程指南，以及数学库 `gemm-assembly-examples` 原始示例。
+选择参考源码时，同用途且同步的实现优先 HYGON-AI GitHub；内部 GitLab 有实质领先则用内部活跃 HCU 分支。新 CI 时间不等于新实现；默认分支可能落后。DeepGEMM 通用发版方向与 MegaMoE 方向分别判断。HCU rocBLAS、hipBLASLt、MIOpen、RCCL 的不可见源码不能用 AMD 上游代替。NVIDIA/AMD 官方资料仅作标明厂商的对比参考；同名 API 或相邻 gfx 编号不证明兼容。
+
+可选检索入口：`xprof-xcompute-workflow`、`hcu-performance-workflow`、AICC engineering-guide、CK Tile example/cases、FlashAttention、DeepGEMM、BoltOPs、Triton 的当前工程指南，以及数学库 `gemm-assembly-examples` 原始示例。
 
 ## 2. 目标环境与执行位置
 
@@ -54,7 +57,7 @@ baseline、HIP/CK Tile、Triton 三个 Skill 共用本规范。按问题读取�
 7. SQTT 用于普通数据不能解释的问题，按具体硬件/工具支持选择 SE/CU 和范围，记录开销与漏采。系统 kernel 时间线、PC sampling、SQTT 内部指令时间线不同；没有确认导出功能时保留原始格式，不许虚构通用 timeline JSON。
 8. 通信/跨进程同步 kernel 的 replay 可能改变正确性；查当前工具关闭 replay 的选项，采用真实多进程测量。缓存/UTCL2 等指标也可能受 profiler/replay 干扰。
 
-## 6. 从假设到案例
+## 6. 实验与归因
 
 先提出可证伪的瓶颈假设，再选择 1..3 个方法；三条预算是上限，不要凑数。同组 branch 保持方法组合一致，仅改变一项超参数。新组合开新轮；有理由时可重试此前方法，写明输入、实现或瓶颈如何改变。
 
@@ -66,8 +69,8 @@ baseline、HIP/CK Tile、Triton 三个 Skill 共用本规范。按问题读取�
 - `isa_check.json` 保留自动扫描；复核后另写 `mechanism-review.json`，不要篡改原件。包含候选 `source_sha256` 和每个方法的 `id/status/explanation/artifact/artifact_sha256`；status=verified 必须有可读、哈希一致的证据。`state.py` 结合正确消融判断有效性。
 - 新一轮源文件、reference、工具/目标变化后重新验证。已关闭迭代不可覆盖，失败迭代可修复后重试。单人串行操作一个 run，state.json 当前不支持多 Agent 并发写。
 
-## 7. 留存与更新
+## 7. 实验留存
 
-工作目录内保留 contract、知识引用、env、原 reference、baseline、候选 diff、编译命令/日志/二进制 SHA、工作负载矩阵、原始计时与 profile、机制复核、summary。`hygon_tmp/` 仅为本仓可清理临时区；重要报告与原件应转存到任务工程或知识库证据，再清缓存。
+工作目录内保留 contract、实际使用的资料引用、env、原 reference、baseline、候选 diff、编译命令/日志/二进制 SHA、工作负载矩阵、原始计时与 profile、机制复核、summary。知识库 ID 仅在实际引用时记录。`hygon_tmp/` 仅为本仓可清理临时区；重要报告与原件应转存到任务工程，再清缓存。
 
-知识更新不要只修案例一句话：同仓工程总览、专题、案例和适用版本一起复核。脚本/Skill 更新后旧 run 不自动升级成已验证；需要新结果或标明历史状态。依赖接口不明确时先查目标安装源码/`--help`，再按现有知识搜索 Skill 获取官方资料。
+脚本/Skill 更新后旧 run 不自动升级成已验证；需要新结果或标明历史状态。依赖接口不明确时先查目标安装源码/`--help`，仍不清楚再按需查知识库或官方资料。

@@ -1,6 +1,6 @@
 # HCU elementwise 调优示例
 
-本例说明流程与目录，不提供虚构性能数字。实际环境、源码与输入须先写 contract，并通过 HCU 知识库查当前实现与工具。参阅 [共同契约](../references/hcu-workflow-contract.md)。
+本例说明流程与目录，不提供虚构性能数字。实际环境、源码与输入须先写 contract，需要参考实现或工具资料时可按需查询 HCU 知识库。参阅 [共同契约](../references/hcu-workflow-contract.md)。
 
 ## 参考与基线
 
@@ -32,4 +32,4 @@ python <hip-skill>/scripts/orchestrate.py finalize --run-dir RUN
 
 ## 最终解释
 
-报告 baseline/candidate 的输入/环境、未采集计时与噪声、多案例速度比、失败与未覆盖项、profile/ISA 原件、文件/符号和为何改。没有实际 HCU 测量就写未运行；任务若有模型集成，还须做端到端回归。后续知识入库依据新源码和证据，不复制旧案例性能数字。
+报告 baseline/candidate 的输入/环境、未采集计时与噪声、多案例速度比、失败与未覆盖项、profile/ISA 原件、文件/符号和为何改。没有实际 HCU 测量就写未运行；任务若有模型集成，还须做端到端回归。报告与原件留在当前任务工程。

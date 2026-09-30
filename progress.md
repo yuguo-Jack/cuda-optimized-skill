@@ -22,3 +22,10 @@
 - 安装到 C:/Users/Administrator/.codex/skills：baseline 5、HIP 30、Triton 15个文件，两边独立SHA256清单一致，三个已安装Skill再次quick_validate通过。
 - 本轮最初旧版本备份：hygon_tmp/skill-backups/20260930_094922_076069；最终增量修订前的中间版本也保留于20260930_095111_584600。其他Skill不改动。
 - 清除上游误跟踪的20个__pycache__条目（仅Git索引），保留忽略规则；本轮变更以本地提交留存，不推送远端。
+
+## 后续修订：知识库查询改为可选
+
+- 按用户最新要求，三个 Skill 专注 HCU 算子开发优化；当前工程证据优先，需要代码案例/领域资料时才查询，未安装知识库也可使用。
+- 删除入口、共同规范、README、模板、示例中的知识库维护流程与强制查询表述，默认提示语只描述算子任务。
+- 三个 Skill 格式与 YAML 检查、13 份 Markdown 相对链接检查、git diff --check 通过。本轮仅修改说明，不重复执行 GPU/CPU 算法测试。
+- 已同步 Codex 安装目录，50 个文件 SHA256 与仓内一致。旧副本备份于 hygon_tmp/skill-backups/20260930_105543_826993；HCU-Knowledge 未修改。
