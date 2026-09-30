@@ -48,8 +48,10 @@ baseline、HIP/CK Tile、Triton 三个 Skill 共用本规范。按问题读取�
 
 ## 5. 性能分析层次与工具
 
+遇到 kernel 优化瓶颈（收益停滞、明显回退、性能偏离预期或原因不明）必须进行工具采集与分析，再据此选择修改。已有同源码、输入、环境且足以回答当前问题的采集可以复用；条件变化或证据不足时重新采集。仅有 benchmark 时间、静态 ISA 或自动脚本成功状态不满足此要求。工具/权限受阻时保留具体原因和待执行命令，标记诊断未完成；无采集模式不能用来绕过瓶颈诊断。具体操作见 [XProf/XCompute 指南](dcu_metrics_guide.md)。
+
 1. 应用系统时间线：找 kernel/launch 热点、CPU、通信、同步和 overlap。先明确优化单 kernel 还是端到端。
-2. 优先按 HCU 专业工具资料使用 XProf 采集、XCompute 分析；现有 hipprof/DTK 路径仍可用。`profile_hcu.py` 默认 auto，XProf 存在时使用其已确认参数；否则进入 hipprof adapter。可以显式选择 xprof/hipprof/none。工具失败应记录降级，不等于性能验证完成。
+2. 优先使用 XProf 采集、XCompute 分析；现有 hipprof/DTK 路径仍可用。`profile_hcu.py` 默认 auto，XProf 存在时使用其已确认参数；否则进入 hipprof adapter。none 仅表示准备阶段不采集；进入瓶颈诊断应选择可用工具。工具失败应记录具体原因，不等于已完成诊断。
 3. XProf `.perf` 保留原件；在 XCompute 中选择真实 kernel/dispatch/设备再读计算、内存、occupancy、scheduler、wave state。默认自动脚本只保存原件，不臆造 `.perf` 解析器或 JSON 导出接口。手工整理的标准化值还须附单位、指标定义、采样范围、工具版本与原始产物。
 4. hipprof CSV 目前仅提供指标发现与原件保留；多个 dispatch 的聚合值不能作为目标 kernel 利用率。采集 reference、分配/恢复、warmup 时可能产生额外 kernel，必须按 kernel 名、dispatch 或应用采集区间定位。
 5. `SQ_WAVES` 累计波数≠驻留 wave。理论 occupancy（资源上限）、实测活跃/驻留、网格是否覆盖 CU、issue/依赖等待分别分析。高 occupancy 不自动等于快，低 occupancy 不自动需要降寄存器。

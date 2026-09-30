@@ -43,4 +43,6 @@ flat ABI 每指针容量至少 max(MK,KN,MN)，上述例子为 32768。benchmark
 
 补多 seed、尾块、代表规模以及必要项目单测；编译通过、静态检查与硬件正确性分开。记录环境、reference SHA、实际输入、命令、日志与失败。基线正确后交给 `hygon-hip-kernel-optimizer`，默认 3 轮/4 分支，可按任务调整，无需为默认参数停下来询问。
 
+进入性能优化且遇到 kernel 瓶颈时，按 HIP Skill 的 [性能分析指南](../hygon-hip-kernel-optimizer/references/dcu_metrics_guide.md) 使用工具采集分析；生成基线本身不要求完整 profiling。
+
 交接包含 contract、原参考与adapter、manifest未解决项、基线源码、编译/正确性/测速状态、工作负载矩阵、实际使用的资料引用和远端运行方式，保存在当前任务工程。参阅 [转换与适配要点](references/ref_to_baseline_patterns.md)。

@@ -18,9 +18,18 @@
 
 ## 4. 差异与验证
 
+遇到 kernel 优化瓶颈必须先采集分析，不能只继续 autotune 或扫描 ISA。使用共享的 [XProf/XCompute 指南](../../hygon-hip-kernel-optimizer/references/dcu_metrics_guide.md)：
+
+1. 将生成文件、源码/代码对象、实际 kernel 名、shape/stride/config 与 dispatch 对应起来。初始化、JIT、warmup、输入捕获产生的 kernel 不作为目标；新运行需重新确认 dispatch 编号。
+2. 对代表性瓶颈用例采 speed-of-light/compute/memory/occupancy，再按现象补 scheduler/wave-state；在 XCompute 中确认到底是计算、内存、资源还是等待问题。
+3. 指令依赖/流水空泡仍不能解释时，定向采 SQTT，在 Wavefront/Inst/Source 视图连接等待区间、live registers、寄存器依赖与生成 ISA。编译 metadata 中的 stages/warps 不能代替动态观察。
+4. 保存原件、命令、指标定义、dispatch、关键观察及下一项实验；工具不可用则记录诊断缺口，不把推测写成实测。
+
 检查 current HCU 分支的 metadata/lowering、最终代码对象及资源，提出一项明确假设。buffer ops、dot、assume、warps/stages 每次均按实际工具链编译探针。失败不全局强开环境变量。
 
 baseline/variant 同 shape、数据、seed、布局、stream、恢复和测速口径，GPU 串行运行。多用例加性能回退门禁；非连续、alias、空/尾块、量化与路由分布以支持契约为准。
+
+瓶颈修改后做同口径 profile 对照，解释关键指标是否改善、限制是否转移；最终收益取未开启 profiler/捕获的独立测量。
 
 ## 5. 回到模型
 

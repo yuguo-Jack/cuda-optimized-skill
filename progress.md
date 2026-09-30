@@ -29,3 +29,10 @@
 - 删除入口、共同规范、README、模板、示例中的知识库维护流程与强制查询表述，默认提示语只描述算子任务。
 - 三个 Skill 格式与 YAML 检查、13 份 Markdown 相对链接检查、git diff --check 通过。本轮仅修改说明，不重复执行 GPU/CPU 算法测试。
 - 已同步 Codex 安装目录，50 个文件 SHA256 与仓内一致。旧副本备份于 hygon_tmp/skill-backups/20260930_105543_826993；HCU-Knowledge 未修改。
+
+## 后续修订：瓶颈时的必需性能分析
+
+- 读取已保留的 xprof-guide/xcompute-guide 正文，对照其过滤、sections、PMC/SPM/replay、SQTT和分析视图说明；没有刷新或修改知识库。
+- HIP/Triton 入口、共同规范和报告模板明确瓶颈时必须工具采集并分析；收益停滞、回退或原因不明时先诊断，再决定修改。无法采集时记录原因/命令和未完成状态。
+- 扩充共享指标指南：设备/kernel/dispatch过滤、定向sections、XCompute Summary/Details/Raw/Source/Wavefront/Inst/Baseline、occupancy区别、SQTT范围、replay off下SPM限制、UTCL2采集干扰及前后验证。baseline仅增加进入优化阶段的导航。
+- 三个Skill格式与13份Markdown相对链接检查通过，git diff --check通过；已备份同步Codex，50文件SHA256一致。备份目录hygon_tmp/skill-backups/20260930_110205_818241；仅文档变化，未运行硬件采集。

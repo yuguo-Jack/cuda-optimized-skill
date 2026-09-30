@@ -4,7 +4,7 @@
 2. 环境和来源：gfx、Torch/Triton/DTK/AICC、库与子模块提交、实际参考的资料；引用知识库时再附ID/SHA。
 3. 工程目录与调用链：模型节点→生成代码→kernel分派→实际ISA/资源。
 4. 捕获与复现：source SHA、执行前snapshot、shape/stride/storage_offset/alias、launcher参数、捕获错误/缺失。
-5. 热点假设：准确dispatch、原始profile与定义/单位/范围；静态计数不替代动态测量。
+5. 热点假设：准确dispatch、原始profile与定义/单位/范围；遇到瓶颈必须记录工具采集/分析、关键观察、下一项实验与修改前后对照。工具受阻写原因和待采命令，诊断未完成；静态计数不替代动态测量。
 6. 候选与正确性：源码差异、所有配置的oracle、case/seed/尾块/实际数据、race/越界的实际检查状态。
 7. 性能：真实样本和噪声、未采集kernel时间、编译/autotune成本、完整模型收益；footprint rate不叫HBM利用率。
 8. 机制和消融：指令/资源/时间线变化与局限；无证据的归因保留待证。

@@ -47,6 +47,10 @@ python <skill>/scripts/run_captured_kernel.py repro/capture/UNIQUE/KERNEL.py --j
 
 ## 3. 定位机制并调优
 
+**遇到 kernel 优化瓶颈时必须使用性能分析工具。** 调参收益停滞/落入噪声、明显回退或耗时原因不清时，先用 XProf/XCompute（或目标支持的 hipprof/DTK 工具）分析实际目标 kernel，再提出下一轮修改。autotune 最佳时间、源码阅读和静态 ISA 扫描不能代替性能采集与解读。
+
+按 [XProf/XCompute 操作与指标指南](../hygon-hip-kernel-optimizer/references/dcu_metrics_guide.md) 确认 kernel/dispatch 与输入，检查计算、访存、资源和等待；需要解释流水空泡时再采 SQTT 并关联 ISA。工具或权限受阻则记录待采命令、标记诊断未完成，可继续独立的正确性准备，不把推测写成工具结论。
+
 ```bash
 python <skill>/scripts/inspect_triton_meta.py KERNEL.py --json-out meta.json
 python <skill>/scripts/scan_amdgcn.py repro/artifacts --kernel KERNEL --json-out isa_scan.json
@@ -60,6 +64,7 @@ python <skill>/scripts/scan_amdgcn.py repro/artifacts --kernel KERNEL --json-out
 - buffer/global/flat 或宽向量指令只提供机制证据，不能按名字宣判快慢。查看目标 ISA、资源、计数器、实际时间。
 - 不擅自改 FP8 scale、累计精度、causal/mask、路由、atomic 顺序或模型输出。低精度/近似必须符合任务精度要求。
 - 保存基线与每个变体，单卡串行测、多 seed/shape/stride 回归；原地写/alias 输入每次恢复原状态。样本、计时口径、噪声、OOM/编译失败全部保留。
+- 瓶颈修改后，用相同采集口径复核目标指标/时间线的变化，并独立测量未开启 profiler 的性能。新的热点或回退无法解释时重新采集分析。
 
 ## 4. 从单 kernel 到模型
 

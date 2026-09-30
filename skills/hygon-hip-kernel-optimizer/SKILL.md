@@ -41,9 +41,13 @@ python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py -
 
 ## 4. 定位瓶颈并实验
 
+**遇到 kernel 优化瓶颈时，使用性能分析工具是必选步骤。** 例如收益停滞/落入噪声、出现明显回退、耗时显著偏离预期，或无法解释计算/访存/等待限制时，先采集当前目标 kernel 并分析，再决定下一轮修改；不能只靠继续扫 tile/stages、读源码或 ISA grep 代替。优先 XProf 采集和 XCompute 分析，目标不支持时用能回答同一问题的 hipprof/DTK 工具。
+
+工具、目标机器或采集权限暂不可用时，记录具体阻塞和待采命令，标记瓶颈诊断未完成；可继续独立的代码/正确性准备，不把静态猜测当作已完成诊断。`--profiler none` 只适用于无需瓶颈诊断的准备阶段，不能绕过此步骤。
+
 读 state、原始 bench、dcu_top、roofline 和实际使用的参考证据。`roofline.json` 的 null 是未知；预算是建议，不能据此宣布 compute/memory bound 或 near-peak。
 
-优先 XProf/XCompute（`--profiler auto` 发现 XProf 时使用），可显式选 hipprof。自动采集只提供原件与发现信息；按准确 dispatch、单位和定义解释。参阅 [指标与工具](references/dcu_metrics_guide.md)。不能用累计 waves 推导驻留，也不能用 waitcnt 数量推导依赖等待比例。
+按 [指标与工具](references/dcu_metrics_guide.md) 的步骤过滤设备/kernel/dispatch、选择 sections、打开 XCompute 的 Details/Source 等页面，并对修改前后做同口径比较。自动采集只提供原件与发现信息，命令成功或生成 `.perf` 不代表分析完成；必须把观察到的指标/时间线连接到瓶颈假设与下一项实验。不能用累计 waves 推导驻留，也不能用 waitcnt 数量推导依赖等待比例。
 
 1. 用 [策略目录](references/optimization_catalog.md) 和 registry 选 1..3 项，不凑数；每轴最多 2 项，跳过更高优先项写具体理由。
 2. `methods.json` 按 [schema](templates/methods.schema.json)：方法 ID、改什么、为何可能有效、预期证据、精确目标证据、跳过理由。重试先前方法给 `retry_reason`。
