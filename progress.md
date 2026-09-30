@@ -52,3 +52,4 @@
 - 最终 58 项 Hygon CPU 回归、10 项上游测试通过，3 个 Skill 格式与全部适用静态/CLI 检查通过。未执行真实 HCU 编译或 profiler 采集；HCU-Knowledge 未修改。
 - Codex 安装副本已备份至 hygon_tmp/skill-backups/20260930_112556_951678 并同步，baseline 5 / HIP 32 / Triton 15 文件经独立 SHA256 核对一致；无多余旧文件，安装目录格式检查通过。
 - 推送前再次获取 origin，确认无远端新增提交；提交本轮修复并正常推送，随后核对远端 SHA。
+- 修复提交 321d7b2 已随此前上游合并及规则修订推送至 yuguo-Jack/cuda-optimized-skill 的 main；ls-remote 确认远端 SHA 与本地完全一致。随后仅补齐本段完成记录并同步。

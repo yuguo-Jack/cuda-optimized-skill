@@ -44,4 +44,4 @@
 1. 核对入口/规范/模板、运行与状态流、采集隔离和失败路径 — complete
 2. 修复实际问题，执行对应回归及整体一致性检查 — complete
 3. 备份同步 Codex 安装副本，核对文件 SHA256 — complete
-4. 检查 origin 变化，提交并正常推送，核对远端提交 — in_progress
+4. 检查 origin 变化，提交并正常推送，核对远端提交 — complete
