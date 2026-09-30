@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Branch-and-Select: compile and benchmark K candidate kernels in parallel.
+"""Branch-and-Select: compile and benchmark K candidate kernels serially.
 
 All K branches share the same method combination (from methods.json) but
 differ in hyperparameters (tile size, num_stages, num_warps, etc.).
@@ -25,7 +25,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from experiment import benchmark_gate, run_json, resolve_benchmark
+from experiment import benchmark_gate, run_json, resolve_benchmark, require_open_iteration, iteration_kernel
 from workload_suite import evaluate
 
 
@@ -80,6 +80,7 @@ def _bench_kernel(
 def run(state_path: str, iteration: int, benchmark_py: str = None,
         warmup: int = 10, repeat: int = 20) -> dict:
     state = _load_json(state_path)
+    require_open_iteration(state, iteration)
     run_dir = state["run_dir"]
     iter_dir = os.path.join(run_dir, f"iterv{iteration}")
     bench_py = resolve_benchmark(state, benchmark_py)
@@ -94,25 +95,19 @@ def run(state_path: str, iteration: int, benchmark_py: str = None,
     for i in range(1, num_branches + 1):
         bd = os.path.join(branches_dir, f"b{i}")
         if os.path.isdir(bd):
-            # Check if there's a kernel file
-            kernel = None
-            for ext in KERNEL_EXTS:
-                candidate = os.path.join(bd, f"kernel{ext}")
-                if os.path.isfile(candidate):
-                    kernel = candidate
-                    break
-            if kernel:
+            if any(os.path.isfile(os.path.join(bd, f"kernel{ext}")) for ext in KERNEL_EXTS):
+                kernel = iteration_kernel(bd)
                 branch_dirs.append({"index": i, "dir": bd, "kernel": kernel})
 
     if not branch_dirs:
         # Fallback: check if there's a single kernel directly in iter_dir
-        for ext in KERNEL_EXTS:
-            candidate = os.path.join(iter_dir, f"kernel{ext}")
-            if os.path.isfile(candidate):
-                branch_dirs.append({
-                    "index": 0, "dir": iter_dir, "kernel": candidate,
-                })
-                break
+        if any(os.path.isfile(os.path.join(iter_dir, f"kernel{ext}")) for ext in KERNEL_EXTS):
+            # A failed direct candidate may be edited and retried without a prior champion.
+            paths = [os.path.join(iter_dir, f"kernel{ext}") for ext in KERNEL_EXTS
+                     if os.path.isfile(os.path.join(iter_dir, f"kernel{ext}"))]
+            if len(paths) != 1:
+                sys.exit("Multiple direct kernel sources; place variants in separate branch directories")
+            branch_dirs.append({"index": 0, "dir": iter_dir, "kernel": paths[0]})
 
     if not branch_dirs:
         sys.exit(f"No branch kernels found under {branches_dir}")
@@ -133,7 +128,7 @@ def run(state_path: str, iteration: int, benchmark_py: str = None,
             bench_py, kernel, ref_file, dims, ptr_size, json_out, warmup, repeat,
         )
 
-        passed, gate_reason = benchmark_gate(bench_result, kernel)
+        passed, gate_reason = benchmark_gate(bench_result, kernel, ref_file)
         suite = None
         if passed and state.get("workloads"):
             suite = evaluate(state, kernel, bench_py, os.path.join(branch["dir"], "workloads"), warmup, repeat)

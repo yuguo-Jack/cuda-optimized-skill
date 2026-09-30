@@ -25,6 +25,10 @@ samples_ms 必须是真实测量，不可复制均值；目前晋级要求至少
 
 `source_sha256` 只覆盖入口文件；多文件工程另保存 Git SHA、dirty diff 和构建命令/产物哈希。每次源码/头文件/benchmark/reference/环境改变都重测基线，不用入口哈希冒充完整构建身份。
 
+setup 从创建 state 起固定 baseline/reference/benchmark 的哈希；候选和每个矩阵用例都必须提供对应 reference 哈希。矩阵汇总还绑定 baseline、candidate、reference、benchmark 与 cases/默认 ptr_size，避免旧 suite 被误用。基线一旦 seed 成功不能在原 run 重置，需要修改时新建 run。`max_regression_pct: 0` 表示该用例不允许性能回退。
+
+自动 profiler 另用 `python CUSTOM.py SOURCE --warmup 1 --repeat 1 --ptr-size N --DIM=VALUE` 运行目标，不传 `--ref`/`--json-out`，避免混入 oracle；专用 benchmark 需支持此采集入口，或手动对项目的专用 repro 采集。reference 缺失的采集运行不能作为正确性证据。
+
 ## 机制复核
 
 自动 ISA regex 只生成线索。Agent 读实际产物后，在迭代目录写独立 `mechanism-review.json`：
@@ -67,4 +71,4 @@ TASK/
     summary.md
 ```
 
-失败的同轮可修复后重新 close；成功 close 后进入新轮，不能覆盖旧 champion。不要并发写同一个 run。跨会话先读 state 和失败日志：当前脚本未提供自动分布式断点调度，Agent 选择尚未完成的阶段，必要时新建 run。发布前手动核对完整矩阵、项目单测、race 与端到端，不把 finalize 输出文件当所有验收已通过。
+失败的同轮可修复后重新 close；成功 close 后进入新轮，不能覆盖旧 champion。open/close、独立 benchmark、分支选择、采集、ISA、消融和 roofline 写入入口均拒绝已关闭轮次；最终报告仍可重新生成。一目录只放一个候选入口，多个后缀不代表自动择优；已选择的 winner 以 branch_results 为准。不要并发写同一个 run。跨会话先读 state 和失败日志：当前脚本未提供自动分布式断点调度，Agent 选择尚未完成的阶段，必要时新建 run。发布前手动核对完整矩阵、项目单测、race 与端到端，不把 finalize 输出文件当所有验收已通过。

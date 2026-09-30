@@ -264,19 +264,15 @@ def check_method(method_id: str, isa_text: str, signatures: dict, dump_meta: dic
 
 def run(state_path: str, iteration: int, signatures_path: str | None = None) -> dict:
     state = _load_json(state_path)
+    from experiment import require_open_iteration, check_frozen_inputs, iteration_kernel
+    require_open_iteration(state, iteration)
+    check_frozen_inputs(state)
     iter_dir = os.path.join(state["run_dir"], f"iterv{iteration}")
     methods_path = os.path.join(iter_dir, "methods.json")
     methods = _load_json(methods_path).get("methods", [])
     signatures = _load_json(signatures_path or str(_DEFAULT_SIGNATURES)) if os.path.isfile(signatures_path or str(_DEFAULT_SIGNATURES)) else {"methods": {}}
 
-    kernel_path = next((os.path.join(iter_dir, f"kernel{ext}") for ext in KERNEL_EXTS if os.path.isfile(os.path.join(iter_dir, f"kernel{ext}"))), None)
-    selected_path = Path(iter_dir) / "branch_results.json"
-    if selected_path.is_file():
-        kernel_path = (_load_json(str(selected_path)).get("champion") or {}).get("kernel") or kernel_path
-    if not kernel_path:
-        result = {"error": "no_kernel_found", "checks": []}
-        _write_result(iter_dir, result)
-        return result
+    kernel_path = iteration_kernel(iter_dir)
     if kernel_path.endswith(".py"):
         result = {"kernel": kernel_path, "backend": "python", "checks": [{"method_id": m.get("id", "unknown"), "verified": False, "inconclusive": True, "note": "python backend requires actual generated kernel ISA/resource evidence"} for m in methods]}
         _write_result(iter_dir, result)

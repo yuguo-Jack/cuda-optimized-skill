@@ -2,9 +2,9 @@
 """Validate iterv{i}/methods.json against registry, state, and roofline budgets.
 
 v2 changes from v1:
-- Axis distribution must match roofline.json axis_budget (not fixed 1:1:1)
+- Roofline axis budgets are advisory, not proof of a bottleneck
 - Per-axis cap of 2 is enforced
-- Total method count must equal sum of axis budgets (typically 3)
+- Choose 1..3 methods without filling unused budget
 - Priority scan compliance still enforced within each axis
 
 Exit 0 when valid; exit 1 and print violations otherwise.

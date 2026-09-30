@@ -52,7 +52,9 @@ def _timeline_table(state: dict) -> str:
         "|------|--------|---------|----|----------------------|----------------|",
     ]
     for h in state.get("history", []):
-        methods = ", ".join(h.get("method_names") or h.get("methods") or [])
+        ids = h.get("methods") or []
+        names = h.get("method_names") or ids
+        methods = ", ".join(str(name or (ids[i] if i < len(ids) else "unnamed")) for i, name in enumerate(names))
         rows.append(
             f"| {h['iter']} "
             f"| {h['status']} "
@@ -147,7 +149,9 @@ def render(state_path: str, out_path: str) -> None:
     lines.append("")
     lines.append(f"- **Baseline time**: {_fmt_ms(baseline_ms)}")
     lines.append(f"- **Best time**: {_fmt_ms(best_ms)}")
-    lines.append(f"- **Overall speedup vs baseline**: {_fmt_speedup(final_speedup)}")
+    lines.append(f"- **Primary workload speedup vs baseline**: {_fmt_speedup(final_speedup)}")
+    if state.get("workloads"):
+        lines.append(f"- **Frozen workload weighted speedup (selection metric)**: {_fmt_speedup(state.get('best_suite_score'))}")
     lines.append(f"- **Best kernel**: `{state.get('best_file')}`")
     if state.get("best_hipprof_output"):
         lines.append(f"- **Best kernel hipprof output**: `{state['best_hipprof_output']}`")

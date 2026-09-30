@@ -14,11 +14,43 @@ def file_sha256(path):
 
 
 def resolve_benchmark(state, requested=None):
+    check_frozen_inputs(state)
     path = Path(requested or state.get("benchmark_file") or Path(__file__).with_name("benchmark.py")).resolve()
     expected = state.get("benchmark_sha256")
     if expected and expected != file_sha256(path):
         raise SystemExit("Benchmark changed since setup; start a new run and remeasure baseline")
     return str(path)
+
+
+def check_frozen_inputs(state):
+    for field, digest in (("baseline_file", "baseline_source_sha256"), ("ref_file", "reference_sha256")):
+        expected = state.get(digest)
+        if expected and expected != file_sha256(state[field]):
+            raise SystemExit(f"{field} changed since setup; start a new run and remeasure baseline")
+
+
+def require_open_iteration(state, iteration):
+    if iteration < 1 or (state.get("iterations_total") is not None and iteration > state["iterations_total"]):
+        raise SystemExit("Iteration outside the configured run budget")
+    if any(h.get("iter") == iteration for h in state.get("history", [])):
+        raise SystemExit("Iteration already closed; use a new iteration to preserve its evidence")
+
+
+def iteration_kernel(folder):
+    """Respect the selected champion; never prefer a stale file extension."""
+    folder = Path(folder)
+    selected = folder / "branch_results.json"
+    if selected.is_file():
+        champion = json.loads(selected.read_text(encoding="utf-8")).get("champion") or {}
+        path = Path(champion["kernel"]) if champion.get("kernel") else None
+        if path is None or not path.is_file():
+            raise SystemExit("No valid selected champion; rerun branch selection")
+        return str(path)
+    paths = [folder / ("kernel" + ext) for ext in (".hip", ".cu", ".cpp", ".cc", ".cxx", ".py")]
+    paths = [p for p in paths if p.is_file()]
+    if len(paths) != 1:
+        raise SystemExit(f"Expected one kernel source in {folder}; found {len(paths)}")
+    return str(paths[0])
 
 
 def positive(value):
@@ -39,7 +71,7 @@ def timing_stats(times):
             "timing_scope": "device_events_one_invocation; reset outside interval; warm cache"}
 
 
-def benchmark_gate(bench, source=None):
+def benchmark_gate(bench, source=None, reference=None):
     if bench.get("error") or bench.get("process_returncode", 0) != 0:
         return False, "benchmark execution failed"
     correctness = bench.get("correctness") or {}
@@ -57,6 +89,8 @@ def benchmark_gate(bench, source=None):
         return False, "average_ms disagrees with raw samples"
     if source and bench.get("source_sha256") != file_sha256(source):
         return False, "benchmark source hash differs or is missing"
+    if reference and bench.get("reference_sha256") != file_sha256(reference):
+        return False, "benchmark reference hash differs or is missing"
     return True, None
 
 

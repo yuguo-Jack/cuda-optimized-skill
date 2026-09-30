@@ -8,6 +8,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from experiment import require_open_iteration
 
 
 TOTAL_BUDGET = 3
@@ -84,6 +85,7 @@ def allocate_budget(delta_c: float, delta_m: float, delta_l: float) -> dict:
 def run(state_path: str, iteration: int) -> dict:
     with open(state_path, "r", encoding="utf-8-sig") as f:
         state = json.load(f)
+    require_open_iteration(state, iteration)
     iter_dir = os.path.join(state["run_dir"], f"iterv{iteration}")
     top_path = os.path.join(iter_dir, "dcu_top.json")
     if not os.path.isfile(top_path):

@@ -22,7 +22,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from experiment import benchmark_gate, positive, run_json, resolve_benchmark
+from experiment import benchmark_gate, positive, run_json, resolve_benchmark, require_open_iteration, iteration_kernel
 
 
 _BUNDLED_BENCHMARK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark.py")
@@ -68,6 +68,7 @@ def _bench_kernel(
 
 def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
     state = _load_json(state_path)
+    require_open_iteration(state, iteration)
     run_dir = state["run_dir"]
     iter_dir = os.path.join(run_dir, f"iterv{iteration}")
     bench_py = resolve_benchmark(state, benchmark_py)
@@ -78,7 +79,7 @@ def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
         sys.exit(f"Champion bench.json not found at {champion_bench}")
     champion_data = _load_json(champion_bench)
     champion_ms = (champion_data.get("kernel") or {}).get("average_ms")
-    if not benchmark_gate(champion_data)[0]:
+    if not benchmark_gate(champion_data, iteration_kernel(iter_dir), state["ref_file"])[0]:
         sys.exit("Champion lacks valid correctness/timing evidence")
 
     # Load methods
@@ -128,7 +129,7 @@ def run(state_path: str, iteration: int, benchmark_py: str = None) -> dict:
             bench_py, ablated_kernel, ref_file, dims, ptr_size, ablated_json_out,
         )
 
-        if result is None or not benchmark_gate(result, ablated_kernel)[0]:
+        if result is None or not benchmark_gate(result, ablated_kernel, ref_file)[0]:
             # Invalid ablation cannot establish performance contribution.
             attributions.append({
                 "method_id": mid,

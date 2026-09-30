@@ -44,3 +44,11 @@
 - XProf/hipprof摘要标记tool，none不再误写xprof；编排警告使用实际选择语境，报告逐轮列出工具/原件。旧无标记产物保持not_recorded，不能猜测。
 - 41项Hygon CPU回归通过，包含新增路由/参数/工具身份测试；三个Skill格式、15份Markdown链接、compileall和两个采集CLI帮助及diff检查通过。没有HCU硬件采集。
 - 同步Codex安装目录，52文件SHA256一致；备份hygon_tmp/skill-backups/20260930_110944_994939。知识库未修改。
+
+## 最终整体 review、同步与推送
+
+- 用户明确授权本轮 review 后同步并推送。origin 已获取，本地相对远端 0 落后 / 7 领先，保留此前上游合并与用户逐次修订。
+- 完成状态生命周期、候选选择、输入与矩阵证据绑定、历史报告空名、旧 ISA 归因和 Triton 产物收集修复；具体发现写在 findings.md。
+- 最终 58 项 Hygon CPU 回归、10 项上游测试通过，3 个 Skill 格式与全部适用静态/CLI 检查通过。未执行真实 HCU 编译或 profiler 采集；HCU-Knowledge 未修改。
+- Codex 安装副本已备份至 hygon_tmp/skill-backups/20260930_112556_951678 并同步，baseline 5 / HIP 32 / Triton 15 文件经独立 SHA256 核对一致；无多余旧文件，安装目录格式检查通过。
+- 推送前再次获取 origin，确认无远端新增提交；提交本轮修复并正常推送，随后核对远端 SHA。

@@ -105,7 +105,7 @@
           },
           "expected_metric_shift": {
             "type": "string",
-            "description": "What hipprof/PMC/SQTT or dccobjdump changes we expect on the new kernel"
+            "description": "Expected changes in the selected tool's metrics/timeline or target ISA; name XProf/XCompute or hipprof explicitly and preserve its definitions"
           },
           "target_evidence": {
             "type": "string"

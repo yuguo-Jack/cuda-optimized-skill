@@ -12,7 +12,7 @@
         "hcu_mmac"
       ],
       "reference_impl": "CK Tile HCU GEMM/conv/attention path, source-backed HCU/AMD-named MMAC builtin with exact signature, or target-compiled inline asm; final proof is v_mmac/MMOP ISA",
-      "no_fp4": true,
+      "precision_scope": "Verify instruction formats on the exact target; gfx946 scale-aware FP4/FP6 uses the separate scoped strategy",
       "requires_target_probe": true,
       "evidence_scope": "candidate strategy; verify exact target/toolchain and workload; not a compatibility or speedup promise"
     },
@@ -28,7 +28,7 @@
         "hcu_mmac"
       ],
       "reference_impl": "compiled CK Tile low-precision path or source-backed gfx938 FP8/BF8 conversion/MMAC forms from paged_attention_938.cu when tolerance permits",
-      "no_fp4": true,
+      "precision_scope": "FP8/BF8/TF32 strategy; do not infer other formats from this entry",
       "requires_target_probe": true,
       "evidence_scope": "candidate strategy; verify exact target/toolchain and workload; not a compatibility or speedup promise"
     },

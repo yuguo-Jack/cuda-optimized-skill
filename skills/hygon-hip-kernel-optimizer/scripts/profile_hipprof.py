@@ -317,7 +317,8 @@ def main() -> None:
     args = p.parse_args()
 
     state = _read(args.state)
-    from experiment import resolve_benchmark
+    from experiment import resolve_benchmark, require_open_iteration, iteration_kernel
+    require_open_iteration(state, args.iter)
     args.benchmark = resolve_benchmark(state, args.benchmark)
     run_dir = state["run_dir"]
     iter_dir = os.path.join(run_dir, f"iterv{args.iter}")
@@ -330,9 +331,7 @@ def main() -> None:
         selected = os.path.join(iter_dir, "branch_results.json")
         if not os.path.isfile(selected):
             sys.exit("Run branch selection first; a filename alone does not identify the champion")
-        solution = _read(selected).get("champion", {}).get("kernel")
-        if not solution or not os.path.isfile(solution):
-            sys.exit("Selected champion source is missing")
+        solution = iteration_kernel(iter_dir)
         rep_name = "kernel.hipprof"
 
     hipprof_info = state.get("env", {}).get("hipprof", {}) or {}

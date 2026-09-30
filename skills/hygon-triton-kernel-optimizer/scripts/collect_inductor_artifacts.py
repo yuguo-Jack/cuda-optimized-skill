@@ -8,7 +8,7 @@ import json
 import os
 import re
 import shutil
-import time
+import uuid
 from pathlib import Path
 
 
@@ -25,7 +25,7 @@ def _copy_file(src: Path, dst_dir: Path) -> str | None:
     if dst.exists():
         stem = dst.stem
         suffix = dst.suffix
-        dst = dst_dir / f"{stem}_{int(time.time() * 1000)}{suffix}"
+        dst = dst_dir / f"{stem}_{uuid.uuid4().hex}{suffix}"
     shutil.copy2(src, dst)
     return str(dst)
 
@@ -38,7 +38,7 @@ def _copy_tree(src: Path, dst_dir: Path) -> str | None:
     dst_dir.mkdir(parents=True, exist_ok=True)
     dst = dst_dir / src.name
     if dst.exists():
-        dst = dst_dir / f"{src.name}_{int(time.time() * 1000)}"
+        dst = dst_dir / f"{src.name}_{uuid.uuid4().hex}"
     shutil.copytree(src, dst)
     return str(dst)
 
@@ -76,6 +76,11 @@ def _find_kernel_cache_matches(cache_root: Path, kernel: str) -> list[Path]:
 
 def collect(args) -> dict:
     out = Path(args.out).resolve()
+    log_path = Path(args.log) if args.log else None
+    paths = _paths_from_log(log_path) if log_path else {"output_code": [], "triton_cache_dirs": [], "best_config": []}
+    for root in [args.capture_dir, args.cache_root, *paths["triton_cache_dirs"]]:
+        if root and (out == Path(root).resolve() or Path(root).resolve() in out.parents):
+            raise ValueError("Artifact output cannot be inside a source cache/capture directory")
     out.mkdir(parents=True, exist_ok=True)
     manifest = {
         "out": str(out),
@@ -84,18 +89,15 @@ def collect(args) -> dict:
         "missing": [],
     }
 
-    log_path = Path(args.log) if args.log else None
-    paths = {"output_code": [], "triton_cache_dirs": [], "best_config": []}
     if log_path and log_path.is_file():
         copied = _copy_file(log_path, out / "logs")
         if copied:
             manifest["copied"]["logs"].append(copied)
-        paths = _paths_from_log(log_path)
     elif log_path:
         manifest["missing"].append(str(log_path))
 
-    capture_dir = Path(args.capture_dir)
-    copied_tree = _copy_tree(capture_dir, out)
+    capture_dir = Path(args.capture_dir) if args.capture_dir else None
+    copied_tree = _copy_tree(capture_dir, out) if capture_dir else None
     if copied_tree:
         manifest["copied"]["capture_dir"] = copied_tree
     elif args.capture_dir:
@@ -153,4 +155,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

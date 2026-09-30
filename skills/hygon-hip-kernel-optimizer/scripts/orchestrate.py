@@ -17,7 +17,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from experiment import benchmark_gate, resolve_benchmark
+from experiment import benchmark_gate, resolve_benchmark, require_open_iteration
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 KERNEL_EXTS = (".hip", ".cu", ".cpp", ".cc", ".cxx", ".py")
@@ -25,7 +25,7 @@ KERNEL_EXTS = (".hip", ".cu", ".cpp", ".cc", ".cxx", ".py")
 
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     print(f"[run] {' '.join(cmd)}", file=sys.stderr)
-    return subprocess.run(cmd, text=True, **kw)
+    return subprocess.run(cmd, text=True, encoding="utf-8", errors="replace", **kw)
 
 
 def _read(path: str) -> dict:
@@ -160,6 +160,7 @@ def cmd_open_iter(args):
         sys.exit(f"state.json missing: {state_path}")
 
     state = _read(state_path)
+    require_open_iteration(state, args.iter)
     _resolve_benchmark(args, state)
 
     # Profile best_input for this iter
@@ -218,13 +219,14 @@ def cmd_close_iter(args):
         sys.exit(f"state.json missing: {state_path}")
 
     state = _read(state_path)
+    require_open_iteration(state, args.iter)
     _resolve_benchmark(args, state)
-    if any(h.get("iter") == args.iter for h in state.get("history", [])):
-        sys.exit("Iteration already closed; use a new iteration to preserve its evidence")
     iter_dir = os.path.join(args.run_dir, f"iterv{args.iter}")
     methods_json = os.path.join(iter_dir, "methods.json")
     if not os.path.isfile(methods_json):
         sys.exit(f"methods.json missing at {methods_json}")
+    if _read(methods_json).get("iter", args.iter) != args.iter:
+        sys.exit("methods.json iteration differs from the requested iteration")
     # Reject invalid/unsupported method plans before spending GPU time.
     if _run([sys.executable, str(SCRIPT_DIR / "validate_methods.py"),
              "--methods", methods_json, "--state", state_path]).returncode:
@@ -260,7 +262,7 @@ def cmd_close_iter(args):
         sys.exit(f"bench.json missing for champion")
 
     bench = _read(bench_json)
-    passed, _ = benchmark_gate(bench, kernel)
+    passed, _ = benchmark_gate(bench, kernel, state["ref_file"])
 
     if not passed:
         print(json.dumps({
@@ -326,7 +328,7 @@ def cmd_close_iter(args):
     # Open next iteration if needed
     state = _read(state_path)
     next_iter = args.iter + 1
-    if next_iter <= state["iterations_total"]:
+    if next_iter <= state["iterations_total"] and not any(h.get("iter") == next_iter for h in state.get("history", [])):
         # Profile best_input for next iter + roofline
         _run([
             sys.executable, str(SCRIPT_DIR / "profile_hcu.py"),

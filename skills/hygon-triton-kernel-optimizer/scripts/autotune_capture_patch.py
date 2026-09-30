@@ -135,6 +135,8 @@ def _save_kernel_with_inputs(autotuner, args, kwargs) -> None:
         return text
 
     try:
+        if len(args) > len(arg_names):
+            raise ValueError("Launcher positional arguments exceed known kernel arg_names; adapt against installed Inductor API")
         for name, value in zip(arg_names, args):
             call_parts.append(expression(name, value))
         for name, value in kwargs.items():

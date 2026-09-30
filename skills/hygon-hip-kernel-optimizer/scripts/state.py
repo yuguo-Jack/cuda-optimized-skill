@@ -46,8 +46,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from experiment import benchmark_gate, positive, file_sha256
-from workload_suite import load_cases
+from experiment import benchmark_gate, positive, file_sha256, resolve_benchmark, require_open_iteration
+from workload_suite import load_cases, suite_identity
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     if not os.path.isfile(ref):
         sys.exit(f"ref not found: {ref}")
 
-    ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     run_dir = os.path.join(os.path.dirname(baseline), f"run_{ts}")
     os.makedirs(run_dir, exist_ok=False)
 
@@ -101,6 +101,8 @@ def cmd_init(args: argparse.Namespace) -> None:
         "baseline_file": baseline_copy,
         "baseline_file_original": baseline,
         "ref_file": ref,
+        "baseline_source_sha256": file_sha256(baseline_copy),
+        "reference_sha256": file_sha256(ref),
         "best_file": baseline_copy,
         "best_metric_ms": None,
         "best_hipprof_output": None,
@@ -158,16 +160,18 @@ def _merge_unique(bag: list[dict], new_items: list[dict]) -> list[dict]:
 
 def cmd_update(args: argparse.Namespace) -> None:
     state = _read(args.state)
-    if any(h.get("iter") == args.iter for h in state.get("history", [])):
-        sys.exit("Iteration already closed; create a new iteration rather than overwrite its evidence")
+    require_open_iteration(state, args.iter)
+    benchmark = resolve_benchmark(state)
+    if not positive(state.get("best_metric_ms")):
+        sys.exit("Seed the baseline before closing an iteration")
     bench = _read(args.bench)
-    if state.get("reference_sha256") != file_sha256(state["ref_file"]):
-        sys.exit("Reference changed since baseline; start a new run")
     methods = _read(args.methods_json)
 
     if not isinstance(methods, dict) or "methods" not in methods:
         sys.exit("methods-json must contain a top-level 'methods' list")
     methods_list = methods["methods"]
+    if methods.get("iter", args.iter) != args.iter:
+        sys.exit("methods.json iteration differs from the requested iteration")
 
     # --- Priority-compliance validation ---
     if not args.skip_validation:
@@ -190,11 +194,9 @@ def cmd_update(args: argparse.Namespace) -> None:
             sys.stderr.write(rv.stderr or "")
             sys.exit(1)
 
-    validation_passed, validation_reason = benchmark_gate(bench, args.kernel)
+    validation_passed, validation_reason = benchmark_gate(bench, args.kernel, state["ref_file"])
     if not validation_passed:
         sys.exit(f"Candidate rejected: {validation_reason}")
-    if bench.get("reference_sha256") not in (None, state.get("reference_sha256")):
-        sys.exit("Candidate measured against a different reference")
     new_ms = None
     ref_ms = None
     if bench.get("kernel"):
@@ -213,7 +215,8 @@ def cmd_update(args: argparse.Namespace) -> None:
     if args.sass_check and os.path.isfile(args.sass_check):
         sass = _read(args.sass_check)
         for c in sass.get("checks", []):
-            sass_data[c["method_id"]] = c
+            # Historical regex verdicts cannot replace a source/artifact-bound review.
+            sass_data[c["method_id"]] = {**c, "verified": False, "inconclusive": True}
 
     review_path = Path(state["run_dir"]) / f"iterv{args.iter}" / "mechanism-review.json"
     if review_path.is_file():
@@ -241,10 +244,14 @@ def cmd_update(args: argparse.Namespace) -> None:
 
     suite = bench.get("workload_suite") or {}
     if state.get("workloads"):
+        if suite.get("identity") != suite_identity(state, args.kernel, benchmark):
+            sys.exit("Workload suite does not match the frozen sources, benchmark and cases")
         validation_passed = validation_passed and suite.get("passed") is True
         if not validation_passed:
             sys.exit("Candidate did not pass the frozen workload suite")
         score = suite.get("weighted_speedup")
+        if not positive(score):
+            sys.exit("Workload suite has no valid score")
         improved = validation_passed and positive(score) and score > state.get("best_suite_score", 1) / threshold
         if improved:
             state["best_suite_score"] = score
@@ -317,7 +324,7 @@ def cmd_update(args: argparse.Namespace) -> None:
         "iter": int(args.iter),
         "kernel_file": os.path.abspath(args.kernel),
         "methods": [m["id"] for m in methods_list],
-        "method_names": [m.get("name") for m in methods_list],
+        "method_names": [m.get("name") or m["id"] for m in methods_list],
         "ms": new_ms,
         "ref_ms": ref_ms,
         "speedup_vs_ref": (ref_ms / new_ms) if (ref_ms and new_ms and new_ms > 0) else None,
@@ -358,8 +365,11 @@ def cmd_set_best_hipprof(args: argparse.Namespace) -> None:
 
 def cmd_set_baseline_metric(args: argparse.Namespace) -> None:
     state = _read(args.state)
+    if state.get("best_metric_ms") is not None or state.get("history"):
+        sys.exit("Baseline already seeded; start a new run to remeasure it")
+    resolve_benchmark(state)
     bench = _read(args.bench)
-    valid, reason = benchmark_gate(bench, state["baseline_file"])
+    valid, reason = benchmark_gate(bench, state["baseline_file"], state["ref_file"])
     if not valid:
         sys.exit(f"Baseline rejected: {reason}")
     ms = bench.get("kernel", {}).get("average_ms")

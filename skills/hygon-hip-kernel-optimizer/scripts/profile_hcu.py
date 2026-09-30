@@ -9,7 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-from experiment import resolve_benchmark
+from experiment import resolve_benchmark, require_open_iteration, iteration_kernel
 
 
 def main():
@@ -21,6 +21,7 @@ def main():
     p.add_argument("--promote-if-best", action="store_true", help="Compatibility flag; state promotion belongs to state.py")
     args = p.parse_args()
     state = json.loads(Path(args.state).read_text(encoding="utf-8"))
+    require_open_iteration(state, args.iter)
     args.benchmark = resolve_benchmark(state, args.benchmark)
     folder = Path(state["run_dir"]) / f"iterv{args.iter}"
     folder.mkdir(parents=True, exist_ok=True)
@@ -34,7 +35,7 @@ def main():
     if args.which == "best_input":
         source = state["best_file"]
     else:
-        source = json.loads((folder / "branch_results.json").read_text(encoding="utf-8"))["champion"]["kernel"]
+        source = iteration_kernel(folder)
     tool = "none" if which == "none" else "xprof"
     out = folder / (args.which + "." + tool) / datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     out.mkdir(parents=True)

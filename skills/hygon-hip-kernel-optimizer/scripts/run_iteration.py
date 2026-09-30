@@ -17,7 +17,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from experiment import benchmark_gate, run_json, resolve_benchmark
+from experiment import benchmark_gate, run_json, resolve_benchmark, require_open_iteration, iteration_kernel
 
 
 _BUNDLED_BENCHMARK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark.py")
@@ -59,11 +59,13 @@ def _run_bench(
     print(f"[bench] {' '.join(cmd)}", file=sys.stderr)
 
     result = run_json(cmd, json_out, stderr_out)
-    return 0 if benchmark_gate(result, solution)[0] else 1
+    return 0 if benchmark_gate(result, solution, ref)[0] else 1
 
 
 def cmd_seed_baseline(args: argparse.Namespace) -> None:
     state = _read(args.state)
+    if state.get("best_metric_ms") is not None or state.get("history"):
+        sys.exit("Baseline already seeded; start a new run to remeasure it")
     args.benchmark = resolve_benchmark(state, args.benchmark)
     run_dir = state["run_dir"]
     out_dir = os.path.join(run_dir, "baseline")
@@ -84,7 +86,7 @@ def cmd_seed_baseline(args: argparse.Namespace) -> None:
     )
 
     # Push baseline ms into state via state.py CLI (keep one place that writes state)
-    # We call the sibling script so concurrent locking semantics live in one file.
+    # Runs have a single writer; state.py validates the frozen evidence.
     sibling = os.path.join(os.path.dirname(__file__), "state.py")
     rc = subprocess.call([
         sys.executable, sibling, "set-baseline-metric",
@@ -95,13 +97,11 @@ def cmd_seed_baseline(args: argparse.Namespace) -> None:
 
 def cmd_benchmark(args: argparse.Namespace) -> None:
     state = _read(args.state)
+    require_open_iteration(state, args.iter)
     args.benchmark = resolve_benchmark(state, args.benchmark)
     run_dir = state["run_dir"]
     iter_dir = os.path.join(run_dir, f"iterv{args.iter}")
-    candidates = [os.path.join(iter_dir, f"kernel{ext}") for ext in KERNEL_EXTS]
-    kernel = next((c for c in candidates if os.path.isfile(c)), None)
-    if not kernel:
-        sys.exit(f"No iterv{args.iter}/kernel.(hip|cu|cpp|cc|cxx|py) found.")
+    kernel = iteration_kernel(iter_dir)
 
     json_out = os.path.join(iter_dir, "bench.json")
     stderr_out = os.path.join(iter_dir, "bench.stderr.txt")
@@ -121,7 +121,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
     summary = {
         "iter": args.iter,
         "kernel": kernel,
-        "passed": benchmark_gate(res, kernel)[0],
+        "passed": benchmark_gate(res, kernel, state["ref_file"])[0],
         "ms": (res.get("kernel") or {}).get("average_ms"),
         "ref_ms": (res.get("reference") or {}).get("average_ms"),
         "speedup_vs_ref": res.get("speedup_vs_reference"),

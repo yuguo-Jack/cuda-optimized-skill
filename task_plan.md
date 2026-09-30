@@ -4,7 +4,7 @@
 
 详细熟悉现有工程，确认并合并上游代码，解释新增能力；依据当前 HCU-Knowledge 的知识与证据规则系统完善 Hygon baseline/HIP/Triton Skills 及配套脚本，验证后更新 Codex 用户安装副本。
 
-- 用户已授权上游合并、本地修订与系统目录 Skill 更新；未要求推送远端。
+- 用户已授权上游合并、本地修订与系统目录 Skill 更新；本轮进一步要求整体 review 后同步并推送 origin。
 - 保留现有 Hygon 扩展和本机配置；源码初始工作区干净，基线 018f9f1。
 - 不运行未授权的远端 GPU/集群实验，不把静态验证写成硬件实测。
 - 继续使用全文索引和规则排序的 HCU-Knowledge；不引入新的 embedding/rerank 服务。
@@ -38,3 +38,10 @@
 
 - XProf/XCompute 与 hipprof 分别有独立指南，共同入口只保留工具选择和通用诊断；逐项区分过滤、PMC、SQTT、输出格式、replay/SPM 与查看器。
 - 产物记录实际工具，修正 none 误标为 xprof 和报告默认 hipprof 的问题；新增命令路由/标记回归并同步安装副本。
+
+## 最终整体 review、同步与推送
+
+1. 核对入口/规范/模板、运行与状态流、采集隔离和失败路径 — complete
+2. 修复实际问题，执行对应回归及整体一致性检查 — complete
+3. 备份同步 Codex 安装副本，核对文件 SHA256 — complete
+4. 检查 origin 变化，提交并正常推送，核对远端提交 — in_progress

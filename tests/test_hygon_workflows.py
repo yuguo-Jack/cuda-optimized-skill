@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import textwrap
 import types
@@ -36,11 +37,12 @@ def write(path, obj):
     return str(path)
 
 
-def good_bench(source):
+def good_bench(source, reference=None):
     exp = load("experiment")
     return {"correctness": {"checked": True, "passed": True},
             "kernel": exp.timing_stats([1., 1.01, .99, 1., 1.]),
-            "source_sha256": exp.file_sha256(source)}
+            "source_sha256": exp.file_sha256(source),
+            "reference_sha256": exp.file_sha256(reference) if reference else None}
 
 
 @pytest.mark.parametrize("change", [{"correctness": {}}, {"error": "failed"},
@@ -137,26 +139,30 @@ def test_timing_resets_every_call_and_keeps_real_samples():
 
 
 def test_missing_ablation_is_unknown(tmp_path):
-    src = tmp_path / "k.hip"
-    src.write_text("kernel")
     it = tmp_path / "iterv1"
-    write(it / "bench.json", good_bench(src))
+    it.mkdir()
+    src, ref = it / "kernel.hip", tmp_path / "ref.py"
+    src.write_text("kernel")
+    ref.write_text("oracle")
+    write(it / "bench.json", good_bench(src, ref))
     write(it / "methods.json", {"methods": [{"id": "memory.lds_tiling"}]})
-    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "ref_file": "ref"})
+    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "ref_file": str(ref)})
     item = load("ablate").run(state, 1)["attributions"][0]
     assert item["contributed"] is None and item["attribution_ms"] is None
 
 
 def test_invalid_ablation_does_not_prove_essential(tmp_path):
-    src = tmp_path / "k.hip"
-    src.write_text("kernel")
     it = tmp_path / "iterv1"
-    write(it / "bench.json", good_bench(src))
+    it.mkdir()
+    src, ref = it / "kernel.hip", tmp_path / "ref.py"
+    src.write_text("kernel")
+    ref.write_text("oracle")
+    write(it / "bench.json", good_bench(src, ref))
     write(it / "methods.json", {"methods": [{"id": "memory.lds_tiling"}]})
     ab = it / "ablations/memory_lds_tiling/kernel.hip"
     ab.parent.mkdir(parents=True)
     ab.write_text("bad")
-    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "ref_file": "ref"})
+    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "ref_file": str(ref)})
     mod = load("ablate")
     with patch.object(mod, "_bench_kernel", return_value={"error": "bad"}):
         assert mod.run(state, 1)["attributions"][0]["contributed"] is None
@@ -208,6 +214,10 @@ def test_capture_generated_runner_is_valid_python(tmp_path):
     assert 'raise RuntimeError("old entry")' not in target.read_text()
     payload = torch.load(target.with_name("kernel_inputs.pt"), weights_only=True)
     assert payload["views"]["x"]["stride"] == [2]
+    namespace["_save_kernel_with_inputs"](tuner, (torch.arange(10), 123), {})
+    error = next(tmp_path.glob("kernel_*/capture-error.txt"))
+    assert "exceed known kernel arg_names" in error.read_text()
+    assert not (error.parent / "capture.json").exists()
 
 
 def test_baseline_adapter_does_not_pass_unaccepted_dims(tmp_path):
@@ -243,17 +253,17 @@ def test_suite_regression_is_rejected(tmp_path):
     mod = load("workload_suite")
     src = tmp_path / "k"
     src.write_text("source")
-    state = {"baseline_file": str(src), "ref_file": "ref", "workloads": [{"id": "big", "dims": {"N": 1}, "seeds": [1], "max_regression_pct": 5}]}
+    state = {"baseline_file": str(src), "ref_file": str(src), "workloads": [{"id": "big", "dims": {"N": 1}, "seeds": [1], "max_regression_pct": 5}]}
     n = 0
     def fake(cmd, output, log):
         nonlocal n
         n += 1
-        result = good_bench(src)
+        result = good_bench(src, src)
         if n % 2 == 0:
             result["kernel"] = load("experiment").timing_stats([1.2]*5)
         return result
     with patch.object(mod, "run_json", side_effect=fake):
-        result = mod.evaluate(state, str(src), "bench", tmp_path / "suite", 1, 5)
+        result = mod.evaluate(state, str(src), str(src), tmp_path / "suite", 1, 5)
     assert result["passed"] is False
     assert result["cases"][0]["dims"] == {"N": 1}
 
@@ -293,9 +303,13 @@ def test_state_promotes_kernel_without_fabricating_attribution(tmp_path):
              "implementation_failed_methods": [], "history": [], "roofline_history": [], "frontier": []}
     state_path = write(tmp_path / "state.json", state)
     methods = write(tmp_path / "methods.json", {"methods": [{"id": "m", "axis": "memory"}]})
-    bench = write(tmp_path / "bench.json", good_bench(kernel))
+    bench = write(tmp_path / "bench.json", good_bench(kernel, ref))
     args = argparse.Namespace(state=state_path, iter=1, kernel=str(kernel), bench=bench, methods_json=methods,
                               skip_validation=True, allow_ineffective=False, attribution=None, sass_check=None, retries=0)
+    # A legacy regex success plus an ablation must not become semantic proof.
+    args.attribution = write(tmp_path / "attribution.json", {"champion_source_sha256": load("experiment").file_sha256(kernel),
+        "attributions": [{"method_id": "m", "validation_passed": True, "attribution_ms": .5, "contributed": True}]})
+    args.sass_check = write(tmp_path / "isa_check.json", {"checks": [{"method_id": "m", "verified": True}]})
     mod.cmd_update(args)
     saved = json.loads(Path(state_path).read_text())
     assert saved["best_metric_ms"] == 1.
@@ -303,6 +317,15 @@ def test_state_promotes_kernel_without_fabricating_attribution(tmp_path):
     assert saved["effective_methods"] == []
     with pytest.raises(SystemExit):
         mod.cmd_update(args)
+    evidence = tmp_path / "iterv2/isa.txt"
+    evidence.parent.mkdir()
+    evidence.write_text("reviewed target-specific mechanism")
+    write(evidence.with_name("mechanism-review.json"), {"source_sha256": load("experiment").file_sha256(kernel),
+          "methods": [{"id": "m", "status": "verified", "explanation": "Fixture checks provenance only",
+                       "artifact": "isa.txt", "artifact_sha256": load("experiment").file_sha256(evidence)}]})
+    args.iter = 2
+    mod.cmd_update(args)
+    assert len(json.loads(Path(state_path).read_text())["effective_methods"]) == 1
 
 
 def test_branch_explore_runs_processes_and_selects_only_valid_candidate(tmp_path):
@@ -310,9 +333,10 @@ def test_branch_explore_runs_processes_and_selects_only_valid_candidate(tmp_path
     bench = tmp_path / "fake_bench.py"
     bench.write_text('''import argparse,json,hashlib
 from pathlib import Path
-p=argparse.ArgumentParser();p.add_argument('source');p.add_argument('--json-out');a,_=p.parse_known_args()
+p=argparse.ArgumentParser();p.add_argument('source');p.add_argument('--json-out');p.add_argument('--ref');a,_=p.parse_known_args()
 value=Path(a.source).read_text().strip();valid=value!='invalid';ms=float(value) if valid else .01
 Path(a.json_out).write_text(json.dumps({'source_sha256':hashlib.sha256(Path(a.source).read_bytes()).hexdigest(),
+'reference_sha256':hashlib.sha256(Path(a.ref).read_bytes()).hexdigest(),
 'correctness':{'checked':True,'passed':valid},'kernel':{'average_ms':ms,'samples_ms':[ms]*5}}))
 ''', encoding="utf-8")
     it = tmp_path / "iterv1"
@@ -320,7 +344,9 @@ Path(a.json_out).write_text(json.dumps({'source_sha256':hashlib.sha256(Path(a.so
         source = it / f"branches/b{idx}/kernel.hip"
         source.parent.mkdir(parents=True)
         source.write_text(val)
-    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "ref_file": "ref", "branches": 3,
+    ref = tmp_path / "ref.py"
+    ref.write_text("oracle")
+    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "ref_file": str(ref), "branches": 3,
                                            "benchmark_file": str(bench), "benchmark_sha256": load("experiment").file_sha256(bench)})
     report = load("branch_explore").run(state, 1)
     assert report["champion"]["branch_index"] == 2
@@ -469,3 +495,172 @@ def test_summary_preserves_per_iteration_tool_identity(tmp_path):
     report = output.read_text(encoding="utf-8")
     for i, tool in [(1, "xprof"), (2, "hipprof"), (3, "none"), (4, "not_recorded")]:
         assert f"| iterv{i} | {tool} |" in report
+
+
+def cli(script, *args):
+    return subprocess.run([sys.executable, "-X", "utf8", str(HIP / script), *map(str, args)],
+                          capture_output=True, text=True, encoding="utf-8", timeout=30)
+
+
+@pytest.mark.parametrize("command", [
+    ("orchestrate.py", "open-iter"), ("orchestrate.py", "close-iter"),
+    ("run_iteration.py", "benchmark"), ("branch_explore.py",),
+    ("profile_hcu.py", "--which", "kernel"), ("profile_hipprof.py", "--which", "kernel"),
+    ("ablate.py",), ("sass_check.py",), ("roofline.py",),
+])
+def test_closed_iteration_entrypoints_preserve_evidence(tmp_path, command):
+    state_path = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "history": [{"iter": 1}]})
+    artifact = tmp_path / "iterv1/bench.json"
+    write(artifact, {"evidence": "keep"})
+    before = artifact.read_bytes()
+    flag, value = ("--run-dir", tmp_path) if command[0] == "orchestrate.py" else ("--state", state_path)
+    result = cli(*command, flag, value, "--iter", 1)
+    assert result.returncode != 0 and "already closed" in result.stderr
+    assert artifact.read_bytes() == before
+    assert sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*") if p.is_file()) == ["iterv1/bench.json", "state.json"]
+
+
+def test_reference_hash_is_required_for_validation(tmp_path):
+    source, ref = tmp_path / "source", tmp_path / "ref"
+    source.write_text("source")
+    ref.write_text("oracle")
+    mod = load("experiment")
+    assert not mod.benchmark_gate(good_bench(source), source, ref)[0]
+    bench = good_bench(source, ref)
+    assert mod.benchmark_gate(bench, source, ref)[0]
+    ref.write_text("changed")
+    assert not mod.benchmark_gate(bench, source, ref)[0]
+
+
+def test_workload_zero_regression_and_invalid_shapes(tmp_path):
+    mod = load("workload_suite")
+    case = {"id": "zero", "dims": {"N": 0}, "seeds": [1], "max_regression_pct": 0}
+    path = write(tmp_path / "cases.json", {"cases": [case]})
+    assert mod.load_cases(path) == [case]
+    for invalid in [{"seeds": 42}, {"max_regression_pct": -1}, {"ptr_size": -1}]:
+        write(Path(path), {"cases": [{**case, **invalid}]})
+        with pytest.raises(ValueError):
+            mod.load_cases(path)
+
+
+def test_summary_supports_historical_missing_method_names(tmp_path):
+    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "history": [
+        {"iter": 1, "status": "improved", "methods": ["memory.coalesced_access"], "method_names": [None]}]})
+    output = tmp_path / "summary.md"
+    load("summarize").render(state, str(output))
+    assert "memory.coalesced_access" in output.read_text(encoding="utf-8")
+
+
+def test_frozen_inputs_checked_before_seed_and_suite(tmp_path):
+    source, ref, bench = (tmp_path / n for n in ("baseline.py", "ref.py", "bench.py"))
+    for p in (source, ref, bench):
+        p.write_text("original")
+    exp = load("experiment")
+    original = {"baseline_file": str(source), "baseline_source_sha256": exp.file_sha256(source),
+                "ref_file": str(ref), "reference_sha256": exp.file_sha256(ref),
+                "benchmark_file": str(bench), "benchmark_sha256": exp.file_sha256(bench)}
+    for p in (source, ref, bench):
+        p.write_text("changed")
+        with pytest.raises(SystemExit, match="changed since setup"):
+            exp.resolve_benchmark(original)
+        p.write_text("original")
+
+
+def test_stale_suite_cannot_promote_candidate(tmp_path):
+    source, ref = tmp_path / "kernel.py", tmp_path / "ref.py"
+    source.write_text("source")
+    ref.write_text("oracle")
+    exp, mod = load("experiment"), load("state")
+    cases = [{"id": "case", "dims": {"N": 1}, "seeds": [1]}]
+    state = {"run_dir": str(tmp_path), "ref_file": str(ref), "reference_sha256": exp.file_sha256(ref),
+             "baseline_file": str(source), "benchmark_file": str(source), "workloads": cases,
+             "history": [], "best_metric_ms": 2.}
+    bench = good_bench(source, ref)
+    identity = load("workload_suite").suite_identity(state, source, source)
+    bench["workload_suite"] = {"passed": True, "weighted_speedup": 2., "identity": identity}
+    # A summary measured for N=1 cannot be reused for N=2.
+    state["workloads"][0]["dims"]["N"] = 2
+    state_path = write(tmp_path / "state.json", state)
+    args = argparse.Namespace(state=state_path, iter=1, kernel=str(source),
+        bench=write(tmp_path / "bench.json", bench), methods_json=write(tmp_path / "methods.json", {"methods": []}),
+        skip_validation=True, allow_ineffective=False, attribution=None, sass_check=None, retries=0)
+    with pytest.raises(SystemExit, match="suite does not match"):
+        mod.cmd_update(args)
+    assert json.loads(Path(state_path).read_text()) == state
+
+
+def test_cpu_run_lifecycle_with_custom_benchmark_and_matrix(tmp_path):
+    """Actual subprocess wiring only; synthetic times make no GPU performance claim."""
+    baseline, ref, benchmark = (tmp_path / n for n in ("baseline.py", "ref.py", "bench.py"))
+    baseline.write_text("2")
+    ref.write_text("oracle")
+    benchmark.write_text('''import argparse,hashlib,json
+from pathlib import Path
+p=argparse.ArgumentParser();p.add_argument('source');p.add_argument('--ref');p.add_argument('--json-out')
+a,_=p.parse_known_args();ms=float(Path(a.source).read_text());digest=lambda x:hashlib.sha256(Path(x).read_bytes()).hexdigest()
+Path(a.json_out).write_text(json.dumps({'source_sha256':digest(a.source),'reference_sha256':digest(a.ref),
+'correctness':{'checked':True,'passed':True},'kernel':{'average_ms':ms,'samples_ms':[ms]*5}}))
+''', encoding="utf-8")
+    workloads = write(tmp_path / "workloads.json", {"cases": [
+        {"id": "small", "dims": {"N": 8}, "seeds": [1, 2], "max_regression_pct": 0},
+        {"id": "tail", "dims": {"N": 65}, "seeds": [1], "max_regression_pct": 0}]})
+    result = cli("state.py", "init", "--baseline", baseline, "--ref", ref, "--benchmark", benchmark,
+                 "--iterations", 1, "--branches", 2, "--workloads", workloads, "--profiler", "none")
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    run_dir, state_path = Path(data["run_dir"]), Path(data["state"])
+    for command in [("run_iteration.py", "seed-baseline", "--state", state_path),
+                    ("orchestrate.py", "open-iter", "--run-dir", run_dir, "--iter", 1)]:
+        result = cli(*command)
+        assert result.returncode == 0, result.stderr
+    it = run_dir / "iterv1"
+    (it / "branches/b1/kernel.py").write_text("1")
+    (it / "branches/b2/kernel.py").write_text("3")  # correct but regresses every case
+    (it / "kernel.hip").write_text("stale extension")
+    write(it / "methods.json", {"iter": 1, "methods": [{"id": "memory.coalesced_access", "axis": "memory",
+          "priority": 1, "name": "coalescing", "description": "CPU wiring fixture; no hardware claim"}]})
+    result = cli("orchestrate.py", "close-iter", "--run-dir", run_dir, "--iter", 1)
+    assert result.returncode == 0, result.stderr
+    state = json.loads(state_path.read_text())
+    assert state["best_file"] == str(it / "kernel.py")
+    assert state["best_suite_score"] == pytest.approx(2)
+    assert state["effective_methods"] == [] and len(state["unverified_methods"]) == 1
+    assert len(state["history"][0]["workload_suite"]["cases"]) == 3
+    report = cli("orchestrate.py", "finalize", "--run-dir", run_dir)
+    assert report.returncode == 0, report.stderr
+    assert "Frozen workload weighted speedup" in (run_dir / "summary.md").read_text(encoding="utf-8")
+    before = (run_dir / "baseline/bench.json").read_bytes()
+    reseed = cli("run_iteration.py", "seed-baseline", "--state", state_path)
+    assert reseed.returncode != 0 and "already seeded" in reseed.stderr
+    assert (run_dir / "baseline/bench.json").read_bytes() == before
+
+
+def test_standalone_benchmark_uses_selected_champion(tmp_path):
+    mod = load("run_iteration")
+    it = tmp_path / "iterv1"
+    it.mkdir()
+    (it / "kernel.hip").write_text("stale")
+    winner, ref = it / "kernel.py", tmp_path / "ref.py"
+    winner.write_text("winner")
+    ref.write_text("oracle")
+    write(it / "branch_results.json", {"champion": {"kernel": str(winner)}})
+    state = write(tmp_path / "state.json", {"run_dir": str(tmp_path), "ref_file": str(ref)})
+    def fake(**kwargs):
+        assert kwargs["solution"] == str(winner)
+        write(Path(kwargs["json_out"]), good_bench(winner, ref))
+    with patch.object(mod, "_run_bench", side_effect=fake):
+        mod.cmd_benchmark(argparse.Namespace(state=state, iter=1, benchmark=None, warmup=1, repeat=5))
+
+
+def test_triton_collection_preserves_colliding_names_and_avoids_cache_recursion(tmp_path):
+    mod = load("collect_inductor_artifacts", TRITON)
+    for i in range(10):
+        src = tmp_path / str(i) / "kernel.amdgcn"
+        src.parent.mkdir()
+        src.write_text(str(i))
+        mod._copy_file(src, tmp_path / "collected")
+    assert {p.read_text() for p in (tmp_path / "collected").iterdir()} == {str(i) for i in range(10)}
+    args = argparse.Namespace(log="", capture_dir="", cache_root=str(tmp_path), kernel="kernel", out=str(tmp_path / "artifacts"))
+    with pytest.raises(ValueError, match="source cache"):
+        mod.collect(args)
+    assert not Path(args.out).exists()

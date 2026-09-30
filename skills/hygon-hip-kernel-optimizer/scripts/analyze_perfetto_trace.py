@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Analyze SQTT Chrome-trace JSON with Perfetto Trace Processor.
 
-This is an optional companion to analyze_sqtt.py. DTK SQTT JSON is Chrome
-trace JSON, which Perfetto Trace Processor can ingest into SQL tables. Keep the
-queries intentionally simple so the script remains useful across DTK releases.
+This is an optional companion to analyze_sqtt.py for exports verified to be
+Chrome trace JSON. Other hipprof exports, XProf .perf and arbitrary Perfetto
+binary formats are outside this adapter's contract.
 """
 
 from __future__ import annotations
