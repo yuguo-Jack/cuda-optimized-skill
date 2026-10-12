@@ -11,6 +11,8 @@ description: 从 Torch、Triton、TileLang、Python 或 CUDA 参考实现建立�
 
 先查看输入算子的接口、调用点、shape/dtype/stride、输出、alias/in-place、stream、边界及容差，优先使用用户材料、当前源码/测试/文档与目标头文件。需要参考代码案例或补充领域事实时，可按需查询 HCU-Knowledge；查询不是必经步骤，也不要求安装知识库。
 
+新写基线或融合实现前，检查相关 HCU 工程是否已有满足契约的实现。当前证据不足时，按 [查证路径](../hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md#1-证据来源与按需知识查询) 查询案例，追线上 PR/MR 描述与 review、固定源码、分派和测试；需要算法/融合灵感时也可按需查 NVIDIA `KernelWiki`。先判断语义、精度和 HCU 支持，不能为追随优化案例改变 oracle 或跳过基线正确性；进一步性能实验交给优化 Skill。交接时附实际采用的来源、适用差异与未验证假设。
+
 CUDA 移植按 API、线程模型、共享内存/同步、数值类型、矩阵指令、库接口分别检查。HIPIFY 可辅助替换，但不是兼容证明。指令相关移植按 [HCU 指令指南](../hygon-hip-kernel-optimizer/references/hcu-isa-guide.md) 检查真实 gfx、builtin/ISA 对应、布局及同步；DCU/HCU 同义。HCU rocBLAS/hipBLASLt/MIOpen/RCCL 等接口资料与 AMD 源码分清；AICC 与 DTK 编译器分清。
 
 选择独立 oracle：优先可读、语义完整的原 reference；Triton/TileLang/CUDA 参考必须保留，必要时另写 Torch/CPU 数学实现并与原实现对照。不要同步修改 oracle 与候选来让测试通过。

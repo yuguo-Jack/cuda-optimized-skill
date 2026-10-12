@@ -1,21 +1,63 @@
 # HCU 算子开发与优化：共同契约
 
-DCU 与 HCU 同义，保留原有字段和文件名。baseline、HIP/CK Tile、Triton 三个 Skill 共用本规范。按问题读取相应章节；Skill 负责开发与实验流程，HCU-Knowledge 是可选参考来源。未安装或未查询知识库也可完成开发优化；不能把本文件中的候选策略当作硬件兼容表。
+DCU 与 HCU 同义，保留原有字段和文件名。baseline、HIP/CK Tile、Triton 三个 Skill 共用本规范。按问题读取相应章节；Skill 负责开发与实验流程，HCU-Knowledge 与 NVIDIA KernelWiki 是按需使用的参考来源。未安装或未查询知识库也可完成开发优化；不能把本文件中的候选策略当作硬件兼容表。
 
 ## 1. 证据来源与按需知识查询
 
 优先读取用户提供的材料、当前工程源码/测试/文档、目标环境的头文件、工具帮助和实验结果。已有证据足够时直接推进，不为完成流程而查询知识库。需要查找可复用代码/优化案例、补充领域事实或解决证据冲突时，可以按需查询 HCU-Knowledge；不要求每次任务或每轮迭代都查询。
 
-以下检索步骤仅在决定使用知识库时适用：
+### 1.1 何时补充参考证据
+
+查询贯穿候选选择与优化迭代，不限于任务开头。以下情况若当前工程证据不足，主动检索相关实现和讨论，再决定复用或实验，不等用户逐次提醒：
+
+- 准备新写、融合或替换算子：先确认 HCU 相关库是否已有适合当前接口、输入范围与数值契约的实现。
+- profiler/roofline 已指出瓶颈，但缺少可信改法，或收益停滞、出现回退：按具体症状、热点符号、布局、数据类型与 shape 寻找同类优化及失败条件。
+- 需要新的指令、异步流水、低精度或编译器能力：查目标 HCU 分支的实际支持、相关修复及测试；文档与当前行为冲突时追 PR/MR 和源码。
+
+已有足够证据则直接实验；不为每轮查询、不为了凑案例遍历所有仓。相同问题的已核对证据可复用，输入、版本或瓶颈改变后再评估是否补查。查询只补充依据，不能代替第 5 节要求的性能采集与分析。
+
+### 1.2 HCU 案例、PR/MR 与源码
+
+以下检索步骤仅在决定使用知识库时适用；没有知识库时也可直接检索可访问的相关 HCU 仓库：
 
 1. 如果已配置 `hcu-knowledge-search`，按其说明查询；未安装、未绑定或不可访问时继续利用其他可用证据。只有任务所必需的事实确实无法查明时才说明缺口。
 2. 按精确算子、符号或现象检索。保留搜索状态，不能把在线失败当没有相关资料；认证或访问问题按搜索 Skill 处理。
 3. 复杂问题拆开查：算子/调用链、数据布局、硬件特性、编译器、工具指标、类似案例。先工程 `local/overview/engineering-guide.md`，再 topics/cases 和源码。用 `cases` 与案例索引查算子、手段、硬件和输入规模；未命中不等于不支持。
 4. `read` 读全文，`original` 看原 PDF/指令表/图，`read-code` 固定源码提交。父仓子模块按 gitlink 固定子提交。记录 ID、SHA、路径/页码、适用条件；pending 仍可查，但兼容性待证。源码、PR review、文档描述和本次实测分开记录。
+5. 本地没有答案、案例过旧或缺少“为什么这样改”时，按 `hcu-knowledge-search` 的 `search-pr` 路径在线搜索已收录或尚未收录的相关 PR/MR。用算子/符号和机制词组合，而非只搜宽泛的“优化”；查不到时缩小或换词，不将一次空结果当作不存在。
+6. 对选中的 PR/MR 用 `read-pr` 查描述、普通评论、行内评论、顶层 review 与 diff；确认分页、合并状态和后续修复/回退。再用 `read-pr-code` 追实际 base/head 的固定 SHA，阅读改动实现、调用/分派、构建依赖与正确性/性能测试。具体参数按搜索 Skill；不可只凭标题、局部 diff 或收益数字决定移植。
+7. 将参考提交与当前任务的实际分支对照：是否已经包含该改动、后续是否改写/撤销、依赖是否满足、生产调用是否命中。PR 未合入和 review 中的建议都不是已验证事实。权限或分页不完整时注明缺口，不编造讨论结论。
 
 选择参考源码时，同用途且同步的实现优先 HYGON-AI GitHub；内部 GitLab 有实质领先则用内部活跃 HCU 分支。新 CI 时间不等于新实现；默认分支可能落后。DeepGEMM 通用发版方向与 MegaMoE 方向分别判断。HCU rocBLAS、hipBLASLt、MIOpen、RCCL 有权限时读 HCU 维护源码；没有权限时说明缺口，不用 AMD 上游代替。NVIDIA/AMD 官方资料仅作标明厂商的对比参考；同名 API 或相邻 gfx 编号不证明兼容。
 
 可选检索入口：`xprof-xcompute-workflow`、`hcu-performance-workflow`、AICC engineering-guide、CK Tile example/cases、FlashAttention、DeepGEMM、BoltOPs、Triton 的当前工程指南，以及数学库 `gemm-assembly-examples` 原始示例。
+
+### 1.3 用 NVIDIA KernelWiki 寻找优化灵感
+
+涉及算法分块、布局、融合、调度、流水、寄存器压力或尾块等问题时，可按需调用已安装的 `KernelWiki`。先读其 `SKILL.md` 与索引说明；它主要面向 NVIDIA Hopper/Blackwell，适合查 kernel 技术和 PR，不把它当 HCU 指令手册或通用训练引擎知识库。无需为完成 HCU 任务强制安装它；不可用时可查相关官方源码/资料或继续已有证据充分的实验。
+
+在实际 KernelWiki 根目录，当前检索入口示例为：
+
+```bash
+python scripts/query.py "FlashAttention" --compact --limit 5
+python scripts/query.py --symptom tail-effect --compact --limit 5
+python scripts/get_page.py <命中的页面ID> --follow-sources --include-code
+```
+
+也可按 by-problem、by-technique、by-kernel-type、by-repo 索引定位。参数以安装版本的 `--help` 为准。`--follow-sources` 仅附来源摘录；要采用机制时继续读对应来源全文、PR 与代码，核对页面的适用架构/置信等级及代码产物 `PROVENANCE.yaml` 的固定提交。NV 上的 verified 不代表 HCU 上验证过，摘录也不代表完整 review。
+
+提取“为何有效”和前提，再设计 HCU 实现：
+
+- 可借鉴算法、减少流量/中间写回、分块重计算、负载调度、流水与融合的思路；检查真实 shape/布局、前向反向、精度、workspace 与端到端成本是否可比。
+- NVIDIA warp/warpgroup、TMA/TMEM、WGMMA/tcgen05、barrier 和专属编译开关不能直接映射到 HCU。重新核对目标 wave、矩阵布局、指令形式、异步完成/内存可见性、寄存器/LDS 资源与编译器 lowering；缺支持时改变实现或放弃该候选。
+- 对看似通用的 Triton 代码同样检查 HCU 分支的实际 lowering 和探针；不照抄 NVIDIA 的 `num_warps`/stages 或移用其收益百分比。
+- 查询公开来源只使用必要的机制/公共符号词，不带私有源码、内部日志或凭据；引用和代码复用保留来源及许可要求。
+
+### 1.4 让参考材料进入实验
+
+对真正影响候选选择的资料，在现有 `analysis.md` 和报告中简要记录：**来源/PR/固定 SHA 与位置 → 原优化机制及条件 → 本任务差异和 HCU 实现办法 → 可证伪假设/预期指标 → 本轮正确性、性能及机制结果**。HIP 方法计划沿用现有字段；不新增强制登记文件，也不为未查询的任务填空表。
+
+例如，参考案例通过重排消除尾块浪费，应先核对当前网格和输入确有该浪费，设计 HCU 调度变体，比较尾块覆盖、资源变化和同口径耗时；若当前主要受带宽限制或重排成本抵消收益，说明不采用的原因。尚未在目标 HCU 验证的结论保持“参考/候选”，不写成 HCU 实测。基线阶段优先复用正确实现，性能假设交给优化阶段；独立 oracle 不随参考候选改变。
 
 ## 2. 目标环境与执行位置
 

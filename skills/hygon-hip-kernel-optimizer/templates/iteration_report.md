@@ -8,6 +8,8 @@
 
 GPU/gfx/wave、驱动/DTK、AICC或其他编译器绝对路径及版本、Torch/Triton/库SHA、父仓子模块gitlink、构建命令；实际参考的源码/文档/实验出处，引用知识库时再附ID/SHA/页码；历史结论与本轮实测分开。
 
+使用 HCU 案例/PR/MR 或 NVIDIA KernelWiki 时，再记录影响决策的来源链接、固定提交/路径、review 结论与完整性、原架构/输入/精度前提；说明当前 HCU 实现差异、采用或放弃原因，并关联第 4–5 节的候选与实测。没有查询无需补表；参考收益不当作本轮结果。
+
 ## 3. 基线与测试矩阵
 
 baseline/reference SHA与独立性；case/seed/dtype/shape/stride/mask/路由分布；全部输出、容差、race/越界/确定性检查的实际状态；未覆盖项及原因。

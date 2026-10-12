@@ -1,5 +1,14 @@
 # Hygon 算子 Skills 系统复核与上游合并
 
+## 2026-10-12：优化参考与实验衔接
+
+1. 核对三个 Hygon Skill、HCU 搜索与 KernelWiki 的实际入口 — complete。
+2. 完善按需查案例、线上 PR/MR、固定源码、NVIDIA 思路迁移及实验/报告衔接 — complete。
+3. 复核链接、Skill 格式、流程图与 CPU 回归，同步本机三个 Skill — complete。
+4. 发布步骤：提交并正常推送 origin/main，核对远端 SHA；发布结果在本轮完成回复报告。
+
+范围：优化流程查证；不刷新知识库、不更改 NVIDIA Skill 或现有实验晋级规则，不声称 HCU 硬件实测。
+
 ## 目标与范围
 
 详细熟悉现有工程，确认并合并上游代码，解释新增能力；依据当前 HCU-Knowledge 的知识与证据规则系统完善 Hygon baseline/HIP/Triton Skills 及配套脚本，验证后更新 Codex 用户安装副本。

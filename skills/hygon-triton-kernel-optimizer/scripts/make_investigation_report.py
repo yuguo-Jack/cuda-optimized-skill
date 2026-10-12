@@ -57,6 +57,7 @@ def build_report(autotune: dict, meta: dict, isa: dict, kernel: str) -> str:
         "## Environment and evidence",
         "",
         "Exact gfx/Torch/Triton/compiler/repository SHA, source IDs and capture hash: TODO",
+        "If HCU cases/PRs or NVIDIA KernelWiki informed a candidate: cite source/commit, original conditions, HCU differences, hypothesis and measured outcome; otherwise omit.",
         "Independent oracle; dtype/layout/alias/stream; seeds/shapes and project tests: TODO",
         "Race safety, timing scope/noise, tested hardware versus static-only checks: TODO",
         "",

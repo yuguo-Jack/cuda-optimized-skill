@@ -11,6 +11,7 @@ description: 在海光 HCU/DCU 上开发和优化 HIP/C++、CK Tile 算子，通
 
 - 从用户需求和工程推导算子语义、支持范围、目标设备/工具链、精度和性能指标，记录到任务目录 `contract.md`。缺少的必要事实先检查工程/环境，真正阻塞再问；可独立完成的工作继续。
 - 优先查看用户材料、当前源码/测试/文档与目标环境。需要参考代码案例或补充领域事实时，可按需使用 `hcu-knowledge-search`，阅读相关指南/案例及固定源码/原件并记录出处。查询不是必经步骤，未安装或不可用不阻塞已有证据足够的工作。
+- 按 [查证路径](references/hcu-workflow-contract.md#1-证据来源与按需知识查询) 把 HCU 案例追到 PR/MR 描述、review、固定源码、调用点和测试；本地缺答案时主动搜索线上 PR。需要优化灵感时可查 NVIDIA `KernelWiki`，提取可迁移机制并核对 HCU 前提，不直接套用 NVIDIA 指令或收益。
 - 查已存在的 HCU 实现与构建方式：HIP、CK Tile、HCU Cutlass、Triton/TileLang、自有库各有适用点。能直接复用当前工程接口时先复用；不强制某种 DSL，也不拿 AMD/NVIDIA 分支冒充 HCU。
 - 没有正确 HIP 基线时先调用 `hygon-hip-baseline-generator`；仅需 Triton/Inductor 调优使用 `hygon-triton-kernel-optimizer`。明确选择原因。
 
@@ -49,7 +50,7 @@ python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py -
 
 从 [性能分析入口](references/dcu_metrics_guide.md) 选择对应指南：[XProf/XCompute](references/xprof-xcompute-guide.md) 使用 sections/metrics 与 `.perf` 分析；[hipprof](references/hipprof-guide.md) 使用自己的 trace/PMC/SQTT 参数和产物。命令、格式、指标公式与查看器不能互换。自动采集只提供原件与发现信息，命令成功不代表分析完成；必须把观察到的指标/时间线连接到瓶颈假设与下一项实验，并对修改前后做同口径比较。
 
-1. 用 [策略目录](references/optimization_catalog.md) 和 registry 选 1..3 项，不凑数；每轴最多 2 项，跳过更高优先项写具体理由。
+1. 用 [策略目录](references/optimization_catalog.md) 和 registry 选 1..3 项，不凑数；每轴最多 2 项，跳过更高优先项写具体理由。准备替换/融合实现、瓶颈改法不明或迭代停滞且现有依据不足时，按共同契约主动查 HCU 案例/PR/源码，必要时查 KernelWiki；把参考机制变成本轮可验证的 HCU 假设，再选择改动。证据已足够时不重复检索。
 2. `methods.json` 按 [schema](templates/methods.schema.json)：方法 ID、改什么、为何可能有效、预期证据、精确目标证据、跳过理由。重试先前方法给 `retry_reason`。
 3. 在 `itervN/branches/b1..bK/kernel.<ext>` 写变体，同组方法一致、超参数不同；只修改用户任务范围的源码。
 4. 运行 `branch_explore.py --state RUN/state.json --iter N`，先检查正确性/稳定计时/多用例回退；失败的分支修复后再测，保留失败原因。OOM 不缩小原场景冒充成功。

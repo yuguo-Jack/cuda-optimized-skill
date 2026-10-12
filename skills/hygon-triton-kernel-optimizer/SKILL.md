@@ -66,7 +66,9 @@ python <skill>/scripts/scan_amdgcn.py repro/artifacts --kernel KERNEL --json-out
 
 按 [实验操作指南](../hygon-hip-kernel-optimizer/references/optimization-playbook.md) 核对算子特有边界、数值变换前提、JIT/autotune 与计时范围及工程验收。此 Skill 使用捕获/重放/扫描流程，不自动执行 HIP 编排的四轮晋级；实际报告须说明已运行的对照协议。
 
-按 [策略](references/optimization_patterns.md) 检查：布局/合并、对齐、向量化、tile/warps/stages、dot 精度与转换、LDS/寄存器/occupancy、tail mask、同步、原子/归约、pipeline 和融合。需要参考时，可按 attention、稀疏 attention、MoE 的阶段和输入分布查找已有 HCU 案例。
+按 [策略](references/optimization_patterns.md) 检查：布局/合并、对齐、向量化、tile/warps/stages、dot 精度与转换、LDS/寄存器/occupancy、tail mask、同步、原子/归约、pipeline 和融合。
+
+准备替换/融合实现、改法不明或迭代停滞且依据不足时，按 [查证路径](../hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md#1-证据来源与按需知识查询) 主动查相关 HCU 工程案例；本地缺答案继续搜线上 PR/MR，读描述、review、固定源码、分派和测试。可按需用 NVIDIA `KernelWiki` 寻找布局/流水/调度等灵感，核对原架构、shape、数值条件，再验证当前 HCU Triton 分支的 lowering、wave/资源和性能，不能直接沿用 NV 配置。将实际采用的来源、HCU 差异、候选假设及验证结果写入调查报告；两个知识库均为可选参考，已有证据足够不重复查询。
 
 - `tl.assume` / `multiple_of` 只能陈述所有受支持输入都成立的事实；给出数学/调用契约依据，再编译探针与负面边界测试。不要从指针“看起来为正”推导合法转换。
 - buffer/global/flat 或宽向量指令只提供机制证据，不能按名字宣判快慢。查看目标 ISA、资源、计数器、实际时间。

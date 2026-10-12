@@ -1,5 +1,12 @@
 # 调查发现
 
+## 2026-10-12：参考案例不应只在任务开头查询
+
+- 原共同契约和入口支持可选 HCU 知识查询，但缺少优化中主动查证的触发点、线上 PR/MR → 实现/调用/测试路径，以及 KernelWiki 的明确衔接。
+- 本机 hcu-knowledge-search 已提供 search-pr、read-pr（包括顶层 review）、read-pr-code，可查未收录 PR；KernelWiki 已有症状/技术/算子/仓库索引、query.py 和 get_page.py。后者 follow-sources 只附摘录，不能当完整 PR 阅读。
+- 新规则将查询用于新写/融合前的复用调查、已有瓶颈但改法不明及停滞排查；当前证据足够则直接实验，不额外增加每轮审批或必查门禁。
+- NVIDIA 的算法、布局、调度和流水可以产生候选，但原架构的指令/资源/数值条件、verified 标签和收益不能直接迁移为 HCU 结论。报告保留实际来源、差异、假设和实测结果。
+
 ## 初始状态
 
 - 本地 main 跟踪 origin/main，origin 为 yuguo-Jack/cuda-optimized-skill；尚未配置 upstream。

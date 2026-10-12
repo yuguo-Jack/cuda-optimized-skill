@@ -1,6 +1,6 @@
 # HCU 算子开发与优化 Skills
 
-本工程的 Hygon 扩展包含三个可安装的 Skill：从参考实现建立正确基线、优化 HIP/CK Tile kernel、调查和优化 Triton/Inductor kernel。以当前工程和目标环境为依据，需要参考代码案例或补充领域资料时可查询 HCU-Knowledge，代码和实验在实际目标环境验证。
+本工程的 Hygon 扩展包含三个可安装的 Skill：从参考实现建立正确基线、优化 HIP/CK Tile kernel、调查和优化 Triton/Inductor kernel。以当前工程和目标环境为依据，需要参考代码案例或补充领域资料时可查询 HCU-Knowledge，也可通过 NVIDIA KernelWiki 寻找可迁移的优化思路，代码和实验在实际 HCU 目标环境验证。
 
 ## 组织
 
@@ -25,7 +25,7 @@ DCU/HCU 同义，旧字段与文件名保留。[指令与数据通路指南](ski
 ## 工作原理
 
 1. 用户需求与当前代码形成精度/布局/版本/性能契约。
-2. 优先查看当前源码、测试、文档和目标工具链；需要参考时可用 `hcu-knowledge-search` 查相关代码/案例和原始资料，已有证据足够则直接推进。
+2. 优先查看当前源码、测试、文档和目标工具链；准备新写/融合实现或迭代缺少依据时，主动按需用 `hcu-knowledge-search` 查 HCU 案例，本地缺答案继续搜线上 PR/MR，追描述、review、固定源码及调用/测试。可用 `KernelWiki` 借鉴 NVIDIA 的算法、布局、调度和流水思路，逐项核对 HCU 前提；已有证据足够则直接推进。
 3. 保留独立 oracle，验证 baseline，多规模、多 seed、tail 和真实数据分布列入矩阵。
 4. 先定位热点与瓶颈假设，再做候选修改，串行基准/回归。筛选后，对当前 best 与候选做四轮独立交替对照；逐轮收益和每例回退条件均通过才晋级。固定阈值与四轮一致性不等于统计置信区间。
 5. 遇到 kernel 优化瓶颈时必须使用性能分析工具，优先 XProf/XCompute，也可选适用的 hipprof/DTK 工具；据采集结果决定下一项修改，保留原件、准确 kernel/dispatch、指标定义。未知计数不转成利用率。
@@ -67,9 +67,14 @@ flowchart TD
     I -->|工具受阻或结束调查| U
     F -->|停止| U
     FK -->|停止| U
+    A -.->|需要复用依据| REF[按问题补充参考<br/>HCU 案例、PR/MR、源码与测试<br/>NVIDIA KernelWiki 优化思路]
+    J -.->|候选依据不足| REF
+    REF -.->|核对 HCU 条件并形成可证伪假设| J
 ```
 
 图中的“证据足够”和工程验收由 Agent 根据原件判断；脚本不自动完成瓶颈解释。`close-iter` 可以记录未验证方法，`finalize` 也可用于失败/中止任务。详细的算子路线、数值政策和恢复操作见 [实验操作指南](skills/hygon-hip-kernel-optimizer/references/optimization-playbook.md)。
+
+虚线是按需查证，不是每轮必经步骤。参考内容经 [查证与迁移规则](skills/hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md#1-证据来源与按需知识查询) 转化为具体实验；它不能替代基线验证、瓶颈 profiling 或多规模回归。报告只记录实际影响决策的来源、迁移前提和本轮结果。
 
 ## 安装
 
@@ -82,7 +87,7 @@ python -X utf8 tools/install_hygon_skills.py
 
 默认目标为 `$CODEX_HOME/skills`（未设置时是用户目录 `.codex/skills`），可以 `--skills-dir PATH`。先保存旧文件到本仓 `hygon_tmp/skill-backups/TIMESTAMP`，再复制和核对 SHA256。不会修改别的 Skill，也不随安装执行远端代码。当前会话若已经载入旧 Skill，下一任务/新会话再加载新入口。
 
-`hcu-knowledge-search` 是可选参考工具；没有配置知识库也可以使用这三个 Skill。无需安装本工程为 Python 包，不依赖 MCP 或向量检索模型。
+`hcu-knowledge-search` 和 `KernelWiki` 是可选参考工具，不随这三个 Skill 自动安装；使用时按各自 Skill 的入口与本机配置定位。没有配置知识库也可以使用这三个 Skill。无需安装本工程为 Python 包，不依赖 MCP 或向量检索模型。
 
 ### 依赖与环境
 

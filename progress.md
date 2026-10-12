@@ -1,5 +1,12 @@
 # 工作进度
 
+## 2026-10-12：按需参考 HCU 案例与 KernelWiki
+
+- 已补共同契约、三个 Skill 入口、实验指南、两份报告模板及 Triton 草稿生成提示，并更新 HCU README 的说明与可选查证支路。
+- 验证通过：110 项 CPU 回归、三个 Skill 格式检查、62 处文档链接及锚点、Mermaid 解析与渲染；Triton 草稿生成冒烟和 KernelWiki 症状检索均成功。
+- 已同步 Codex 系统目录的三个 Skill，5/38/15 个文件逐个 SHA256 一致，无额外遗留文件；旧文件备份在忽略提交的 hygon_tmp/skill-backups 下。最终提交前核对 diff，随后正常推送并检查远端 SHA，结果在完成回复报告。
+- 本轮没有 HCU 硬件执行或知识库内容更新；保留 profiler、正确性和原实验晋级规则。
+
 ## 2026-09-30
 
 - 读取 skill-creator、planning-with-files、当前 hcu-knowledge-search；确认系统 Python、本机 Skill 根与知识库绑定。
