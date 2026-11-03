@@ -101,3 +101,12 @@
 - 最终静态检查通过：3 Skill、34 Python AST、4 JSON、3 YAML、50 处 Skill 本地链接、README 链接、25 CLI 帮助、示例 JSON schema 和真实方法校验器。Triton benchmark 模板因本机无 HCU Triton 运行时仅做 AST，不以普通后端代替目标执行。
 - 安装副本已备份至 hygon_tmp/skill-backups/20260930_225824_049418；baseline 5 / HIP 38 / Triton 15 共 58 文件逐个 SHA256 一致，没有额外遗留文件。准备提交并正常推送，远端起点核对为 8f5ed2c。
 - 主体提交 74f7b36204d144c0d0ec312efc3cc926c8330cf3 已正常推送 yuguo-Jack/cuda-optimized-skill 的 main，并通过 ls-remote 核对一致；安装目录 profile_hcu --help 成功加载新增共享模块。此后仅提交本完成记录。
+
+## 2026-11-03：原工程同步与方法论更新
+
+- 找到 D:/git/cuda-optimized-skill 原工程，核对干净 main 和 origin/main 起点均为 f39ba95。安装副本中 baseline 3 文件、HIP 5 文件和新增架构/经验参考共 9 文件已回写；Triton 内容一致。
+- 同步 HCU README 的参考质量判断、结构探索、保留探索分支和经验复用流程；新增生成器交接信息保留原数学/测试语义，不修改实验晋级机制。
+- 本次同步前的源码快照和身份清单保存在 hygon_tmp/methodology-sync-20261103_033258。先核对源码，再通过原工程安装器备份同步并校验三个已安装 Skill。
+- 原全局代理失效；通过当前可用代理进行命令级 fetch 已成功，没有改写全局配置。发布状态以本轮最终核验为准。
+- 110 项 HCU CPU 回归通过（10.46 秒）；3 Skill 格式、34 Python AST、4 JSON、19 份 Markdown 的 75 个本地链接及锚点、git diff whitespace 检查均通过，没有执行 HCU 硬件实验。
+- 已通过原工程安装器再次备份并同步三个安装副本：5/39/15 共 59 文件 SHA256 一致，无额外文件。备份在 hygon_tmp/skill-backups/20261103_113515_004109；回归 XML、静态验证结果与同步前清单在本次同步目录。接下来提交并正常 push origin/main，核对远端 SHA。

@@ -30,6 +30,10 @@ python <skill>/scripts/generate_baseline.py --analysis ref_analysis.json --out-d
 
 产物：`ref_original.py`、`ref.py` adapter、`ref_analysis.json`、`kernel.hip`、`baseline_manifest.json`。manifest 的 `generated_unvalidated` 只代表生成成功，不是编译/正确性成功。
 
+这是正确性脚手架，不是经过性能论证的架构。manifest 的 `optimization_handoff` 标明生成来源、角色及初始架构未评估状态；后续正确性通过也不等于线程映射、串行循环、分块或数据流适合高性能实现。优化阶段可以替换这些设计，保留原数学 oracle 和冻结对照。
+
+旧 manifest 缺少该字段时，在任务交接中补充来源和实际状态即可，不为补元数据重新生成或覆盖已验证基线。
+
 自动生成仅覆盖独立连续 FP32 的简单 elementwise 和 row-major GEMM。复杂 op、控制流、索引、cast、in-place、量化、半精度/双精度、多输出等必须人工实现/适配。已发现不支持时 manifest 为 `needs_manual_implementation`，kernel 带 `#error` 阻止占位 copy 被误当成正确基线。读懂并解决全部假设后才能去掉该 guard；禁止仅为编译而删除。
 
 检查 adapter 是否按原函数参数名调用、二维 view 是否匹配、输出是否全部写入；AST 没有推断出的 dtype/layout 不视作 FP32 兼容证明。需要复杂分配时使用项目专用 harness，不强塞进通用 flat ABI。
@@ -49,4 +53,4 @@ flat ABI 每指针容量至少 max(MK,KN,MN)，上述例子为 32768。benchmark
 
 进入性能优化且遇到 kernel 瓶颈时，按 HIP Skill 的 [性能分析指南](../hygon-hip-kernel-optimizer/references/dcu_metrics_guide.md) 使用工具采集分析；生成基线本身不要求完整 profiling。
 
-交接包含 contract、原参考与adapter、manifest未解决项、基线源码、编译/正确性/测速状态、工作负载矩阵、实际使用的资料引用和远端运行方式，保存在当前任务工程。参阅 [转换与适配要点](references/ref_to_baseline_patterns.md)。
+交接包含 contract、原参考与adapter、manifest未解决项、基线源码、编译/正确性/测速状态、工作负载矩阵、实际使用的资料引用和远端运行方式，保存在当前任务工程。标明生成来源、为易验证而采用的结构假设，以及已有实测/失败记录；没有架构性能证据就保持未评估，不把脚手架写成推荐路线。下游按 [架构探索与经验复用](../hygon-hip-kernel-optimizer/references/architecture-search-and-experience.md) 判断结构再投入调优。参阅 [转换与适配要点](references/ref_to_baseline_patterns.md)。

@@ -1,5 +1,14 @@
 # Hygon 算子 Skills 系统复核与上游合并
 
+## 2026-11-03：架构探索、经验复用与原工程同步
+
+1. 定位 D:/git/cuda-optimized-skill，核对 main、origin 和安装副本差异 — complete。
+2. 回写 9 份 Skill 更新，同步 HCU 流程图、说明与过程记录 — complete。
+3. CPU 回归、Skill 格式、链接/锚点与安装文件哈希核验 — complete（110 项 CPU 回归、3 Skill、34 Python AST、75 个链接及锚点、59 份安装文件哈希一致）。
+4. 提交并正常推送 origin/main，核对远端 SHA — in progress。
+
+本次保留数学 oracle 和实验晋级规则；不修改 NVIDIA Skill，不刷新 HCU 知识库，不运行远端硬件实验。原工程是后续 Skill 修改与安装同步的源码入口。
+
 ## 2026-10-12：优化参考与实验衔接
 
 1. 核对三个 Hygon Skill、HCU 搜索与 KernelWiki 的实际入口 — complete。

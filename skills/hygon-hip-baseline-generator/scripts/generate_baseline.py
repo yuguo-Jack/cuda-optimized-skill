@@ -321,6 +321,16 @@ def generate(analysis_path: str, out_dir: str, op: str, output_name: str) -> dic
         "op_kind": op_kind,
         "status": "needs_manual_implementation" if unsupported else "generated_unvalidated",
         "correctness": "not_run",
+        "optimization_handoff": {
+            "origin": "hygon-hip-baseline-generator",
+            "role": "correctness_scaffold",
+            "architecture_performance_status": "not_assessed",
+            "guidance": (
+                "Correctness does not endorse this architecture. Reconsider mapping, "
+                "dataflow and compute path during optimization; preserve the independent "
+                "oracle and frozen comparison baseline."
+            ),
+        },
         "supported_contract": "independent contiguous FP32 tensors; simple elementwise or row-major GEMM only",
         "dims": dims,
         "ptr_size_hint": ptr_size_hint,

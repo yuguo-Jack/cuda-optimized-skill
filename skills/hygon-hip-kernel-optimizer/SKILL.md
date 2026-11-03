@@ -10,6 +10,7 @@ description: 在海光 HCU/DCU 上开发和优化 HIP/C++、CK Tile 算子，通
 ## 1. 定义任务与查证
 
 - 从用户需求和工程推导算子语义、支持范围、目标设备/工具链、精度和性能指标，记录到任务目录 `contract.md`。缺少的必要事实先检查工程/环境，真正阻塞再问；可独立完成的工作继续。
+- 继续旧任务或优化相关算子时，先读任务工程已有的经验摘要及其关联实验，核对适用条件再复用。入口、停滞和恢复时按需读 [架构探索与经验复用](references/architecture-search-and-experience.md)，避免重复试错或沿用未经验证的架构假设。
 - 优先查看用户材料、当前源码/测试/文档与目标环境。需要参考代码案例或补充领域事实时，可按需使用 `hcu-knowledge-search`，阅读相关指南/案例及固定源码/原件并记录出处。查询不是必经步骤，未安装或不可用不阻塞已有证据足够的工作。
 - 按 [查证路径](references/hcu-workflow-contract.md#1-证据来源与按需知识查询) 把 HCU 案例追到 PR/MR 描述、review、固定源码、调用点和测试；本地缺答案时主动搜索线上 PR。需要优化灵感时可查 NVIDIA `KernelWiki`，提取可迁移机制并核对 HCU 前提，不直接套用 NVIDIA 指令或收益。
 - 查已存在的 HCU 实现与构建方式：HIP、CK Tile、HCU Cutlass、Triton/TileLang、自有库各有适用点。能直接复用当前工程接口时先复用；不强制某种 DSL，也不拿 AMD/NVIDIA 分支冒充 HCU。
@@ -40,6 +41,15 @@ python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py -
 - 静态 preflight、编译、数值、race safety、性能和端到端收益是独立状态。只通过编译或只有时间不算正确。
 - 模型 reference、baseline 与环境冻结后不随候选变化。benchmark 改动也要重测基线。
 
+### 按参考质量选择起点
+
+区分数学 oracle、冻结的测速基线、当前已确认 best 与正在探索的实现。冻结语义和测量口径，不冻结候选架构；best 可以成为下一轮实现起点，不能替换 oracle 或重设容差。
+
+- **有成熟专家参考**：先理解并验证其在当前 HCU、输入和数值契约下的结构与性能。适用时复用其机制，优先调查剩余瓶颈；专家参考仍可能受原硬件、shape、库版本或设计取舍限制，不能作为架构上限。
+- **生成的正确性基线**：`hygon-hip-baseline-generator` 的保守映射、串行循环和中间写回只服务于建立基线。正确性通过后，在投入大量参数扫描前评估数据流、任务划分及计算路径是否合适；可直接重写结构，不必先把脚手架局部调到极限。生成来源和实际质量分别记录，不因作者身份替代实测。
+
+按算子证据决定探索深度，无须凑固定路线数、先冻结完整设计或逐项尝试策略目录。具体做法见 [架构探索与经验复用](references/architecture-search-and-experience.md)。
+
 ## 4. 定位瓶颈并实验
 
 **遇到 kernel 优化瓶颈时，使用性能分析工具是必选步骤。** 例如收益停滞/落入噪声、出现明显回退、耗时显著偏离预期，或无法解释计算/访存/等待限制时，先采集当前目标 kernel 并分析，再决定下一轮修改；不能只靠继续扫 tile/stages、读源码或 ISA grep 代替。优先 XProf 采集和 XCompute 分析，目标不支持时用能回答同一问题的 hipprof/DTK 工具。
@@ -50,9 +60,11 @@ python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py -
 
 从 [性能分析入口](references/dcu_metrics_guide.md) 选择对应指南：[XProf/XCompute](references/xprof-xcompute-guide.md) 使用 sections/metrics 与 `.perf` 分析；[hipprof](references/hipprof-guide.md) 使用自己的 trace/PMC/SQTT 参数和产物。命令、格式、指标公式与查看器不能互换。自动采集只提供原件与发现信息，命令成功不代表分析完成；必须把观察到的指标/时间线连接到瓶颈假设与下一项实验，并对修改前后做同口径比较。
 
-1. 用 [策略目录](references/optimization_catalog.md) 和 registry 选 1..3 项，不凑数；每轴最多 2 项，跳过更高优先项写具体理由。准备替换/融合实现、瓶颈改法不明或迭代停滞且现有依据不足时，按共同契约主动查 HCU 案例/PR/源码，必要时查 KernelWiki；把参考机制变成本轮可验证的 HCU 假设，再选择改动。证据已足够时不重复检索。
+先判断本轮需要验证结构选择还是做局部调参。局部收益停滞、多个参数变体表现相近或与可信实现有无法解释的差距时，结合采集结果重新检查当前架构假设，用能区分候选解释的小探针决定继续、换路或停止；不能把扫参饱和直接当作硬件极限。结构重写允许必要的耦合改动，探索中的实现和已确认 best 分开保存。
+
+1. 标准局部调优用 [策略目录](references/optimization_catalog.md) 和 registry 选 1..3 项，不凑数；每轴最多 2 项，跳过更高优先项写具体理由。这些是现有脚本的计划约束，不是结构探索的候选全集或通用先后次序；目录无法表达的路线按 [脚本衔接](references/architecture-search-and-experience.md#5-与现有脚本衔接) 使用项目实验入口。准备替换/融合实现、瓶颈改法不明或迭代停滞且现有依据不足时，按共同契约主动查 HCU 案例/PR/源码，必要时查 KernelWiki；把参考机制变成本轮可验证的 HCU 假设，再选择改动。证据已足够时不重复检索。
 2. `methods.json` 按 [schema](templates/methods.schema.json)：方法 ID、改什么、为何可能有效、预期证据、精确目标证据、跳过理由。重试先前方法给 `retry_reason`。
-3. 在 `itervN/branches/b1..bK/kernel.<ext>` 写变体，同组方法一致、超参数不同；只修改用户任务范围的源码。
+3. 在 `itervN/branches/b1..bK/kernel.<ext>` 写局部变体，同组方法一致、超参数不同。不同结构路线分开记录和归因，可从保留的探索分支继续，不限于每次复制 best；当前脚本不自动调度这些路线。只修改用户任务范围的源码。
 4. 运行 `branch_explore.py --state RUN/state.json --iter N`，先检查正确性/稳定计时/多用例回退；失败的分支修复后再测，保留失败原因。OOM 不缩小原场景冒充成功。
 5. 低层路径变化按 [指令指南](references/hcu-isa-guide.md) 读实际目标 ISA、资源与同步语义；`sass_check.py` 的名字为兼容保留，输出是 HCU ISA 提示。反汇编失败、缺指令或目标符号不完整时，按指南的“实际工程反汇编失败时”沿用工程真实构建配置保留汇编，测试对应的新构建并记录产物关系；通用重编译回退仅作辅助。自动 grep 不算语义验证。
 6. 有必要做消融时，将只去掉单项方法且仍语义正确的文件放 `ablations/<id中点换成下划线>/kernel.<ext>`。多个方法相互依赖时写清归因限制。
@@ -74,4 +86,4 @@ python <skill>/scripts/orchestrate.py finalize --run-dir RUN
 
 按操作指南回到真实分派验证命中路径、fallback、单测/端到端与显存成本；失败/中止时也可 finalize，列出停止原因和未完成诊断。流程闭合不等于项目验收完成。
 
-报告与原始证据保留在当前任务工程。
+报告与原始证据保留在当前任务工程。收尾或切换会话前，更新可供下次读取的经验摘要：实测事实、适用条件、失败反例、未决假设、best 与值得保留的探索分支及原件入口；不只留下最终加速比。按 [经验留存](references/architecture-search-and-experience.md#4-让实测经验跨轮跨会话复用) 维护，下一次先核对再复用。

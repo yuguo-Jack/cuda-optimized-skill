@@ -139,3 +139,9 @@ Do not optimize this template before the iterative optimizer starts.
 ## Generated versus verified
 
 Automatic output supports simple independent contiguous FP32 only. Unknown contracts emit a blocked scaffold. Preserve the original oracle; do not change casts, scalars, layouts or tolerances just to fit the harness. Call original reference parameters by name and do not forward dimensions it does not accept. See the shared HCU workflow contract for multi-case validation and evidence handoff.
+
+## Optimization handoff
+
+`baseline_manifest.json` includes `optimization_handoff`: the generator origin, the `correctness_scaffold` role and an initial `architecture_performance_status: not_assessed`. These describe provenance and initial evidence, not a recommendation to retain the implementation architecture. Passing correctness later does not establish architecture quality.
+
+In the task handoff, identify conservative choices such as one-thread-per-output mapping, serial accumulation, repeated loads or intermediate writes, together with any actual measurements and unresolved assumptions. Preserve useful failed experiments as well. The optimizer may replace these choices directly while keeping the independent oracle and frozen comparison baseline; use its [architecture search and experience guide](../../hygon-hip-kernel-optimizer/references/architecture-search-and-experience.md).
