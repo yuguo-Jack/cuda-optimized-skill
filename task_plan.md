@@ -5,7 +5,7 @@
 1. 定位 D:/git/cuda-optimized-skill，核对 main、origin 和安装副本差异 — complete。
 2. 回写 9 份 Skill 更新，同步 HCU 流程图、说明与过程记录 — complete。
 3. CPU 回归、Skill 格式、链接/锚点与安装文件哈希核验 — complete（110 项 CPU 回归、3 Skill、34 Python AST、75 个链接及锚点、59 份安装文件哈希一致）。
-4. 提交并正常推送 origin/main，核对远端 SHA — in progress。
+4. 提交并正常推送 origin/main，核对远端 SHA — complete（主体 de6af9d 已推送并由 ls-remote 核对；随后提交本完成记录）。
 
 本次保留数学 oracle 和实验晋级规则；不修改 NVIDIA Skill，不刷新 HCU 知识库，不运行远端硬件实验。原工程是后续 Skill 修改与安装同步的源码入口。
 

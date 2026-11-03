@@ -110,3 +110,4 @@
 - 原全局代理失效；通过当前可用代理进行命令级 fetch 已成功，没有改写全局配置。发布状态以本轮最终核验为准。
 - 110 项 HCU CPU 回归通过（10.46 秒）；3 Skill 格式、34 Python AST、4 JSON、19 份 Markdown 的 75 个本地链接及锚点、git diff whitespace 检查均通过，没有执行 HCU 硬件实验。
 - 已通过原工程安装器再次备份并同步三个安装副本：5/39/15 共 59 文件 SHA256 一致，无额外文件。备份在 hygon_tmp/skill-backups/20261103_113515_004109；回归 XML、静态验证结果与同步前清单在本次同步目录。接下来提交并正常 push origin/main，核对远端 SHA。
+- 主体提交 de6af9df1edb1de5cf25678494dacac544afac39 已正常推送 origin/main；通过独立 ls-remote 核对远端完整 SHA 与本地一致，工作区干净。本条和计划状态仅补发布完成记录，不改变已验证的 Skill 内容；记录提交的最终远端核验在完成回复报告。
