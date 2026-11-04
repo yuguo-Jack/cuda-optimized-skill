@@ -30,10 +30,12 @@ export TORCHINDUCTOR_CACHE_DIR="$PWD/repro/cache/inductor"
 export TRITON_CACHE_DIR="$PWD/repro/cache/triton"
 export TRITON_CAPTURE_DIR="$PWD/repro/capture"
 export TORCH_LOGS="+inductor"
-export TORCHINDUCTOR_TRACE=1
+export TORCH_COMPILE_DEBUG=1
 # 在首次 compiled-model 执行前，把本 Skill scripts 加入 sys.path 并 import autotune_capture_patch
 python model_repro.py
 ```
+
+该示例按当前 HCU PyTorch 的 `torch._inductor.config.trace.enabled` 使用 `TORCH_COMPILE_DEBUG`；换版本先核对已安装源码的实际消费者。记录日志给出的 debug 目录，检查本次新生成的图与 kernel 源码，不能仅凭环境变量已设置或目录存在认定捕获成功。编译缓存命中也不保证重新导出调试文件；确需重编时只使用本任务独立缓存，不删除共享缓存。调试 trace 与下述 autotune 输入快照分别检查，不能相互替代。
 
 捕获补丁依赖 TorchInductor 私有 API；不兼容时按已安装源码适配或写最小独立 repro，不能假装捕获成功。捕获在执行/autotune 前保存完整 storage、shape、stride、offset 与同 dtype alias，独立目录保存源哈希与元数据，避免同名 kernel 覆盖。混合 dtype storage 或不可序列化 launcher 参数明确失败并留日志。
 
