@@ -27,11 +27,13 @@ def parse_log(path: str) -> dict:
     current: dict | None = None
     in_table = False
 
-    for raw in Path(path).read_text(encoding="utf-8", errors="ignore").splitlines():
+    for line_no, raw in enumerate(Path(path).read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
         line = TS_PREFIX_RE.sub("", raw.strip("\n"))
         m = START_RE.search(line)
         if m:
             current = {
+                "record_index": len(kernels),
+                "log_line": line_no,
                 "kind": m.group("kind"),
                 "kernel": m.group("kernel"),
                 "configs": int(m.group("configs")),
@@ -98,18 +100,26 @@ def parse_log(path: str) -> dict:
 
 
 def write_markdown(summary: dict, out: str) -> None:
-    lines = ["# Autotune Summary", ""]
-    for item in summary["kernels"]:
+    lines = ["# Autotune Summary", "", "Screening results only; independently confirm correctness and performance.", ""]
+    for index, item in enumerate(summary["kernels"]):
         best = next((c for c in item["config_timings"] if c.get("best")), None)
         lines.append(f"## {item['kernel']}")
         lines.append("")
         lines.append(f"- kind: `{item['kind']}`")
         lines.append(f"- configs: `{item['configs']}`")
+        lines.append(f"- record_index: `{index}`; log line: `{item.get('log_line', '')}`")
         if best:
             lines.append(f"- best: `{best['time_ms']:.4f} ms` with `{best['config']}`")
-        for key in ("effective_bandwidth", "hw_peak_bandwidth", "bandwidth_utilization"):
+        for key in ("total_tensor_bytes", "footprint_rate_estimate", "hw_peak_bandwidth", "footprint/peak_ratio_(not_hbm_utilization)"):
             if key in item["metrics"]:
                 lines.append(f"- {key}: `{item['metrics'][key]}`")
+        for key in ("effective_bandwidth", "bandwidth_utilization"):
+            if key in item["metrics"]:
+                lines.append(f"- legacy log field `{key}`: `{item['metrics'][key]}`; not measured HBM utilization")
+        if item["metrics"]:
+            lines.append("- Footprint/time is an estimate; tensor allocation bytes are not measured memory traffic.")
+        for key, value in item.get("artifacts", {}).items():
+            lines.append(f"- {key}: `{value}`")
         if item["inputs"]:
             lines.append("")
             lines.append("| Arg | Shape | Dtype | Stride |")

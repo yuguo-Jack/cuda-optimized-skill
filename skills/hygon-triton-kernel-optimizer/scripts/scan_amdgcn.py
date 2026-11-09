@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -57,18 +58,22 @@ def scan(path: str, kernel: str = "") -> dict:
     files = []
     unresolved = []
     for file in _iter_files(root):
-        text = file.read_text(encoding="utf-8", errors="ignore")
+        raw = file.read_bytes()
+        text = raw.decode("utf-8", errors="ignore")
         parsed = parse_isa(text, kernel)
         if parsed["reason"]:
             unresolved.append({"file": str(file), "reason": parsed["reason"], "symbols": parsed["symbols"]})
             continue
-        instruction_text = "\n".join(r["text"] for r in parsed["instructions"])
-        counts = {name: len(re.findall(pattern, instruction_text)) for name, pattern in PATTERNS.items()}
-        if not any(counts.values()):
+        if not parsed["instructions"]:
+            unresolved.append({"file": str(file), "reason": "no recognized instructions", "symbols": parsed["symbols"]})
             continue
+        # Operands/branch labels can contain instruction-family names too.
+        instruction_text = "\n".join(r["mnemonic"] for r in parsed["instructions"])
+        counts = {name: len(re.findall(pattern, instruction_text)) for name, pattern in PATTERNS.items()}
         for name, value in counts.items():
             totals[name] += value
-        files.append({"file": str(file), "counts": counts, "scope": parsed["scope"], "symbols": parsed["symbols"],
+        files.append({"file": str(file.resolve()), "sha256": hashlib.sha256(raw).hexdigest(),
+                      "counts": counts, "scope": parsed["scope"], "symbols": parsed["symbols"],
                       "selected_symbol": parsed["selected_symbol"], "instruction_sites": len(parsed["instructions"])})
 
     buffer_ops = sum(totals[k] for k in totals if k.startswith("buffer_load") or k.startswith("buffer_store"))
@@ -82,10 +87,14 @@ def scan(path: str, kernel: str = "") -> dict:
         "wide_buffer_observed": wide_buffer_ops > 0,
         "atomic_observed": totals["atomic"] > 0,
     }
+    if not files:
+        classification = dict.fromkeys(classification)  # Unknown is not false/zero.
     return {
         "root": str(root.resolve()),
         "kernel_filter": kernel,
         "files_scanned": len(files),
+        "status": "partial" if files and unresolved else "scanned" if files else "unresolved",
+        "reason": None if files else "No assembly instructions were resolved for this input/filter",
         "totals": totals,
         "classification": classification,
         "scope": "static instruction presence, not dynamic hotness or performance; LLVM IR excluded",

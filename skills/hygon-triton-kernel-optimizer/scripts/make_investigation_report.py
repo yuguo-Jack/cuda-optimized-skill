@@ -11,29 +11,70 @@ from pathlib import Path
 def _read_json(path: str) -> dict:
     if not path:
         return {}
-    p = Path(path)
-    if not p.is_file():
-        return {}
-    return json.loads(p.read_text(encoding="utf-8"))
+    value = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    if not isinstance(value, dict):
+        raise ValueError(f"Expected a JSON object: {path}")
+    return value
 
 
-def _pick_kernel(summary: dict, kernel: str) -> dict:
+def _pick_kernel(summary: dict, kernel: str, record_index: int | None = None) -> dict:
     kernels = summary.get("kernels", [])
-    if kernel:
-        for item in kernels:
-            if item.get("kernel") == kernel:
-                return item
-        return {}
-    return kernels[0] if kernels else {}
+    if record_index is not None:
+        if not 0 <= record_index < len(kernels):
+            raise ValueError("--record-index is outside the autotune summary")
+        item = kernels[record_index]
+        if kernel and item.get("kernel") != kernel:
+            raise ValueError("--record-index does not match --kernel")
+        return item
+    matches = [item for item in kernels if not kernel or item.get("kernel") == kernel]
+    if len(matches) > 1:
+        raise ValueError("Ambiguous autotune records; select --kernel and/or --record-index (zero-based summary position)")
+    return matches[0] if matches else {}
+
+
+def _scoped_evidence(meta: dict, isa: dict, kernel: str, notes: list[str]) -> tuple[dict, dict]:
+    """Avoid attributing file/directory aggregates to a particular kernel.
+
+    Names only establish a reporting scope, not matching builds/inputs. Actual
+    source, capture and loaded-object identity still require the investigation.
+    """
+    names = set(meta.get("inductor_kernel_names") or meta.get("defined_functions") or [])
+    if meta and names != {kernel}:
+        notes.append("Metadata kernel identity is missing, ambiguous or differs from the target; metadata fields were omitted. Inspect a single target source.")
+        meta = {}
+    files = isa.get("files", [])
+    if isa:
+        for item in isa.get("unresolved", []):
+            notes.append(f"Unresolved ISA: `{item.get('file', '')}`: {item.get('reason', 'unknown')}")
+        if len(files) != 1:
+            notes.append("ISA evidence has no resolved file or multiple assembly artifacts; aggregate counts were omitted. Select the actual target build/configuration.")
+            isa = {}
+        else:
+            item = files[0]
+            selected = item.get("selected_symbol")
+            matches = ((selected and (selected == kernel or isa.get("kernel_filter") == kernel))
+                       or (not selected and set(item.get("symbols", [])) == {kernel}))
+            if not matches:
+                notes.append("ISA symbol scope is unbound or differs from the target; counts were omitted. Rescan using the actual target symbol and verify its dispatch mapping.")
+                isa = {}
+    return meta, isa
 
 
 def _metric(item: dict, key: str) -> str:
     return str(item.get("metrics", {}).get(key, ""))
 
 
-def build_report(autotune: dict, meta: dict, isa: dict, kernel: str) -> str:
-    item = _pick_kernel(autotune, kernel)
-    kernel_name = kernel or item.get("kernel") or ", ".join(meta.get("inductor_kernel_names", [])) or "unknown"
+def build_report(autotune: dict, meta: dict, isa: dict, kernel: str, record_index: int | None = None) -> str:
+    item = _pick_kernel(autotune, kernel, record_index)
+    names = set(meta.get("inductor_kernel_names") or meta.get("defined_functions") or [])
+    kernel_name = kernel or item.get("kernel") or (next(iter(names)) if len(names) == 1 else "unknown")
+    notes = []
+    if kernel and autotune.get("kernels") and not item:
+        notes.append("Requested kernel was not found in the autotune summary; no other kernel's timings or inputs were reused.")
+    selected_index = next((i for i, value in enumerate(autotune.get("kernels", [])) if value is item), "")
+    source_file, source_hash = meta.get("file", ""), meta.get("source_sha256", "")
+    isa_root, isa_status = isa.get("root", ""), isa.get("status", "unknown" if isa else "not supplied")
+    meta, isa = _scoped_evidence(meta, isa, kernel_name, notes)
     best = next((c for c in item.get("config_timings", []) if c.get("best")), {})
     ptr_args = meta.get("ptr_hint_status") or meta.get("ptr_args") or []
     isa_cls = isa.get("classification", {})
@@ -51,6 +92,9 @@ def build_report(autotune: dict, meta: dict, isa: dict, kernel: str) -> str:
     )
 
     load_summary = ", ".join(f"{k}={v}" for k, v in totals.items() if v)
+    if not load_summary and isa:
+        load_summary = "No matching tracked instruction families in the resolved instructions"
+    assembly_sources = "; ".join(f"{f.get('file', '')} / {f.get('sha256', '')}" for f in isa.get("files", []))
 
     lines = [
         f"# Triton Investigation: {kernel_name}",
@@ -64,6 +108,10 @@ def build_report(autotune: dict, meta: dict, isa: dict, kernel: str) -> str:
         "## 2. Environment and Sources",
         "",
         "Exact gfx/Torch/Triton/compiler/repository SHA, source IDs and capture hash: TODO",
+        f"Autotune log: `{autotune.get('log', '')}`; record index: `{selected_index}`; log line: `{item.get('log_line', '')}`.",
+        f"Captured source: `{item.get('artifacts', {}).get('kernel_source_saved', '')}`; inputs: `{item.get('artifacts', {}).get('inputs_saved', '')}`.",
+        f"Metadata input: `{source_file}`; SHA256: `{source_hash}`. ISA input: `{isa_root}`; scan status: `{isa_status}`.",
+        "Matching names alone do not establish matching builds or inputs; verify capture/configuration, source/ISA hashes and the actually loaded artifact before joining evidence.",
         "If HCU cases/PRs or NVIDIA KernelWiki informed a candidate: cite source/commit, original conditions, HCU differences, hypothesis and measured outcome; otherwise omit.",
         "",
         "## 3. Code and Dispatch",
@@ -111,7 +159,8 @@ def build_report(autotune: dict, meta: dict, isa: dict, kernel: str) -> str:
         f"| Pointer arguments | {ptr_text or 'TODO'} |",
         f"| `tt.divisibility` status | indices `{meta.get('divisibility_indices', [])}` |",
         f"| `tt.pointer_range` status | indices `{meta.get('pointer_range_indices', [])}` |",
-        f"| Static AMDGCN load/store counts | {load_summary or 'TODO'} |",
+        f"| Static AMDGCN instruction-family counts | {load_summary or 'TODO'} |",
+        f"| Selected assembly file / SHA256 | {assembly_sources or 'TODO'} |",
         f"| `buffer_load/store_dwordx4` observed | `{isa_cls.get('wide_buffer_observed', '')}` |",
         f"| Static buffer-ops heuristic | `{isa_cls.get('buffer_ops_dominant', '')}`; not a dynamic bottleneck classification |",
         f"| `tl.assume` added or already present | count `{meta.get('counts', {}).get('tl_assume', '')}` |",
@@ -125,13 +174,12 @@ def build_report(autotune: dict, meta: dict, isa: dict, kernel: str) -> str:
         "## Notes",
         "",
     ]
-    if kernel and autotune.get("kernels") and not item:
-        lines.append("- Requested kernel was not found in the autotune summary; no other kernel's timings or inputs were reused.")
+    lines.extend(f"- {note}" for note in notes)
     for note in meta.get("notes", []):
         lines.append(f"- {note}")
     if isa_cls.get("atomic_observed"):
         lines.append("- Atomic instructions observed in AMDGCN scan.")
-    if not meta.get("notes") and not isa_cls.get("atomic_observed"):
+    if not notes and not meta.get("notes") and not isa_cls.get("atomic_observed"):
         lines.append("- TODO")
     return "\n".join(lines) + "\n"
 
@@ -142,15 +190,20 @@ def main() -> None:
     parser.add_argument("--meta", default="")
     parser.add_argument("--isa", default="")
     parser.add_argument("--kernel", default="")
+    parser.add_argument("--record-index", type=int, default=None, help="Zero-based record position in the autotune summary")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
-    report = build_report(
-        _read_json(args.autotune_summary),
-        _read_json(args.meta),
-        _read_json(args.isa),
-        args.kernel,
-    )
+    try:
+        report = build_report(
+            _read_json(args.autotune_summary),
+            _read_json(args.meta),
+            _read_json(args.isa),
+            args.kernel,
+            args.record_index,
+        )
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(report, encoding="utf-8")

@@ -50,11 +50,116 @@ def test_triton_report_keeps_screening_and_static_hints_separate():
         {"best": True, "time_ms": 0.125, "config": "tile=64"},
     ]}]}
     for classification, value in (({"atomic_observed": True}, ""), ({"buffer_ops_dominant": False}, "False")):
-        text = report.build_report(summary, {}, {"classification": classification}, "target")
+        isa = {"classification": classification, "kernel_filter": "target",
+               "files": [{"selected_symbol": "target", "file": "target.amdgcn"}]}
+        text = report.build_report(summary, {}, isa, "target")
         assert "Autotune screening time (not independent confirmation) | `0.125`" in text
         assert f"Static buffer-ops heuristic | `{value}`" in text
         assert "`global_*` or `flat_*` still dominant" not in text
         assert "Independent before/after samples" in text
+
+
+def test_triton_report_selects_capture_not_first_same_name(tmp_path):
+    log = tmp_path / "autotune.log"
+    log.write_text("[AUTOTUNE] kernel=target configs=1\n x: shape=[64] dtype=float32 stride=[1]\n"
+                   "[AUTOTUNE] kernel=target configs=1\n x: shape=[4096] dtype=float32 stride=[1]\n"
+                   " Inputs saved : capture-b.pt\n", encoding="utf-8")
+    summary = load("summarize_autotune_log", TRITON).parse_log(str(log))
+    report = load("make_investigation_report", TRITON)
+    for kernel in ("target", ""):
+        with pytest.raises(ValueError, match="Ambiguous"):
+            report.build_report(summary, {}, {}, kernel)
+    text = report.build_report(summary, {}, {}, "target", 1)
+    assert "[4096]" in text and "[64]" not in text
+    assert "capture-b.pt" in text and "record index: `1`" in text and "log line: `3`" in text
+    for index in (-1, 2):
+        with pytest.raises(ValueError, match="outside"):
+            report.build_report(summary, {}, {}, "target", index)
+    with pytest.raises(ValueError, match="does not match"):
+        report.build_report(summary, {}, {}, "other", 0)
+
+
+def test_triton_report_does_not_merge_foreign_or_aggregate_evidence(tmp_path):
+    assembly = tmp_path / "foreign.amdgcn"
+    assembly.write_text(".type foreign,@function\nforeign:\n buffer_load_dwordx4 v0, v1, s[0:3]\n")
+    scan = load("scan_amdgcn", TRITON).scan(str(assembly), "foreign")
+    source = tmp_path / "foreign.py"
+    source.write_text("def foreign(x):\n    tl.assume(x > 0)\n")
+    meta = load("inspect_triton_meta", TRITON).inspect_file(str(source))
+    text = load("make_investigation_report", TRITON).build_report({}, meta, scan, "target")
+    assert "Metadata kernel identity" in text and "ISA symbol scope" in text
+    assert "buffer_load_dwordx4=1" not in text and "count `1`" not in text
+    assert str(assembly) in text and str(source) in text
+    assembly.write_text(".type target,@function\ntarget:\n buffer_load_dwordx4 v0, v1, s[0:3]\n")
+    (tmp_path / "another.amdgcn").write_text(assembly.read_text())
+    aggregate = load("scan_amdgcn", TRITON).scan(str(tmp_path), "target")
+    text = load("make_investigation_report", TRITON).build_report({}, {}, aggregate, "target")
+    assert "multiple assembly artifacts" in text and "buffer_load_dwordx4=2" not in text
+
+
+def test_triton_report_keeps_target_file_hash_and_unresolved_gaps(tmp_path):
+    source = tmp_path / "target.py"
+    source.write_text("def target(x):\n    tl.assume(x > 0)\n")
+    assembly = tmp_path / "target.amdgcn"
+    assembly.write_text(".type target,@function\ntarget:\n buffer_load_dwordx4 v0, v1, s[0:3]\n")
+    (tmp_path / "bad.amdgcn").write_text(".type other,@function\nother:\n s_endpgm\n")
+    scan = load("scan_amdgcn", TRITON).scan(str(tmp_path), "target")
+    meta = load("inspect_triton_meta", TRITON).inspect_file(str(source))
+    assert scan["status"] == "partial"
+    text = load("make_investigation_report", TRITON).build_report({}, meta, scan, "target")
+    assert "Unresolved ISA:" in text and "partial" in text and "buffer_load_dwordx4=1" in text
+    for file in (assembly, source):
+        assert hashlib.sha256(file.read_bytes()).hexdigest() in text
+
+
+@pytest.mark.parametrize("content", [None, "// buffer_load_dwordx4 is only a comment\n", ".type other,@function\nother:\n s_endpgm\n"])
+def test_triton_scan_missing_or_unparsed_is_unknown(tmp_path, content):
+    file = tmp_path / "target.amdgcn"
+    if content is not None:
+        file.write_text(content)
+    scan = load("scan_amdgcn", TRITON).scan(str(file), "target")
+    assert scan["files_scanned"] == 0 and scan["status"] == "unresolved"
+    assert all(value is None for value in scan["classification"].values())
+    text = load("make_investigation_report", TRITON).build_report({}, {}, scan, "target")
+    assert "Static buffer-ops heuristic | ``" in text and "no resolved file" in text
+
+
+def test_triton_scan_counts_mnemonics_not_labels_and_keeps_valid_zero(tmp_path):
+    file = tmp_path / "target.amdgcn"
+    file.write_text(".type target,@function\ntarget:\n s_branch buffer_load_dwordx4\n s_endpgm\n")
+    scan = load("scan_amdgcn", TRITON).scan(str(file), "target")
+    assert scan["status"] == "scanned" and scan["files_scanned"] == 1
+    assert scan["files"][0]["instruction_sites"] == 2
+    assert not any(scan["totals"].values())
+    assert scan["classification"]["wide_buffer_observed"] is False
+
+
+@pytest.mark.parametrize("contents", [None, "[]", "not json"])
+def test_triton_report_cli_rejects_explicit_bad_inputs(tmp_path, contents):
+    src, out = tmp_path / "meta.json", tmp_path / "report.md"
+    if contents is not None:
+        src.write_text(contents)
+    result = subprocess.run([sys.executable, str(TRITON / "make_investigation_report.py"),
+                             "--meta", str(src), "--out", str(out)], capture_output=True, text=True)
+    assert result.returncode != 0 and not out.exists()
+
+
+def test_autotune_markdown_keeps_estimates_and_legacy_metrics_distinct(tmp_path):
+    log = tmp_path / "autotune.log"
+    log.write_text("[AUTOTUNE] kernel=target configs=1\n"
+                   " Footprint rate estimate : 130 GB/s\n"
+                   " Footprint/peak ratio (not HBM utilization) : 15%\n"
+                   " Kernel source saved : source.py\n"
+                   "[AUTOTUNE] kernel=target configs=1\n"
+                   " Effective bandwidth : 140 GB/s\n"
+                   " Bandwidth utilization : 20%\n")
+    parser = load("summarize_autotune_log", TRITON)
+    out = tmp_path / "summary.md"
+    parser.write_markdown(parser.parse_log(str(log)), str(out))
+    text = out.read_text(encoding="utf-8")
+    assert "footprint_rate_estimate: `130 GB/s`" in text and "`15%`" in text
+    assert "record_index: `1`" in text and "source.py" in text
+    assert "legacy log field `bandwidth_utilization`: `20%`; not measured HBM utilization" in text
 
 
 def write(path, obj):

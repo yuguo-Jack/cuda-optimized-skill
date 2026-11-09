@@ -87,4 +87,6 @@ autotune 最快候选需脱离筛选过程再次独立与基线对照，交替�
 
 `make_investigation_report.py` 生成待填写草稿；依 [报告模板](references/report_template.md) 补环境/源码、实际使用的资料出处、调用链/目录、捕获完整性、正确性、实际样本、瓶颈证据、候选失败、单 kernel 与模型结果、适用/回退条件。
 
+同名多次捕获、多个编译产物或解析缺口，按 [调查步骤](references/investigation_workflow.md#5-回到模型) 选择记录并检查报告 Notes，不能把其他输入/配置的证据拼到当前候选。
+
 footprint rate 不是 HBM bandwidth utilization；缺少 ISA/消融/归一化计数时标明机制待证。没有 HCU 运行只报告静态结果。报告与原始证据保留在当前任务工程。

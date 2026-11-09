@@ -40,6 +40,8 @@ python <skill>/scripts/scan_amdgcn.py repro/artifacts --kernel KERNEL --json-out
 
 按 [HCU 指令指南](../../hygon-hip-kernel-optimizer/references/hcu-isa-guide.md) 核对精确 gfx 的指令形式、布局和同步。扫描的 `--kernel` 是实际汇编符号；缺失/歧义保持 unresolved，不用文件名代替。metadata 仅覆盖部分格式，空项不证明没优化；LLVM IR 和静态指令计数也不能替代最终 ISA 或动态热点。
 
+`isa_scan.json` 的 `status` 区分 scanned、partial 和 unresolved；没有解析到指令时 classification 为 null，不能解释为“没有这类指令”。目录可能包含不同配置/构建的同名 kernel，合计值只用于找线索；分析目标性能或生成报告前，选定实际加载的单个汇编文件。源码和 ISA 摘要保留文件哈希，但同名或哈希记录本身不证明两者来自同次构建。
+
 反汇编失败或汇编不完整时，沿该指南的工程导出流程保存本次实际 JIT 特化的汇编/代码对象，核对符号、编译选项及加载关系；若重新编译则重测新产物，不借用旧缓存或旧计时。buffer ops、dot、assume、warps/stages 等前提不明或实现改变时按实际工具链做针对性探针，已有同条件证据可复用；失败不全局强开环境变量。
 
 流水疑点按 [汇编分析指南](../../hygon-hip-kernel-optimizer/references/assembly-guided-optimization.md) 关联热点和依赖。读 ISA 可以只指导 Triton/inline asm/lowering；直接重建对象则走专用 harness，保留 oracle、ABI/资源和多用例验证，并确认分派未被重新编译覆盖。不要直接改共享 JIT 缓存；本仓捕获/replay/扫描工具不是二进制改写或差分验证器。
@@ -53,3 +55,5 @@ baseline/variant 同 shape、数据、seed、布局、stream、恢复和测速�
 ## 5. 回到模型
 
 核对 graph break、额外转换、launch、通信/overlap 与端到端结果，必要时比较最小 eager 区域或模型重写。先证明语义保持和整体收益，再保留方案。报告引用原件、目录/符号、失败与回退，不把 standalone最快配置当整个模型收益。
+
+`make_investigation_report.py` 可用 `--autotune-summary`、`--meta`、`--isa` 生成草稿。日志有多条同名记录时，按摘要中的输入、产物路径及 `record_index` 选择 `--record-index N`（从 0 开始），不默认选第一条。未提供的可选证据留空；显式传入的文件不存在或 JSON 无效则报错。不同目标、多个汇编产物或无法确定范围的字段不自动拼成单 kernel 结论，缺口在 Notes 中保留；确认源码/输入/config/符号与实际 dispatch 的关系后补充解释。

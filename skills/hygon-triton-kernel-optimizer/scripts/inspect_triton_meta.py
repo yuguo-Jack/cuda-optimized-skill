@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -43,7 +44,8 @@ def _extract_hint_indices(text: str, key: str) -> list[int]:
 
 
 def inspect_file(path: str) -> dict:
-    text = Path(path).read_text(encoding="utf-8", errors="ignore")
+    raw = Path(path).read_bytes()
+    text = raw.decode("utf-8", errors="ignore")
     signature = {}
     m = SIGNATURE_RE.search(text)
     if m:
@@ -86,6 +88,8 @@ def inspect_file(path: str) -> dict:
 
     return {
         "file": str(Path(path).resolve()),
+        "source_sha256": hashlib.sha256(raw).hexdigest(),
+        "scope": "source-file text heuristics, not compiled instructions or dynamic evidence",
         "defined_functions": DEF_RE.findall(text),
         "inductor_kernel_names": KERNEL_NAME_RE.findall(text),
         "signature": signature,
