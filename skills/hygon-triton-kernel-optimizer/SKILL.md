@@ -51,6 +51,8 @@ python <skill>/scripts/run_captured_kernel.py repro/capture/UNIQUE/KERNEL.py --j
 
 ## 3. 定位机制并调优
 
+首次深入热点、准备结构变化，或出现停滞/回退/热点转移时，按 [分析深度选择](../hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md#按难度与进度选择分析深度) 主动选择上限评估、融合分析、汇编流水分析中的相关项。结合阶段/布局/依赖复杂度、收益空间、已有证据和进度展开；复杂问题可提前分析，简单且证据充分时直接实验，不要求每轮三项全做。触发后若暂缓，简记原因和重开条件；结果进入当前特化的实现、正确性/性能对照与真实模型验证。
+
 **遇到 kernel 优化瓶颈时必须使用性能分析工具。** 调参收益停滞/落入噪声、明显回退或耗时原因不清时，先用 XProf/XCompute（或目标支持的 hipprof/DTK 工具）分析实际目标 kernel，再提出下一轮修改。autotune 最佳时间、源码阅读和静态 ISA 扫描不能代替性能采集与解读。
 
 按 [性能分析入口](../hygon-hip-kernel-optimizer/references/dcu_metrics_guide.md) 选择 [XProf/XCompute](../hygon-hip-kernel-optimizer/references/xprof-xcompute-guide.md) 或 [hipprof](../hygon-hip-kernel-optimizer/references/hipprof-guide.md) 的独立操作步骤，确认 kernel/dispatch 与输入，检查计算、访存、资源和等待。需要解释流水空泡时按当前工具支持的 SQTT 方式采集并关联 ISA，不互换两套参数/格式。工具或权限受阻则记录待采命令、标记诊断未完成，可继续独立的正确性准备，不把推测写成工具结论。

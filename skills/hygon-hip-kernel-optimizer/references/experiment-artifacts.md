@@ -65,6 +65,10 @@ HIP 每次构建的 `.hcu-build/<id>/kernel.so` 独立留存；`bench.build` 记
 
 `collection_status=collected` 仅说明采到预期原件；XProf 的 `degraded=true` 可表示自动转换尚未完成，不等于一定采集失败。`analysis_status=not_reviewed` 是程序初始状态；在 `analysis.md` 另写准确 dispatch、指标定义、结论及下一项实验，不修改原始采集记录冒充分析。换工具/指标组后需重采可比较的 baseline。失败/重试都会在 summary 展示，已有记录不会因后续成功而消失。
 
+`analysis.md` 同时承接 [按需分析决策](hcu-workflow-contract.md#按难度与进度选择分析深度)：实际选择或复用的上限/融合/汇编流水证据、如何影响候选、实测是否支持假设，以及已触发但暂缓的问题和重开条件。直接引用已有原件/分析即可，不新增逐轮完整表格；`roofline.json` 的预算和 `isa_check.json` 的模式提示不等于完成上限建模或流水解释。
+
+标准编排仍执行既有的采集与验证步骤；按需选择的是 Agent 的分析范围和深度，不把自动生成摘要理解成每轮必须重建三套分析，也不把摘要存在当成解释完成。
+
 ### 方法机制
 
 自动 ISA regex 只生成线索。Agent 读实际产物后，在迭代目录写独立 `mechanism-review.json`：

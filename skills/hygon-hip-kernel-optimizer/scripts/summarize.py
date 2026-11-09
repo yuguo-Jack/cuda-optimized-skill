@@ -236,7 +236,8 @@ def render(state_path: str, out_path: str) -> None:
     lines.append("")
     lines.append("- Which optimizations moved the needle and why (name the actual tool/version, native artifacts, metric definitions, and attribution evidence).")
     lines.append("- Which ones were no-ops or regressions, and plausible reasons.")
-    lines.append("- How roofline gaps shifted across iterations (did the bound type change?).")
+    lines.append("- If used, link ceiling estimates, fusion/dataflow trade-offs or ISA-pipeline analysis in analysis.md to the candidate and measured outcome. State reused evidence and reason/reopen condition for triggered-but-deferred issues; no full analysis checklist each round. ISA analysis may guide source changes without rewriting a code object.")
+    lines.append("- Revisit a changed bottleneck or an end-to-end counterexample; unknown roofline fields and static ISA hints are not completed diagnosis or proof of a hardware limit.")
     lines.append("- Next steps if the user wants more iterations.")
     lines.append("")
 

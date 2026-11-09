@@ -57,4 +57,6 @@ flat ABI 每指针容量至少 max(MK,KN,MN)，上述例子为 32768。benchmark
 
 进入性能优化且遇到 kernel 瓶颈时，按 HIP Skill 的 [性能分析指南](../hygon-hip-kernel-optimizer/references/dcu_metrics_guide.md) 使用工具采集分析；生成基线本身不要求完整 profiling。
 
+已有上限估算、融合边界或编译后流水疑点时，一并交接其条件、证据和待解问题；下游按 [分析深度选择](../hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md#按难度与进度选择分析深度) 决定先查哪一项，不要求基线生成阶段补齐三类分析。保留原 oracle，避免优化入口重复调查或把未验证的融合结构当成性能定论。
+
 交接包含 contract、原参考与adapter、manifest未解决项、基线源码、编译/正确性/测速状态、工作负载矩阵、实际使用的资料引用和远端运行方式，保存在当前任务工程。标明生成来源、为易验证而采用的结构假设，以及已有实测/失败记录；没有架构性能证据就保持未评估，不把脚手架写成推荐路线。下游按 [架构探索与经验复用](../hygon-hip-kernel-optimizer/references/architecture-search-and-experience.md) 判断结构再投入调优。参阅 [转换与适配要点](references/ref_to_baseline_patterns.md)。

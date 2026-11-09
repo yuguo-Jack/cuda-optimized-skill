@@ -40,6 +40,8 @@ kernel 优化收益停滞/落入噪声、明显回退、耗时偏离预期，或
 
 raw counter 大小不能排序为跨指标“严重程度”。SQTT 中字符串或 waitcnt/branch 出现次数只是发现线索。分配字节/时间不是 HBM 流量。现有 parser 保留这些原件，不自动判定瓶颈。
 
+取得观测后，按 [分析深度选择](hcu-workflow-contract.md#按难度与进度选择分析深度) 把疑点转成上限、融合/数据流或汇编流水分析，再形成下一项实验；已有证据足够则直接推进。采集完成、`roofline.json` 或 ISA 扫描结果都不自动代表完成了这三类解释，也不要求每轮把它们全部展开。
+
 FLOPs/HBM 双轴不能解释当前时间时，按需展开 [资源参照与数据流成本](performance-limits-and-fusion.md)：VALU/特殊函数、VMEM 请求与缓存层级、LDS、依赖链、网格覆盖及派发。TA busy 可能包含返回等待，单 wave stall 不等于整 kernel 可回收时间；活跃 CU 与整卡效率分别说明。复用其他工程的计数器解析前核对当前 gfx/工具版本和归一化语义，不能把缺项补成零或把原始计数直接塞入 normalized。
 
 

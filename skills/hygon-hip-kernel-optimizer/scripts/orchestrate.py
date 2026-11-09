@@ -23,6 +23,14 @@ from paired_measurement import compare
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 KERNEL_EXTS = (".hip", ".cu", ".cpp", ".cc", ".cxx", ".py")
+ANALYSIS_GUIDANCE = (
+    "Use the HIP Skill's references/hcu-workflow-contract.md analysis-depth guidance: "
+    "choose relevant ceiling, fusion/dataflow or ISA-pipeline analysis by complexity, "
+    "evidence and progress. Reuse comparable evidence; do not require all three each round. "
+    "Connect the finding to the next experiment; record a reason/reopen condition only "
+    "for a triggered issue being deferred. Roofline budgets and ISA scans are hints, "
+    "not completed analysis. "
+)
 
 
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
@@ -160,12 +168,13 @@ def cmd_setup(args):
         "env": env_json,
         "early_stop": early_stop,
         "next_step": (
+            ANALYSIS_GUIDANCE +
             "Codex should now read iterv1/roofline.json (for axis budgets), "
             "iterv1/dcu_top.json, and state.json, then write "
             f"iterv1/branches/b{{1..K}}/kernel.<ext>, iterv1/methods.json, "
             "and iterv1/analysis.md. "
             "After that, run: orchestrate.py close-iter --run-dir <run_dir> --iter 1"
-        ) if not early_stop else "Near roofline — consider stopping.",
+        ) if not early_stop else ANALYSIS_GUIDANCE + "Confirm task targets and evidence before stopping.",
     }, indent=2))
 
 
@@ -220,11 +229,12 @@ def cmd_open_iter(args):
         "branches_dir": branches_dir,
         "num_branches": num_branches,
         "next_step": (
+            ANALYSIS_GUIDANCE +
             f"Codex should read iterv{args.iter}/roofline.json and dcu_top.json, "
-            f"write {num_branches} branch kernels under iterv{args.iter}/branches/b{{1..{num_branches}}}/kernel.<ext>, "
+            f"write up to {num_branches} justified branch kernels under iterv{args.iter}/branches/b{{1..{num_branches}}}/kernel.<ext>, "
             f"plus iterv{args.iter}/methods.json and iterv{args.iter}/analysis.md. "
             f"Then run: orchestrate.py close-iter --run-dir {args.run_dir} --iter {args.iter}"
-        ) if not early_stop else "Near roofline — consider stopping.",
+        ) if not early_stop else ANALYSIS_GUIDANCE + "Confirm task targets and evidence before stopping.",
     }, indent=2))
 
 
@@ -384,6 +394,7 @@ def cmd_close_iter(args):
         "next_iter": next_iter if next_iter <= state["iterations_total"] else None,
         "early_stop": early_stop,
         "state": state_path,
+        "analysis_guidance": ANALYSIS_GUIDANCE + "Use new results to revisit only the relevant assumptions, or report the remaining limits when closing the task.",
     }, indent=2))
 
 
