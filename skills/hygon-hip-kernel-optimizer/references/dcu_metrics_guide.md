@@ -32,13 +32,15 @@ kernel 优化收益停滞/落入噪声、明显回退、耗时偏离预期，或
 | --- | --- | --- |
 | VALU/MMAC 路径、计算吞吐 | dtype、理论/可达峰值、转换开销、实际 ISA | 矩阵路径、精度、tile、流水 |
 | HBM/VMEM、cache、访存请求 | 实际 traffic、层级、命中与合并的公式 | 布局、向量化、复用、融合 |
-| dependency/issue wait | 来自 trace 还是定义明确的派生指标 | 独立指令、预取、同步范围 |
+| dependency/issue wait | 来自 trace 还是定义明确的派生指标；是否在关键路径、能否被其他 wave 掩盖 | 独立指令、预取、同步范围 |
 | VGPR/LDS/scratch 与 occupancy | 每 CU 理论上限、实际驻留、网格覆盖、spill | live range、tile/stages、launch |
 | SQ_WAVES | 累计波数，不是驻留波数 | 配合网格、CU/wave 资源解释 |
-| LDS 活动/bank conflict | 单位、范围、swizzle和矩阵读布局 | LDS padding、分块、正确同步 |
+| LDS 活动/bank conflict | 单位、范围、swizzle和矩阵读布局；冲突是否形成实际暴露等待 | LDS padding、分块、正确同步 |
 | launch次数/系统时间线 | host/device/通信与overlap、真实端到端热点 | 融合、批处理、调度 |
 
 raw counter 大小不能排序为跨指标“严重程度”。SQTT 中字符串或 waitcnt/branch 出现次数只是发现线索。分配字节/时间不是 HBM 流量。现有 parser 保留这些原件，不自动判定瓶颈。
+
+FLOPs/HBM 双轴不能解释当前时间时，按需展开 [资源参照与数据流成本](performance-limits-and-fusion.md)：VALU/特殊函数、VMEM 请求与缓存层级、LDS、依赖链、网格覆盖及派发。TA busy 可能包含返回等待，单 wave stall 不等于整 kernel 可回收时间；活跃 CU 与整卡效率分别说明。复用其他工程的计数器解析前核对当前 gfx/工具版本和归一化语义，不能把缺项补成零或把原始计数直接塞入 normalized。
 
 
 ## 修改后的验证与留存

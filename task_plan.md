@@ -1,5 +1,16 @@
 # Hygon 算子 Skills 系统复核与上游合并
 
+## 2026-11-09：专家性能方法论的按需整合
+
+1. 阅读专家飞书材料及 KRA 固定源码、测量口径、KDA 案例并对照现有 Skills — complete。
+2. 整理共享的上限/数据流/融合指南，补 baseline、HIP、Triton 入口及报告衔接 — complete。
+3. 复核方法的适用范围、自主探索边界、文档链接与 CPU 回归 — complete（110 项本仓 CPU 回归、86 处仓内链接/锚点、34 Python AST、三个 Skill 格式；KRA 21 项 CPU 测试及六个 CLI 帮助入口）。
+4. 同步 Codex 三个安装副本、核对哈希 — complete（60 份文件一致，76 处安装后链接/锚点）。本轮临时目录清理被自动审批策略拦截，保留缓存/备份，不绕过。
+
+收尾发布：按既有维护授权，以 yuguo-Jack 提交并正常推送 origin/main，远端 SHA 核对结果在最终回复报告；本次不新增 tag。
+
+范围：只提炼可迁移的分析与实验方法。KRA 可选复用，不内置其源码/机器参数，不新增强制模型、固定阈值或实验审批；保留原 oracle、数值契约和实验确认规则。不修改 NVIDIA Skill，不更新共享知识库，不声称远端 HCU 实测。
+
 ## 2026-11-03：架构探索、经验复用与原工程同步
 
 1. 定位 D:/git/cuda-optimized-skill，核对 main、origin 和安装副本差异 — complete。

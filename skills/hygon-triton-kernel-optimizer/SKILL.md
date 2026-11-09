@@ -70,6 +70,8 @@ python <skill>/scripts/scan_amdgcn.py repro/artifacts --kernel KERNEL --json-out
 
 按 [策略](references/optimization_patterns.md) 检查：布局/合并、对齐、向量化、tile/warps/stages、dot 精度与转换、LDS/寄存器/occupancy、tail mask、同步、原子/归约、pipeline 和融合。
 
+上限粗估解释不通或考虑融合/重算时，共用 [性能上限与融合指南](../hygon-hip-kernel-optimizer/references/performance-limits-and-fusion.md)。区分必要工作、接口交接与实际执行，检查编译后是否增加重算、布局转换、spill 或依赖；融合减少 launch/字节也可能拖慢消费者。按需展开相关资源或使用 KRA，不强制每轮完整建模；用实际 JIT 特化和实测修正模型，保留新的结构探索路线。
+
 准备替换/融合实现、改法不明或迭代停滞且依据不足时，按 [查证路径](../hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md#1-证据来源与按需知识查询) 主动查相关 HCU 工程案例；本地缺答案继续搜线上 PR/MR，读描述、review、固定源码、分派和测试。可按需用 NVIDIA `KernelWiki` 寻找布局/流水/调度等灵感，核对原架构、shape、数值条件，再验证当前 HCU Triton 分支的 lowering、wave/资源和性能，不能直接沿用 NV 配置。将实际采用的来源、HCU 差异、候选假设及验证结果写入调查报告；两个知识库均为可选参考，已有证据足够不重复查询。
 
 - `tl.assume` / `multiple_of` 只能陈述所有受支持输入都成立的事实；给出数学/调用契约依据，再编译探针与负面边界测试。不要从指针“看起来为正”推导合法转换。

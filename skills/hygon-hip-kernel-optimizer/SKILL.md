@@ -62,6 +62,8 @@ python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py -
 
 先判断本轮需要验证结构选择还是做局部调参。局部收益停滞、多个参数变体表现相近或与可信实现有无法解释的差距时，结合采集结果重新检查当前架构假设，用能区分候选解释的小探针决定继续、换路或停止；不能把扫参饱和直接当作硬件极限。结构重写允许必要的耦合改动，探索中的实现和已确认 best 分开保存。
 
+上限粗估解释不通或需要评估融合/重算时，按需读 [性能上限、数据流与融合取舍](references/performance-limits-and-fusion.md)：分清必要工作、接口交接与实际执行工作，核对相应资源和关键路径；融合同时估计省下的流量与新增计算、布局、寄存器/LDS、显存和并发代价。模型用于选方向，可被实测修正；不要求每轮全量建模或使用 KRA，也不把未知指标、单项 busy 或局部停滞当成极限。
+
 1. 标准局部调优用 [策略目录](references/optimization_catalog.md) 和 registry 选 1..3 项，不凑数；每轴最多 2 项，跳过更高优先项写具体理由。这些是现有脚本的计划约束，不是结构探索的候选全集或通用先后次序；目录无法表达的路线按 [脚本衔接](references/architecture-search-and-experience.md#5-与现有脚本衔接) 使用项目实验入口。准备替换/融合实现、瓶颈改法不明或迭代停滞且现有依据不足时，按共同契约主动查 HCU 案例/PR/源码，必要时查 KernelWiki；把参考机制变成本轮可验证的 HCU 假设，再选择改动。证据已足够时不重复检索。
 2. `methods.json` 按 [schema](templates/methods.schema.json)：方法 ID、改什么、为何可能有效、预期证据、精确目标证据、跳过理由。重试先前方法给 `retry_reason`。
 3. 在 `itervN/branches/b1..bK/kernel.<ext>` 写局部变体，同组方法一致、超参数不同。不同结构路线分开记录和归因，可从保留的探索分支继续，不限于每次复制 best；当前脚本不自动调度这些路线。只修改用户任务范围的源码。

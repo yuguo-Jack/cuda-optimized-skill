@@ -22,6 +22,8 @@ DCU/HCU 同义，旧字段与文件名保留。[指令与数据通路指南](ski
 
 性能分析分别使用 [XProf/XCompute 指南](skills/hygon-hip-kernel-optimizer/references/xprof-xcompute-guide.md) 和 [hipprof 指南](skills/hygon-hip-kernel-optimizer/references/hipprof-guide.md)，命令、输出格式、指标定义与查看器按各自版本核对。
 
+[性能上限与融合指南](skills/hygon-hip-kernel-optimizer/references/performance-limits-and-fusion.md) 共用于 HIP/Triton：从必要工作、接口交接到实际执行，按疑点评估资源与融合全成本，再用实测修正；简单热点保持粗估即可。需要时可复用外部 KRA 的时间线、资源和数据流分析，不增加强制依赖、固定阈值或逐轮全量建模步骤。
+
 ## 工作原理
 
 1. 用户需求与当前代码形成精度/布局/版本/性能契约。

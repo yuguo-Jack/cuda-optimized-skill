@@ -1,5 +1,14 @@
 # 工作进度
 
+## 2026-11-09：专家方法论整合
+
+- 完成飞书材料与 KRA 代码/案例核对，确认旧 Skill 已有能力与需要补强的分析环节。
+- 新增共享 `performance-limits-and-fusion.md`，连接三个 Skill、性能分析/架构/实验指南、报告模板和 HCU README。KRA 保持可选，没有新增包依赖或自动运行外部脚本。
+- 已通过 110 项本仓 CPU 回归、86 处仓内链接/锚点、34 Python AST、三个 Skill 格式检查；KRA 21 项 CPU 测试及六个 CLI 帮助入口正常。
+- 安装前核对 59 份旧文件与仓库 HEAD 一致，没有独立安装端修改；已同步 Codex 三个 Skill（5/40/15 文件），60 份哈希及 76 处安装后引用通过。未修改 NVIDIA Skill 或 Python 执行脚本，本轮无 HCU 硬件实验。
+- 自动审批拦截本轮临时 clone、pytest scratch 和安装备份的清理（仅返回 blocked by policy）；未执行删除、不采用其他方式绕过。临时材料仍在忽略提交的任务目录中。
+- 仓库旧代理 7893 不可用，通过单次 Git 7890 代理覆盖成功 fetch；未改全局或仓库代理设置。实际 Git 凭据的 GitHub 身份核验为 yuguo-Jack，发布前 HEAD 与 origin/main 一致；随后提交本轮文档变更并正常推送，远端结果在完成回复报告。
+
 ## 2026-10-12：按需参考 HCU 案例与 KernelWiki
 
 - 已补共同契约、三个 Skill 入口、实验指南、两份报告模板及 Triton 草稿生成提示，并更新 HCU README 的说明与可选查证支路。
