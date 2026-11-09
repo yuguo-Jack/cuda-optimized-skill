@@ -11,3 +11,5 @@
 9. 结论和回退：支持条件、失败、未覆盖项、硬件未跑部分、报告与原件在当前任务工程中的路径。
 
 若用上限估算、融合/重算分析或 KRA，在第 5、8 项补关键工作量/字节口径、可达参照来源与范围、消费者新增成本及实测修正；具体方法见 [上限与融合指南](../../hygon-hip-kernel-optimizer/references/performance-limits-and-fusion.md)。不新增强制全量表格；诊断性删工作探针与语义正确的候选/消融分开，模型估算和本轮实测分开。
+
+若直接改写该 JIT 特化的汇编/代码对象，按 [编译后优化指南](../../hygon-hip-kernel-optimizer/references/assembly-guided-optimization.md) 在第 4、6、8–9 项补原/父/新产物与补丁身份、ABI/资源与正确性覆盖、实际加载且未被重编译覆盖的证据；保留数学 oracle，区分独立 replay 与真实模型结果。源码调优无需增加这套改写记录。

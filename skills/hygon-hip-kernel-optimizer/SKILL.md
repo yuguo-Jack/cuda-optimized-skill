@@ -14,11 +14,13 @@ description: 在海光 HCU/DCU 上开发和优化 HIP/C++、CK Tile 算子，通
 - 优先查看用户材料、当前源码/测试/文档与目标环境。需要参考代码案例或补充领域事实时，可按需使用 `hcu-knowledge-search`，阅读相关指南/案例及固定源码/原件并记录出处。查询不是必经步骤，未安装或不可用不阻塞已有证据足够的工作。
 - 按 [查证路径](references/hcu-workflow-contract.md#1-证据来源与按需知识查询) 把 HCU 案例追到 PR/MR 描述、review、固定源码、调用点和测试；本地缺答案时主动搜索线上 PR。需要优化灵感时可查 NVIDIA `KernelWiki`，提取可迁移机制并核对 HCU 前提，不直接套用 NVIDIA 指令或收益。
 - 查已存在的 HCU 实现与构建方式：HIP、CK Tile、HCU Cutlass、Triton/TileLang、自有库各有适用点。能直接复用当前工程接口时先复用；不强制某种 DSL，也不拿 AMD/NVIDIA 分支冒充 HCU。
-- 没有正确 HIP 基线时先调用 `hygon-hip-baseline-generator`；仅需 Triton/Inductor 调优使用 `hygon-triton-kernel-optimizer`。明确选择原因。
+- 从源码开发而没有正确 HIP 基线时先调用 `hygon-hip-baseline-generator`；仅需 Triton/Inductor 调优使用 `hygon-triton-kernel-optimizer`。只有可运行代码对象时可走下述汇编实验路线，保留原对象作差分参照并注明验证范围，不凭空生成数学 oracle。明确选择原因。
 
 ## 2. 建立实际执行环境
 
 Agent 可本地启动。按项目远端配置/远端工作 Skill 选择 SSH、容器、挂载和 SDK 激活；以下命令运行于真正构建/测试的 HCU 环境。
+
+下面的 `kernel.hip` 与编排命令针对源码实验；仅有代码对象或直接改写对象时，按汇编指南使用项目专用入口，共用契约、诊断与验证要求，不强行套源码脚手架。
 
 ```bash
 python <skill>/scripts/check_env.py --out env.json
@@ -63,6 +65,8 @@ python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py -
 先判断本轮需要验证结构选择还是做局部调参。局部收益停滞、多个参数变体表现相近或与可信实现有无法解释的差距时，结合采集结果重新检查当前架构假设，用能区分候选解释的小探针决定继续、换路或停止；不能把扫参饱和直接当作硬件极限。结构重写允许必要的耦合改动，探索中的实现和已确认 best 分开保存。
 
 上限粗估解释不通或需要评估融合/重算时，按需读 [性能上限、数据流与融合取舍](references/performance-limits-and-fusion.md)：分清必要工作、接口交接与实际执行工作，核对相应资源和关键路径；融合同时估计省下的流量与新增计算、布局、寄存器/LDS、显存和并发代价。模型用于选方向，可被实测修正；不要求每轮全量建模或使用 KRA，也不把未知指标、单项 busy 或局部停滞当成极限。
+
+怀疑编译后的调度、等待、转换或寄存器安排限制性能时，按需读 [汇编流水与编译后优化](references/assembly-guided-optimization.md)：将 profile 热点对应到实际 ISA，检查依赖后可改源码、builtin/inline asm，也可在目标工具链支持时直接编辑并重建代码对象。路线由证据决定，无须先穷尽源码调参；直接改写才需要恢复往返、ABI/资源与实际加载验证。现有源码编排不自动支持二进制候选，使用项目专用实验入口，保留原 oracle 和确认要求。
 
 1. 标准局部调优用 [策略目录](references/optimization_catalog.md) 和 registry 选 1..3 项，不凑数；每轴最多 2 项，跳过更高优先项写具体理由。这些是现有脚本的计划约束，不是结构探索的候选全集或通用先后次序；目录无法表达的路线按 [脚本衔接](references/architecture-search-and-experience.md#5-与现有脚本衔接) 使用项目实验入口。准备替换/融合实现、瓶颈改法不明或迭代停滞且现有依据不足时，按共同契约主动查 HCU 案例/PR/源码，必要时查 KernelWiki；把参考机制变成本轮可验证的 HCU 假设，再选择改动。证据已足够时不重复检索。
 2. `methods.json` 按 [schema](templates/methods.schema.json)：方法 ID、改什么、为何可能有效、预期证据、精确目标证据、跳过理由。重试先前方法给 `retry_reason`。

@@ -92,7 +92,7 @@ t_est ≈ max(F_mmac / P_mmac, F_valu / P_valu,
 
 ## 7. 按需复用 KRA 工具
 
-参考 [LearnMF/kernel-roofline-analysis-tools](https://github.com/LearnMF/kernel-roofline-analysis-tools)，本次核对提交 `9baf2a229197eada2edd6aef506cfd44414ce782`。三个 Skills 不依赖安装它；需要批量分析时可在任务工具目录单独获取并记录版本，输出放任务目录，不写入 Skill 安装目录。
+参考 [LearnMF/kernel-roofline-analysis-tools](https://github.com/LearnMF/kernel-roofline-analysis-tools)，本次核对提交 `9baf2a229197eada2edd6aef506cfd44414ce782`。三个 Skills 不依赖安装它；只是查方法、公式或实现时，直接在线阅读 GitHub 的文档及相关源码即可，下方有固定版本入口，不必 clone 全仓。需要运行批量分析、调试或离线查证时再下载到任务工具目录，记录版本并按该版 README/pyproject 核对依赖；输出放任务目录，不写入 Skill 安装目录。后续使用新版时复核实际源码差异。
 
 | 工具入口（在 KRA 源码根目录运行） | 适合复用的内容 | 使用前核对 |
 | --- | --- | --- |

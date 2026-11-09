@@ -55,6 +55,8 @@ def output_extents(**dims):
 
 HIP 每次构建的 `.hcu-build/<id>/kernel.so` 独立留存；`bench.build` 记录 binary/source SHA、arch、compiler 与 argv。ISA 检查不再猜相邻 `.so`。自定义 HIP harness 若要自动提取 ISA，也必须提供同格式 build；Triton 保存实际 JIT 产物和 kernel 对应关系后扫描。构建缓存属于实验原件，完成转存后才清理。
 
+直接修改汇编/代码对象时，源码哈希不能唯一标识后编译候选。按 [汇编实验衔接](assembly-guided-optimization.md#5-把汇编实验接回已有优化循环) 另保存原/父/新对象身份、汇编或补丁、重建与加载记录、真实输入和验证结果；当前源码编排不会自动检查这些关系。超出脚本能力的实验留在任务专用 harness/报告中，不复用占位源码或手改已确认状态来冒充集成成功。
+
 ## 机制复核
 
 ### 前后采集记录
