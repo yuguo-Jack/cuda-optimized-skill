@@ -31,6 +31,32 @@ def load(name, directory=HIP):
     return mod
 
 
+def test_triton_report_does_not_borrow_another_kernel_evidence():
+    report = load("make_investigation_report", TRITON)
+    summary = {"kernels": [{
+        "kernel": "other_kernel",
+        "inputs": [{"name": "other_input", "shape": "[777]", "dtype": "fp32", "stride": "[1]"}],
+        "config_timings": [{"best": True, "time_ms": 321.125, "config": "OTHER_CONFIG"}],
+    }]}
+    text = report.build_report(summary, {}, {}, "requested_kernel")
+    assert "Triton Investigation: requested_kernel" in text
+    assert "Requested kernel was not found" in text
+    assert "321.125" not in text and "OTHER_CONFIG" not in text and "other_input" not in text
+
+
+def test_triton_report_keeps_screening_and_static_hints_separate():
+    report = load("make_investigation_report", TRITON)
+    summary = {"kernels": [{"kernel": "target", "config_timings": [
+        {"best": True, "time_ms": 0.125, "config": "tile=64"},
+    ]}]}
+    for classification, value in (({"atomic_observed": True}, ""), ({"buffer_ops_dominant": False}, "False")):
+        text = report.build_report(summary, {}, {"classification": classification}, "target")
+        assert "Autotune screening time (not independent confirmation) | `0.125`" in text
+        assert f"Static buffer-ops heuristic | `{value}`" in text
+        assert "`global_*` or `flat_*` still dominant" not in text
+        assert "Independent before/after samples" in text
+
+
 def write(path, obj):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(obj), encoding="utf-8")

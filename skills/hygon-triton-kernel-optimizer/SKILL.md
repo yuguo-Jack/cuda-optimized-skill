@@ -5,7 +5,7 @@ description: 分析和优化海光 HCU/DCU 上手写 Triton 或 TorchInductor �
 
 # Hygon Triton 算子优化
 
-读取兄弟 HIP Skill 的 [共同契约](../hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md)。优先使用用户材料、当前源码/测试/文档与目标环境。需要参考代码案例或补充领域事实时，可按需通过 `hcu-knowledge-search` 查询相关工程、专题/案例及固定源码/原件；查询不是必经步骤，也不要求安装知识库。
+先读兄弟 HIP Skill [共同契约](../hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md) 的环境/正确性部分，检索、测速和分析时再读对应章节。优先使用用户材料、当前源码/测试/文档与目标环境；需要补充证据时可用 `hcu-knowledge-search`，不要求先安装或查询知识库。
 
 ## 1. 明确场景与环境
 
@@ -23,7 +23,7 @@ gfx946 少伯新特性不能推广到 936/938。Triton 对某 gfx 的支持、`n
 
 ## 2. 捕获并复现 Inductor kernel
 
-读取 [调查流程](references/investigation_workflow.md)。每轮使用独立 cache/capture 路径，保留原缓存，不执行全局 `/tmp/torchinductor_root` 删除。
+本节用于 Inductor；手写 Triton 已有独立 repro 时直接进入第 3 节。捕获细节见 [调查流程](references/investigation_workflow.md)。每次调查使用任务独立的 cache/capture 路径；需重编或重新捕获时隔离新产物，保留原缓存，不执行全局 `/tmp/torchinductor_root` 删除。
 
 ```bash
 export TORCHINDUCTOR_CACHE_DIR="$PWD/repro/cache/inductor"
@@ -51,30 +51,21 @@ python <skill>/scripts/run_captured_kernel.py repro/capture/UNIQUE/KERNEL.py --j
 
 ## 3. 定位机制并调优
 
+### 3.1 采集与按需分析
+
 首次深入热点、准备结构变化，或出现停滞/回退/热点转移时，按 [分析深度选择](../hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md#按难度与进度选择分析深度) 主动选择上限评估、融合分析、汇编流水分析中的相关项。结合阶段/布局/依赖复杂度、收益空间、已有证据和进度展开；复杂问题可提前分析，简单且证据充分时直接实验，不要求每轮三项全做。触发后若暂缓，简记原因和重开条件；结果进入当前特化的实现、正确性/性能对照与真实模型验证。
 
 **遇到 kernel 优化瓶颈时必须使用性能分析工具。** 调参收益停滞/落入噪声、明显回退或耗时原因不清时，先用 XProf/XCompute（或目标支持的 hipprof/DTK 工具）分析实际目标 kernel，再提出下一轮修改。autotune 最佳时间、源码阅读和静态 ISA 扫描不能代替性能采集与解读。
 
 按 [性能分析入口](../hygon-hip-kernel-optimizer/references/dcu_metrics_guide.md) 选择 [XProf/XCompute](../hygon-hip-kernel-optimizer/references/xprof-xcompute-guide.md) 或 [hipprof](../hygon-hip-kernel-optimizer/references/hipprof-guide.md) 的独立操作步骤，确认 kernel/dispatch 与输入，检查计算、访存、资源和等待。需要解释流水空泡时按当前工具支持的 SQTT 方式采集并关联 ISA，不互换两套参数/格式。工具或权限受阻则记录待采命令、标记诊断未完成，可继续独立的正确性准备，不把推测写成工具结论。
 
-```bash
-python <skill>/scripts/inspect_triton_meta.py KERNEL.py --json-out meta.json
-python <skill>/scripts/scan_amdgcn.py repro/artifacts --kernel KERNEL --json-out isa_scan.json
-```
+上限不清或考虑融合/重算时，读 [上限与融合取舍](../hygon-hip-kernel-optimizer/references/performance-limits-and-fusion.md)，估计节省与新增成本；实际 lowering/等待/资源有疑点时，按 [编译后检查](references/investigation_workflow.md#42-按需检查编译后实现) 定位本次 JIT 产物，再用 [汇编流水分析](../hygon-hip-kernel-optimizer/references/assembly-guided-optimization.md) 选择源码或低层改法。两类指南服务于下一项实验，无需按顺序通读。
 
-低层路径按 [HCU 指令指南](../hygon-hip-kernel-optimizer/references/hcu-isa-guide.md) 核对精确 gfx 的指令形式、布局和同步。`scan_amdgcn.py --kernel` 指实际汇编符号；匹配缺失或歧义会记录 unresolved，不能用文件名代替。
-
-反汇编失败或目标汇编不完整时，按该指南的“实际工程反汇编失败时”保存本次实际 JIT 特化的汇编与代码对象，核对符号、编译选项及加载关系；若为导出重新编译，测试新产物并记录哈希，不把其他缓存或旧计时作为本次证据。
-
-元数据扫描是启发式，只解析部分格式；返回空项不证明编译器没做优化。ISA 扫描不把 LLVM IR 当最终指令，不把静态次数当动态热点。
-
-实际 JIT 指令流水出现不合理等待、转换、访存或资源安排时，可按 [汇编流水与编译后优化](../hygon-hip-kernel-optimizer/references/assembly-guided-optimization.md) 结合动态热点检查依赖窗口，选择改 Triton/inline asm/lowering，或在工具链支持时重建该特化的代码对象。后者走任务专用 harness，保留独立 oracle、ABI/资源和多用例验证；确认真实分派没有重编译覆盖候选，不直接改共享 JIT 缓存。现有捕获/replay/扫描脚本不等于二进制改写或差分验证器。
+### 3.2 候选、正确性与独立性能确认
 
 按 [实验操作指南](../hygon-hip-kernel-optimizer/references/optimization-playbook.md) 核对算子特有边界、数值变换前提、JIT/autotune 与计时范围及工程验收。此 Skill 使用捕获/重放/扫描流程，不自动执行 HIP 编排的四轮晋级；实际报告须说明已运行的对照协议。
 
 按 [策略](references/optimization_patterns.md) 检查：布局/合并、对齐、向量化、tile/warps/stages、dot 精度与转换、LDS/寄存器/occupancy、tail mask、同步、原子/归约、pipeline 和融合。
-
-上限粗估解释不通或考虑融合/重算时，共用 [性能上限与融合指南](../hygon-hip-kernel-optimizer/references/performance-limits-and-fusion.md)。区分必要工作、接口交接与实际执行，检查编译后是否增加重算、布局转换、spill 或依赖；融合减少 launch/字节也可能拖慢消费者。按需展开相关资源或使用 KRA，不强制每轮完整建模；用实际 JIT 特化和实测修正模型，保留新的结构探索路线。
 
 准备替换/融合实现、改法不明或迭代停滞且依据不足时，按 [查证路径](../hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md#1-证据来源与按需知识查询) 主动查相关 HCU 工程案例；本地缺答案继续搜线上 PR/MR，读描述、review、固定源码、分派和测试。可按需用 NVIDIA `KernelWiki` 寻找布局/流水/调度等灵感，核对原架构、shape、数值条件，再验证当前 HCU Triton 分支的 lowering、wave/资源和性能，不能直接沿用 NV 配置。将实际采用的来源、HCU 差异、候选假设及验证结果写入调查报告；两个知识库均为可选参考，已有证据足够不重复查询。
 
@@ -83,6 +74,8 @@ python <skill>/scripts/scan_amdgcn.py repro/artifacts --kernel KERNEL --json-out
 - 不擅自改 FP8 scale、累计精度、causal/mask、路由、atomic 顺序或模型输出。低精度/近似必须符合任务精度要求。
 - 保存基线与每个变体，单卡串行测、多 seed/shape/stride 回归；原地写/alias 输入每次恢复原状态。样本、计时口径、噪声、OOM/编译失败全部保留。
 - 瓶颈修改后，用相同采集口径复核目标指标/时间线的变化，并独立测量未开启 profiler 的性能。新的热点或回退无法解释时重新采集分析。
+
+autotune 最快候选需脱离筛选过程再次独立与基线对照，交替执行顺序，保持相同输入/seed、warmup、repeat、缓存和计时口径；保留逐轮结果，不能只报告最小值。适配 HIP 迭代器时使用其四轮确认与产物契约。
 
 ## 4. 从单 kernel 到模型
 
@@ -93,7 +86,5 @@ python <skill>/scripts/scan_amdgcn.py repro/artifacts --kernel KERNEL --json-out
 ## 5. 报告与交付
 
 `make_investigation_report.py` 生成待填写草稿；依 [报告模板](references/report_template.md) 补环境/源码、实际使用的资料出处、调用链/目录、捕获完整性、正确性、实际样本、瓶颈证据、候选失败、单 kernel 与模型结果、适用/回退条件。
-
-autotune 最快候选需脱离筛选过程再次独立与基线对照，交替执行顺序，保持相同输入/seed、warmup、repeat、缓存和计时口径；保留逐轮结果，不能只报告最小值。适配 HIP 迭代器时使用其四轮确认与产物契约。
 
 footprint rate 不是 HBM bandwidth utilization；缺少 ISA/消融/归一化计数时标明机制待证。没有 HCU 运行只报告静态结果。报告与原始证据保留在当前任务工程。

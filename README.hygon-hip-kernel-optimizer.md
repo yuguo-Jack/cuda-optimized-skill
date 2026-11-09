@@ -16,15 +16,19 @@ tools/install_hygon_skills.py    # 备份、安装、文件哈希核验
 hygon_tmp/                      # 不提交的采集、缓存、安装备份
 ```
 
-核心规范是 [HCU 工作契约](skills/hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md)，程序产物见 [实验接口](skills/hygon-hip-kernel-optimizer/references/experiment-artifacts.md)。每个 Skill 的 SKILL.md 是给 Agent 的入口。
+每个 `SKILL.md` 是 Agent 的执行入口，保留阶段动作、触发条件和验证要求。共享文档集中维护在 HIP Skill 的 `references/`，baseline 与 Triton 通过相对链接复用，因此三个 Skill 一同安装。具体实现和参数在 `scripts/`，报告/输入格式在各 Skill 的模板中，`examples/` 只演示使用，不作为性能结论。
 
-DCU/HCU 同义，旧字段与文件名保留。[指令与数据通路指南](skills/hygon-hip-kernel-optimizer/references/hcu-isa-guide.md) 记录孔明至月英的目标名称，逐项区分 MLS、DS/MMAC、低精度 scale、WDRA、barrier 和 TLS 的适用范围，并列出原件出处与待实测边界。
+| 当前要做什么 | 文档职责与入口 |
+| --- | --- |
+| 明确环境、正确性、测量及按需分析规则 | [共同契约](skills/hygon-hip-kernel-optimizer/references/hcu-workflow-contract.md)；各阶段只读有关章节 |
+| 选候选、处理失败、做工程验收 | [实验操作指南](skills/hygon-hip-kernel-optimizer/references/optimization-playbook.md)；需要重开结构或恢复任务时读 [架构探索与经验复用](skills/hygon-hip-kernel-optimizer/references/architecture-search-and-experience.md) |
+| 决定采什么、怎样解读 | [性能分析入口](skills/hygon-hip-kernel-optimizer/references/dcu_metrics_guide.md)；工具命令分别见 [XProf/XCompute](skills/hygon-hip-kernel-optimizer/references/xprof-xcompute-guide.md) 与 [hipprof](skills/hygon-hip-kernel-optimizer/references/hipprof-guide.md)，参数和产物不能互换 |
+| 评估空间、融合边界和流水机会 | [上限与融合](skills/hygon-hip-kernel-optimizer/references/performance-limits-and-fusion.md) 讲成本判断；[汇编分析](skills/hygon-hip-kernel-optimizer/references/assembly-guided-optimization.md) 讲实际流水及按需改写；[指令指南](skills/hygon-hip-kernel-optimizer/references/hcu-isa-guide.md) 负责精确 gfx 能力、产物与导出 |
+| 查实验字段、哈希、恢复与脚本边界 | [实验接口与产物](skills/hygon-hip-kernel-optimizer/references/experiment-artifacts.md)；不把自动摘要当成已完成的分析 |
+| 捕获并复现 Inductor 调用 | Triton 的 [调查流程](skills/hygon-triton-kernel-optimizer/references/investigation_workflow.md)；通用分析规则仍引用共享文档 |
+| 整理交付结果 | [HIP 报告](skills/hygon-hip-kernel-optimizer/templates/iteration_report.md) 与 [Triton 报告](skills/hygon-triton-kernel-optimizer/references/report_template.md)；记录已做工作，不把模板项目变成必试路线 |
 
-性能分析分别使用 [XProf/XCompute 指南](skills/hygon-hip-kernel-optimizer/references/xprof-xcompute-guide.md) 和 [hipprof 指南](skills/hygon-hip-kernel-optimizer/references/hipprof-guide.md)，命令、输出格式、指标定义与查看器按各自版本核对。
-
-[性能上限与融合指南](skills/hygon-hip-kernel-optimizer/references/performance-limits-and-fusion.md) 共用于 HIP/Triton：从必要工作、接口交接到实际执行，按疑点评估资源与融合全成本，再用实测修正；简单热点保持粗估即可。需要时可复用外部 KRA 的时间线、资源和数据流分析，不增加强制依赖、固定阈值或逐轮全量建模步骤。
-
-[汇编流水与编译后优化](skills/hygon-hip-kernel-optimizer/references/assembly-guided-optimization.md) 提炼 AsmEvo 的热点窗口、对象恢复、差分验证与候选组合方法。可用实际 ISA 指导源码调优，也可按需要直接重建汇编/代码对象；保留 HCU 的目标查证、原 oracle 与完整工程验证。当前脚本不包含 AsmEvo 自动二进制改写系统。
+DCU/HCU 同义，兼容字段和文件名保留。KRA 与 AsmEvo 的采用范围和来源放在对应专题指南末尾；KRA 可选，AsmEvo 只采用方法，当前脚本不包含其自动二进制改写系统。更新时，通用规则改共同契约，专题方法改对应指南，入口与脚本提示保持简短；任务实测数据保存在任务工程，仓库维护过程记在 `task_plan.md`、`findings.md`、`progress.md`。
 
 ## 工作原理
 

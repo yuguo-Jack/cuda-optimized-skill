@@ -43,6 +43,8 @@ python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py -
 - 静态 preflight、编译、数值、race safety、性能和端到端收益是独立状态。只通过编译或只有时间不算正确。
 - 模型 reference、baseline 与环境冻结后不随候选变化。benchmark 改动也要重测基线。
 
+首次使用脚本时可按 [elementwise 示例](examples/walkthrough.md) 对照目录和命令；示例只演示流程，不是所有算子都应采用的优化路线。
+
 ### 按参考质量选择起点
 
 区分数学 oracle、冻结的测速基线、当前已确认 best 与正在探索的实现。冻结语义和测量口径，不冻结候选架构；best 可以成为下一轮实现起点，不能替换 oracle 或重设容差。
@@ -53,6 +55,8 @@ python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py -
 按算子证据决定探索深度，无须凑固定路线数、先冻结完整设计或逐项尝试策略目录。具体做法见 [架构探索与经验复用](references/architecture-search-and-experience.md)。
 
 ## 4. 定位瓶颈并实验
+
+### 4.1 观察、选择分析并形成假设
 
 首次深入热点、准备结构变化，或出现停滞/回退/热点转移时，按 [分析深度选择](references/hcu-workflow-contract.md#按难度与进度选择分析深度) 主动选择上限评估、融合分析、汇编流水分析中的相关项。依据难度、复杂度、收益空间、已有证据和进度展开；复杂问题可提前分析，简单且证据充分时直接实验，不要求每轮三项全做。触发后若暂缓，简记原因和重开条件；分析结果回到候选选择与原验证循环。
 
@@ -66,9 +70,11 @@ python <skill>/scripts/orchestrate.py setup --baseline kernel.hip --ref ref.py -
 
 先判断本轮需要验证结构选择还是做局部调参。局部收益停滞、多个参数变体表现相近或与可信实现有无法解释的差距时，结合采集结果重新检查当前架构假设，用能区分候选解释的小探针决定继续、换路或停止；不能把扫参饱和直接当作硬件极限。结构重写允许必要的耦合改动，探索中的实现和已确认 best 分开保存。
 
-上限粗估解释不通或需要评估融合/重算时，按需读 [性能上限、数据流与融合取舍](references/performance-limits-and-fusion.md)：分清必要工作、接口交接与实际执行工作，核对相应资源和关键路径；融合同时估计省下的流量与新增计算、布局、寄存器/LDS、显存和并发代价。模型用于选方向，可被实测修正；不要求每轮全量建模或使用 KRA，也不把未知指标、单项 busy 或局部停滞当成极限。
+上限不清或涉及融合/重算时，读 [上限与融合取舍](references/performance-limits-and-fusion.md)，估计节省与新增成本来选候选；粗估足够就先实验，模型可以被实测修正。
 
-怀疑编译后的调度、等待、转换或寄存器安排限制性能时，按需读 [汇编流水与编译后优化](references/assembly-guided-optimization.md)：将 profile 热点对应到实际 ISA，检查依赖后可改源码、builtin/inline asm，也可在目标工具链支持时直接编辑并重建代码对象。路线由证据决定，无须先穷尽源码调参；直接改写才需要恢复往返、ABI/资源与实际加载验证。现有源码编排不自动支持二进制候选，使用项目专用实验入口，保留原 oracle 和确认要求。
+怀疑编译后的等待、转换或资源安排时，读 [汇编流水与编译后优化](references/assembly-guided-optimization.md)，由实际热点决定改源码/inline asm 或直接汇编。直接改写对象才需要恢复、ABI/资源及加载检查；此类候选走项目专用入口，现有源码编排不自动支持。
+
+### 4.2 实现候选与独立验证
 
 1. 标准局部调优用 [策略目录](references/optimization_catalog.md) 和 registry 选 1..3 项，不凑数；每轴最多 2 项，跳过更高优先项写具体理由。这些是现有脚本的计划约束，不是结构探索的候选全集或通用先后次序；目录无法表达的路线按 [脚本衔接](references/architecture-search-and-experience.md#5-与现有脚本衔接) 使用项目实验入口。准备替换/融合实现、瓶颈改法不明或迭代停滞且现有依据不足时，按共同契约主动查 HCU 案例/PR/源码，必要时查 KernelWiki；把参考机制变成本轮可验证的 HCU 假设，再选择改动。证据已足够时不重复检索。
 2. `methods.json` 按 [schema](templates/methods.schema.json)：方法 ID、改什么、为何可能有效、预期证据、精确目标证据、跳过理由。重试先前方法给 `retry_reason`。
